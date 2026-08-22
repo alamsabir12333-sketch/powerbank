@@ -1,0 +1,6 @@
+{
+  "name": "Power Bank",
+  "description": "Power Bank sharing and earnings platform with authentic UI recreation of Home, Fortune, Purchase Hall, Team, and Profile screens.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
