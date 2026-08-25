@@ -14,6 +14,8 @@ import {
   RefreshCw,
   Receipt,
   Check,
+  Timer,
+  Calendar,
 } from 'lucide-react';
 import { PurchaseItem, TabType, EarningRecord } from '../types';
 import { ProductCabinetArtwork } from './Artworks';
@@ -21,6 +23,8 @@ import {
   fetchClaimableEarnings,
   claimUserEarnings,
   settleAndCalculateEarnings,
+  calculateDeviceHourlyStatus,
+  DeviceHourlyStatus,
 } from '../services/api';
 import { playCoinSound, playSuccessChime } from '../utils/audio';
 
@@ -47,9 +51,11 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
     totalClaimable: number;
     count: number;
     records: EarningRecord[];
+    deviceStatuses?: DeviceHourlyStatus[];
   }>({ totalClaimable: 0, count: 0, records: [] });
   const [isClaiming, setIsClaiming] = useState(false);
   const [isLoadingEarnings, setIsLoadingEarnings] = useState(false);
+  const [tick, setTick] = useState(0);
   const [claimSuccessModal, setClaimSuccessModal] = useState<{
     isOpen: boolean;
     amount: number;
@@ -60,7 +66,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
     if (!userId) return;
     setIsLoadingEarnings(true);
     try {
-      // Settle pending device yields first
+      // Settle discrete hourly cycles first
       await settleAndCalculateEarnings(userId);
       const claimable = await fetchClaimableEarnings(userId);
       setClaimableData(claimable);
@@ -74,6 +80,11 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       loadEarnings();
+      // Tick every 10 seconds to keep countdown fresh
+      const interval = setInterval(() => {
+        setTick((t) => t + 1);
+      }, 10000);
+      return () => clearInterval(interval);
     }
   }, [isOpen, userId]);
 
@@ -105,6 +116,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
       if (onClaimSuccess) {
         onClaimSuccess();
       }
+      await loadEarnings();
     } catch (err: any) {
       console.error('Claim error:', err);
       if (onShowToast) {
@@ -119,9 +131,8 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
 
   if (!isOpen) return null;
 
+  const now = Date.now();
   const activeDevices = purchases.filter((p) => p.status === 'ACTIVE');
-  const completedDevices = purchases.filter((p) => p.status !== 'ACTIVE');
-
   const totalInvested = activeDevices.reduce((sum, p) => sum + p.amount, 0);
   const totalDailyEarn = activeDevices.reduce(
     (sum, p) => sum + (p.dailyEarnings || p.earningRate * 24),
@@ -238,7 +249,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                 </span>
               ) : (
                 <span className="text-gray-400 font-medium">
-                  No earnings available to claim.
+                  Earnings generate strictly upon completing each full 1-hour cycle.
                 </span>
               )}
               <span className="text-gray-400 text-[10px]">
@@ -265,7 +276,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
             </div>
             <div className="p-2 rounded-xl bg-[#1e1e1e] border border-[#2a2a2a]">
               <span className="text-[9.5px] text-gray-400 uppercase font-semibold block">
-                Total Yield
+                Total Claimed
               </span>
               <span className="text-sm font-black text-amber-400">
                 ₹{totalEarnedSoFar.toFixed(2)}
@@ -300,22 +311,8 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
               </div>
             ) : (
               purchases.map((device) => {
-                const isActive = device.status === 'ACTIVE';
-                const isPro =
-                  (device.planCategory || '').toUpperCase() === 'PRO' ||
-                  (device.planName || '').toUpperCase().includes('PRO');
-                const hourly = device.earningRate || 0;
-                const daily = device.dailyEarnings || hourly * 24;
-
-                // Calculate remaining hours
-                const remainingHours = device.expiresAt
-                  ? Math.max(0, Math.round((new Date(device.expiresAt).getTime() - Date.now()) / (1000 * 60 * 60)))
-                  : Math.max(0, Math.round(((device.durationDays || 30) * 24) - ((Date.now() - new Date(device.startedAt).getTime()) / (1000 * 60 * 60))));
-
-                // Calculate claimable amount for this specific device
-                const deviceClaimable = (claimableData.records || [])
-                  .filter((r) => r.purchaseId === device.id && r.status === 'CLAIMABLE')
-                  .reduce((sum, r) => sum + r.amount, 0);
+                const status = calculateDeviceHourlyStatus(device, now);
+                const isPro = status.planCategory === 'PRO';
 
                 return (
                   <div
@@ -338,7 +335,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                         <div>
                           <div className="flex items-center gap-1.5">
                             <h4 className="font-bold text-white text-xs sm:text-sm">
-                              {device.planName || (isPro ? 'PRO Power Cabinet' : 'Hourly Plan')}
+                              {status.planName}
                             </h4>
                             <span
                               className={`px-1.5 py-0.2 rounded text-[8.5px] font-black uppercase ${
@@ -347,21 +344,21 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                                   : 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
                               }`}
                             >
-                              {device.planCategory || 'HOURLY'}
+                              {status.planCategory}
                             </span>
                           </div>
                           <span className="text-[10px] text-gray-400 font-mono">
-                            Remaining: <strong className="text-amber-300 font-semibold">{remainingHours} Hours</strong>
+                            Progress: <strong className="text-orange-300 font-semibold">{status.totalCompletedHours} / {status.totalPlanHours} hrs</strong>
                           </span>
                         </div>
                       </div>
 
                       {/* Status indicator */}
                       <div className="flex items-center gap-1 shrink-0">
-                        {isActive ? (
+                        {status.isActive ? (
                           <span className="px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 font-bold text-[9.5px] flex items-center gap-1">
                             <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-ping" />
-                            <span>Online</span>
+                            <span>Active</span>
                           </span>
                         ) : (
                           <span className="px-2 py-0.5 rounded-full bg-gray-700 text-gray-400 font-bold text-[9.5px]">
@@ -374,34 +371,48 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                     {/* Metrics grid */}
                     <div className="grid grid-cols-3 gap-1.5 p-2 rounded-xl bg-[#141414] border border-[#262626] text-[10.5px]">
                       <div>
-                        <span className="text-gray-500 block text-[9px]">Hourly Earning</span>
-                        <span className="font-bold text-green-400">₹{hourly.toFixed(2)}/hour</span>
+                        <span className="text-gray-500 block text-[9px]">Hourly Rate</span>
+                        <span className="font-bold text-green-400">₹{status.hourlyEarnings.toFixed(2)}/hr</span>
                       </div>
                       <div>
                         <span className="text-gray-500 block text-[9px]">Remaining</span>
-                        <span className="font-bold text-gray-200">{remainingHours}h</span>
+                        <span className="font-bold text-gray-200">{status.remainingHours}h</span>
                       </div>
                       <div>
                         <span className="text-gray-500 block text-[9px]">Claimable</span>
-                        <span className={`font-black ${deviceClaimable > 0 ? 'text-amber-400 animate-pulse' : 'text-gray-400'}`}>
-                          ₹{deviceClaimable.toFixed(2)}
+                        <span className={`font-black ${status.claimableAmount > 0 ? 'text-amber-400 animate-pulse' : 'text-gray-400'}`}>
+                          ₹{status.claimableAmount.toFixed(2)}
                         </span>
                       </div>
                     </div>
 
+                    {/* Next Earning Cycle Info Bar */}
+                    {status.isActive && (
+                      <div className="p-2 rounded-xl bg-[#171717] border border-[#2a2a2a] flex items-center justify-between text-[10.5px]">
+                        <div className="flex items-center gap-1.5 text-gray-400">
+                          <Timer className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+                          <span>Next Hour Earning:</span>
+                        </div>
+                        <span className="font-mono font-bold text-amber-300">
+                          {status.nextEarningTimeFormatted}
+                        </span>
+                      </div>
+                    )}
+
                     {/* Claim action per device */}
-                    {isActive && (
+                    {status.isActive && (
                       <div className="p-2 rounded-xl bg-[#181818] border border-[#2c2c2c] flex items-center justify-between">
                         <div className="text-[11px]">
-                          <span className="text-gray-400">Claimable: </span>
-                          <strong className="text-amber-400 font-extrabold">₹{deviceClaimable.toFixed(2)}</strong>
+                          <span className="text-gray-400">Ready to Claim: </span>
+                          <strong className="text-amber-400 font-extrabold">₹{status.claimableAmount.toFixed(2)}</strong>
+                          <span className="text-gray-500 text-[10px] ml-1">({status.unclaimedHours} hr{status.unclaimedHours !== 1 ? 's' : ''})</span>
                         </div>
                         <button
                           type="button"
                           onClick={handleClaim}
                           disabled={isClaiming || claimableData.totalClaimable <= 0}
                           className={`px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer ${
-                            deviceClaimable > 0 || claimableData.totalClaimable > 0
+                            status.claimableAmount > 0 || claimableData.totalClaimable > 0
                               ? 'bg-gradient-to-r from-[#FF6000] to-[#FFA000] text-white hover:brightness-110 shadow-sm shadow-orange-500/20 active:scale-95'
                               : 'bg-[#282828] text-gray-500 cursor-not-allowed border border-[#383838]'
                           }`}
@@ -417,15 +428,15 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                     )}
 
                     {/* Footer Info */}
-                    <div className="flex items-center justify-between text-[10.5px] text-gray-400 pt-0.5">
+                    <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5">
                       <span>
                         Total Earned:{' '}
                         <strong className="text-amber-400">
-                          ₹{(device.totalEarned || 0).toFixed(2)}
+                          ₹{status.totalEarnedAmount.toFixed(2)}
                         </strong>
                       </span>
-                      <span className="font-mono">
-                        Expires: {device.expiresAt ? new Date(device.expiresAt).toLocaleDateString() : `${remainingHours}h left`}
+                      <span className="font-mono text-gray-400">
+                        Last Claim: {status.lastClaimTimeFormatted}
                       </span>
                     </div>
                   </div>

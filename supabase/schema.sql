@@ -880,8 +880,8 @@ CREATE TABLE IF NOT EXISTS public.deposit_transactions (
     gateway_serial_no TEXT,
     amount NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
     currency TEXT DEFAULT 'INR',
-    pay_code TEXT DEFAULT 'UPI',
-    status TEXT DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'SUCCESS', 'FAILED', 'EXPIRED')),
+    pay_code TEXT DEFAULT '印度UPI-银台',
+    status TEXT DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'SUCCESS', 'FAILED', 'EXPIRED', 'FAILED_GATEWAY_CREATION')),
     gateway_status TEXT,
     pay_url TEXT,
     callback_received BOOLEAN DEFAULT false,
@@ -1011,14 +1011,25 @@ CREATE POLICY "Admins manage gateway settings" ON public.gateway_settings FOR AL
 CREATE OR REPLACE FUNCTION public.create_univepay_deposit_order(
     p_user_id UUID,
     p_amount NUMERIC,
-    p_traceno TEXT
+    p_traceno TEXT,
+    p_pay_code TEXT DEFAULT '印度UPI-银台'
 )
 RETURNS JSONB AS $$
 DECLARE
     v_tx_id UUID;
+    v_user_exists BOOLEAN;
 BEGIN
     IF p_amount <= 0 THEN
         RETURN jsonb_build_object('success', false, 'error', 'Invalid deposit amount');
+    END IF;
+
+    -- Validate user exists
+    SELECT EXISTS(SELECT 1 FROM auth.users WHERE id = p_user_id) INTO v_user_exists;
+    IF NOT v_user_exists THEN
+        SELECT EXISTS(SELECT 1 FROM public.profiles WHERE user_id = p_user_id) INTO v_user_exists;
+    END IF;
+    IF NOT v_user_exists THEN
+        RETURN jsonb_build_object('success', false, 'error', 'User does not exist');
     END IF;
 
     IF EXISTS (SELECT 1 FROM public.deposit_transactions WHERE traceno = p_traceno) THEN
@@ -1029,7 +1040,7 @@ BEGIN
     INSERT INTO public.deposit_transactions (
         id, user_id, traceno, amount, currency, pay_code, status
     ) VALUES (
-        v_tx_id, p_user_id, p_traceno, p_amount, 'INR', 'UPI', 'PENDING'
+        v_tx_id, p_user_id, p_traceno, p_amount, 'INR', COALESCE(p_pay_code, '印度UPI-银台'), 'PENDING'
     );
 
     RETURN jsonb_build_object(

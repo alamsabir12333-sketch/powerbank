@@ -24,8 +24,9 @@ import {
   fetchAdminUserDetails,
   updateUserStatus,
   adminAdjustUserWallet,
+  adminAdjustUserBalance,
 } from '../../services/api';
-import { UserProfile, AdminUserDetails } from '../../types';
+import { UserProfile, AdminUserDetails, AdminBalanceType } from '../../types';
 
 interface AdminUsersTabProps {
   adminId: string;
@@ -52,6 +53,7 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
   const [adjustModalUser, setAdjustModalUser] = useState<any | null>(null);
   const [adjustAmount, setAdjustAmount] = useState('');
   const [adjustType, setAdjustType] = useState<'CREDIT' | 'DEBIT'>('CREDIT');
+  const [adjustBalanceType, setAdjustBalanceType] = useState<AdminBalanceType>('MY_WALLET');
   const [adjustReason, setAdjustReason] = useState('');
   const [submittingAdjust, setSubmittingAdjust] = useState(false);
 
@@ -109,14 +111,18 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
 
     setSubmittingAdjust(true);
     try {
-      await adminAdjustUserWallet(
+      const action = adjustType === 'CREDIT' ? 'ADMIN_CREDIT' : 'ADMIN_DEDUCT';
+      const res = await adminAdjustUserBalance(
         adjustModalUser.userId || adjustModalUser.id,
+        adjustBalanceType,
         amountNum,
-        adjustType,
+        action,
         adjustReason,
         adminId
       );
-      onShowToast(`Successfully ${adjustType === 'CREDIT' ? 'credited' : 'debited'} ₹${amountNum}`);
+      onShowToast(
+        `Successfully ${adjustType === 'CREDIT' ? 'credited' : 'debited'} ₹${amountNum} (${adjustBalanceType.replace('_', ' ')})`
+      );
       setAdjustModalUser(null);
       setAdjustAmount('');
       setAdjustReason('');
@@ -407,6 +413,21 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                     - DEBIT (Deduct Funds)
                   </button>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-300 uppercase mb-1.5">
+                  Target Balance Account
+                </label>
+                <select
+                  value={adjustBalanceType}
+                  onChange={(e) => setAdjustBalanceType(e.target.value as AdminBalanceType)}
+                  className="w-full bg-[#0d1117] border border-gray-700 focus:border-[#FF6000] rounded-xl py-2.5 px-3 text-xs text-white outline-none font-semibold"
+                >
+                  <option value="MY_WALLET">My Wallet (Earning / Withdrawable Balance)</option>
+                  <option value="RECHARGE_BALANCE">Recharge Balance</option>
+                  <option value="REFERRAL_BALANCE">Referral / Team Commission Balance</option>
+                </select>
               </div>
 
               <div>

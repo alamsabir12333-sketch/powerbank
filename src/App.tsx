@@ -7,8 +7,13 @@ import { FortunePage } from './pages/FortunePage';
 import { TeamPage } from './pages/TeamPage';
 import { TransactionPage } from './pages/TransactionPage';
 import { NotificationsPage } from './pages/NotificationsPage';
+import { WithdrawalPage } from './pages/WithdrawalPage';
+import { TopUpPage } from './pages/TopUpPage';
+import { BankCardPage } from './pages/BankCardPage';
+import { AddBankCardPage } from './pages/AddBankCardPage';
 import { AuthPage } from './pages/AuthPage';
 import { AdminLoginPage } from './pages/admin/AdminLoginPage';
+import { PaymentCheckoutPage } from './pages/PaymentCheckoutPage';
 import { BottomNav } from './components/BottomNav';
 import { Toast, ToastType } from './components/Toast';
 import { AdminErrorBoundary } from './components/AdminErrorBoundary';
@@ -44,6 +49,15 @@ export default function App() {
     return false;
   });
   const [adminSession, setAdminSession] = useState<AdminSession | null>(() => getAdminSession());
+
+  // Public Payment Checkout Route Isolation (/payment/checkout)
+  const [isCheckoutRoute, setIsCheckoutRoute] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      return path === '/payment/checkout' || path.startsWith('/payment/checkout');
+    }
+    return false;
+  });
 
   const [activeTab, setActiveTab] = useState<TabType>('home');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -82,10 +96,17 @@ export default function App() {
       const path = window.location.pathname;
       if (path === '/adminbank' || path.startsWith('/adminbank')) {
         setIsAdminRoute(true);
+        setIsCheckoutRoute(false);
         setAdminSession(getAdminSession());
         return;
       }
       setIsAdminRoute(false);
+
+      if (path === '/payment/checkout' || path.startsWith('/payment/checkout')) {
+        setIsCheckoutRoute(true);
+        return;
+      }
+      setIsCheckoutRoute(false);
 
       const searchParams = new URLSearchParams(window.location.search);
       let refParam = searchParams.get('ref') || searchParams.get('code') || '';
@@ -282,6 +303,26 @@ export default function App() {
     );
   }
 
+  // =========================================================================
+  // PUBLIC PAYMENT CHECKOUT ROUTE HANDLER (/payment/checkout)
+  // Publicly accessible payment gateway checkout:
+  // - Bypasses global visitor login/register guard
+  // - Does NOT require Supabase authenticated session
+  // - Safely reads URL parameters and verifies server-side
+  // =========================================================================
+  if (isCheckoutRoute) {
+    return (
+      <PaymentCheckoutPage
+        onNavigateHome={() => {
+          if (typeof window !== 'undefined') {
+            window.history.pushState({}, '', '/');
+            setIsCheckoutRoute(false);
+          }
+        }}
+      />
+    );
+  }
+
   // 1. While initial session is resolving, show sleek splash screen to avoid UI flashes
   if (isAuthChecking) {
     return (
@@ -341,7 +382,10 @@ export default function App() {
               userProfile={userProfile}
               wallet={wallet}
               purchases={purchases}
-              onOpenRecharge={() => setIsRechargeOpen(true)}
+              onOpenRecharge={() => {
+                setActiveTab('recharge');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
               onOpenMyDevice={() => setIsMyDeviceOpen(true)}
             />
           )}
@@ -356,8 +400,14 @@ export default function App() {
               userProfile={userProfile}
               wallet={wallet}
               purchases={purchases}
-              onOpenRecharge={() => setIsRechargeOpen(true)}
-              onOpenWithdrawal={() => setIsWithdrawalOpen(true)}
+              onOpenRecharge={() => {
+                setActiveTab('recharge');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onOpenWithdrawal={() => {
+                setActiveTab('withdrawal');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
               onRefreshData={() => loadUserData()}
             />
           )}
@@ -371,7 +421,10 @@ export default function App() {
               onShowToast={showToast}
               userId={activeUserId}
               wallet={wallet}
-              onOpenRecharge={() => setIsRechargeOpen(true)}
+              onOpenRecharge={() => {
+                setActiveTab('recharge');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
               onPurchaseSuccess={() => {
                 loadUserData();
               }}
@@ -398,8 +451,14 @@ export default function App() {
               userProfile={userProfile}
               wallet={wallet}
               purchases={purchases}
-              onOpenRecharge={() => setIsRechargeOpen(true)}
-              onOpenWithdrawal={() => setIsWithdrawalOpen(true)}
+              onOpenRecharge={() => {
+                setActiveTab('recharge');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onOpenWithdrawal={() => {
+                setActiveTab('withdrawal');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
               onOpenMyDevice={() => setIsMyDeviceOpen(true)}
               onLogout={handleLogout}
               onRefreshData={() => loadUserData()}
@@ -417,7 +476,10 @@ export default function App() {
               wallet={wallet}
               userProfile={userProfile}
               onOpenRecharge={() => setIsRechargeOpen(true)}
-              onOpenWithdrawal={() => setIsWithdrawalOpen(true)}
+              onOpenWithdrawal={() => {
+                setActiveTab('withdrawal');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
             />
           )}
 
@@ -434,10 +496,87 @@ export default function App() {
               }}
             />
           )}
+
+          {activeTab === 'withdrawal' && (
+            <WithdrawalPage
+              userId={activeUserId}
+              wallet={wallet}
+              onBack={() => {
+                setActiveTab('me');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onNavigateTab={(tab) => {
+                setActiveTab(tab as TabType);
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onShowToast={showToast}
+              onOpenBindCard={() => {
+                setActiveTab('bank_card');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onRefreshData={() => loadUserData()}
+            />
+          )}
+
+          {activeTab === 'recharge' && (
+            <TopUpPage
+              userId={activeUserId}
+              wallet={wallet}
+              onBack={() => {
+                setActiveTab('home');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onNavigateTab={(tab) => {
+                setActiveTab(tab as TabType);
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onShowToast={showToast}
+              onRefreshData={() => loadUserData()}
+            />
+          )}
+
+          {activeTab === 'bank_card' && (
+            <BankCardPage
+              userId={activeUserId}
+              onBack={() => {
+                setActiveTab('me');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onNavigateTab={(tab) => {
+                setActiveTab(tab as TabType);
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onOpenAddCard={() => {
+                setActiveTab('add_bank_card');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+            />
+          )}
+
+          {activeTab === 'add_bank_card' && (
+            <AddBankCardPage
+              userId={activeUserId}
+              onBack={() => {
+                setActiveTab('bank_card');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onSuccess={() => {
+                loadUserData();
+                setActiveTab('bank_card');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onShowToast={showToast}
+            />
+          )}
         </main>
 
         {/* Global Bottom Navigation (Visible on main tabs) */}
-        {activeTab !== 'transactions' && activeTab !== 'notifications' && (
+        {activeTab !== 'transactions' &&
+          activeTab !== 'notifications' &&
+          activeTab !== 'withdrawal' &&
+          activeTab !== 'recharge' &&
+          activeTab !== 'bank_card' &&
+          activeTab !== 'add_bank_card' && (
           <BottomNav
             activeTab={activeTab}
             onTabChange={(tab) => {

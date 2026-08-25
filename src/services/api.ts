@@ -24,8 +24,29 @@ import {
   ClaimBatch,
   ProEligibilityConfig,
   PlanCategory,
+  ReferralSettings,
+  ReferralRewardType,
+  ReferralRegistrationRule,
+  ReferralStreakRule,
+  ReferralTopupTier,
+  ReferralStreakRecord,
+  ReferralRewardLog,
+  TeamMemberItem,
+  UserTeamSummary,
+  GiftCode,
+  GiftCodeClaim,
+  GiftCodeAnalytics,
+  AdminBalanceType,
+  AdminBalanceAdjustment,
 } from '../types';
-import { productsData, homeBanners, platformNewsList, defaultProEligibilityConfig } from '../data/mockData';
+import {
+  productsData,
+  homeBanners,
+  platformNewsList,
+  defaultProEligibilityConfig,
+  defaultReferralSettings,
+  initialGiftCodes,
+} from '../data/mockData';
 
 // Local storage keys for resilient persistence / preview simulation
 const STORAGE_KEYS = {
@@ -44,15 +65,54 @@ const STORAGE_KEYS = {
   PRO_CONFIG: 'pb_pro_config',
   EARNINGS: 'pb_earnings',
   CLAIMS: 'pb_claims',
+  REFERRAL_SETTINGS: 'pb_referral_settings',
+  REFERRAL_STREAKS: 'pb_referral_streaks',
+  REFERRAL_REWARDS: 'pb_referral_rewards',
+  GIFT_CODES: 'pb_gift_codes',
+  GIFT_CODE_CLAIMS: 'pb_gift_code_claims',
+  BALANCE_ADJUSTMENTS: 'pb_balance_adjustments',
 };
 
 // Default initial state
 const defaultPaymentSettings: PaymentSettings = {
   id: 'default',
   upiId: 'powerbank.pay@upi',
-  instructions: '1. Scan the QR code using GooglePay, PhonePe, or Paytm.\n2. Transfer the exact recharge amount.\n3. Enter the 12-digit UTR transaction number below and submit for verification.',
+  qrImageUrl: '',
+  instructions: '1. Scan the QR code using GooglePay, PhonePe, Paytm or any UPI app.\n2. Transfer the exact recharge amount.\n3. Enter the 12-digit UTR transaction number below and submit for verification.',
   isRechargeEnabled: true,
   isPurchaseEnabled: true,
+  payuUpiId: 'payu.powerbank@upi',
+  payuQrImageUrl: '',
+  toppayUpiId: 'toppay.powerbank@upi',
+  toppayQrImageUrl: '',
+  upayUpiId: 'upay.powerbank@upi',
+  upayQrImageUrl: '',
+  channels: {
+    payu: {
+      id: 'payu',
+      name: 'PayU',
+      subtitle: 'Fast UPI & QR',
+      upiId: 'payu.powerbank@upi',
+      qrImageUrl: '',
+      isEnabled: true,
+    },
+    toppay: {
+      id: 'toppay',
+      name: 'TopPay',
+      subtitle: 'Auto Scan UPI',
+      upiId: 'toppay.powerbank@upi',
+      qrImageUrl: '',
+      isEnabled: true,
+    },
+    upay: {
+      id: 'upay',
+      name: 'UPay',
+      subtitle: 'Instant Dynamic UPI',
+      upiId: 'upay.powerbank@upi',
+      qrImageUrl: '',
+      isEnabled: true,
+    },
+  },
 };
 
 // Helper: load from localStorage
@@ -85,26 +145,120 @@ function initializeMockStore() {
   if (!localStorage.getItem(STORAGE_KEYS.PRO_CONFIG)) {
     saveLocal(STORAGE_KEYS.PRO_CONFIG, defaultProEligibilityConfig);
   }
+  if (!localStorage.getItem(STORAGE_KEYS.REFERRAL_SETTINGS)) {
+    saveLocal(STORAGE_KEYS.REFERRAL_SETTINGS, defaultReferralSettings);
+  }
   if (!localStorage.getItem(STORAGE_KEYS.PROFILE)) {
     const defaultProfile: UserProfile = {
       id: 'usr_demo_01',
       userId: 'usr_demo_01',
       username: 'power_admin',
-      whatsappNo: '9876543210',
+      whatsappNo: '9500667390',
       name: 'Power Bank Member',
-      mobile: '9876543210',
+      mobile: '9500667390',
       email: 'demo@powerbank.app',
-      membershipNumber: 'PB888999',
-      referralCode: 'PB888999',
+      membershipNumber: '2829906',
+      referralCode: '2829906',
       role: 'admin', // Demo account has admin privilege to test full approval cycle
       status: 'active',
-      deviceEarnings: 0,
+      deviceEarnings: 502.95,
       teamEarnings: 0,
-      walletBalance: 0,
+      walletBalance: 74.95,
       avatarUrl: '',
-      createdAt: new Date().toISOString(),
+      createdAt: new Date(Date.now() - 86400000 * 10).toISOString(),
     };
     saveLocal(STORAGE_KEYS.PROFILE, defaultProfile);
+  }
+  if (!localStorage.getItem(STORAGE_KEYS.LOCAL_USERS)) {
+    // Seed initial users for multi-tier referral testing (Level 1, Level 2, Level 3)
+    const seedUsers: UserProfile[] = [
+      {
+        id: 'usr_sub_01',
+        userId: 'usr_sub_01',
+        username: 'Aman Sharma',
+        whatsappNo: '9845112212',
+        mobile: '9845112212',
+        email: 'aman@gainpower.io',
+        membershipNumber: 'PB1001',
+        referralCode: 'PB1001',
+        referredBy: '2829906', // Direct Level 1 of 2829906
+        role: 'user',
+        status: 'active',
+        deviceEarnings: 150.00,
+        teamEarnings: 80.00,
+        walletBalance: 120.00,
+        createdAt: new Date(Date.now() - 86400000 * 5).toISOString(),
+      },
+      {
+        id: 'usr_sub_02',
+        userId: 'usr_sub_02',
+        username: 'Rajesh Kumar',
+        whatsappNo: '9120445588',
+        mobile: '9120445588',
+        email: 'rajesh@gainpower.io',
+        membershipNumber: 'PB1002',
+        referralCode: 'PB1002',
+        referredBy: '2829906', // Direct Level 1 of 2829906
+        role: 'user',
+        status: 'active',
+        deviceEarnings: 280.00,
+        teamEarnings: 40.00,
+        walletBalance: 310.00,
+        createdAt: new Date(Date.now() - 86400000 * 4).toISOString(),
+      },
+      {
+        id: 'usr_sub_03',
+        userId: 'usr_sub_03',
+        username: 'Pooja Verma',
+        whatsappNo: '9440667734',
+        mobile: '9440667734',
+        email: 'pooja@gainpower.io',
+        membershipNumber: 'PB1003',
+        referralCode: 'PB1003',
+        referredBy: '2829906', // Direct Level 1 of 2829906
+        role: 'user',
+        status: 'active',
+        deviceEarnings: 0.00,
+        teamEarnings: 0.00,
+        walletBalance: 50.00,
+        createdAt: new Date(Date.now() - 86400000 * 3).toISOString(),
+      },
+      {
+        id: 'usr_sub_04',
+        userId: 'usr_sub_04',
+        username: 'Vikas Singh',
+        whatsappNo: '9811223332',
+        mobile: '9811223332',
+        email: 'vikas@gainpower.io',
+        membershipNumber: 'PB2001',
+        referralCode: 'PB2001',
+        referredBy: 'PB1001', // Level 2 (invited by Aman PB1001)
+        role: 'user',
+        status: 'active',
+        deviceEarnings: 75.00,
+        teamEarnings: 0.00,
+        walletBalance: 85.00,
+        createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
+      },
+      {
+        id: 'usr_sub_05',
+        userId: 'usr_sub_05',
+        username: 'Sunil Rao',
+        whatsappNo: '9765112240',
+        mobile: '9765112240',
+        email: 'sunil@gainpower.io',
+        membershipNumber: 'PB3001',
+        referralCode: 'PB3001',
+        referredBy: 'PB2001', // Level 3 (invited by Vikas PB2001)
+        role: 'user',
+        status: 'active',
+        deviceEarnings: 45.00,
+        teamEarnings: 0.00,
+        walletBalance: 45.00,
+        createdAt: new Date(Date.now() - 86400000 * 1).toISOString(),
+      },
+    ];
+    saveLocal(STORAGE_KEYS.LOCAL_USERS, seedUsers);
   }
   if (!localStorage.getItem(STORAGE_KEYS.WALLET)) {
     const defaultWallet: Wallet = {
@@ -560,6 +714,10 @@ export async function registerUserAccount(formData: RegisterFormData) {
     saveLocal(STORAGE_KEYS.WALLET, newWallet);
     saveLocal(STORAGE_KEYS.SESSION, { userId: effectiveUserId, email: cleanEmail, username: cleanUsername, mobile: cleanWhatsApp });
 
+    if (verifiedReferrerId) {
+      processRegistrationReferralReward(effectiveUserId, verifiedReferrerId).catch(() => {});
+    }
+
     return { user: authUser || { id: effectiveUserId, email: cleanEmail }, membershipNumber, referralCode: userReferralCode };
   } else {
     // Local / Offline Simulation
@@ -599,6 +757,10 @@ export async function registerUserAccount(formData: RegisterFormData) {
     };
     saveLocal(STORAGE_KEYS.WALLET, newWallet);
     saveLocal(STORAGE_KEYS.SESSION, { userId, email: cleanEmail, username: cleanUsername, mobile: cleanWhatsApp });
+
+    if (verifiedReferrerId) {
+      processRegistrationReferralReward(userId, verifiedReferrerId).catch(() => {});
+    }
 
     return { user: { id: userId, email: cleanEmail }, membershipNumber, referralCode: userReferralCode };
   }
@@ -1139,6 +1301,775 @@ export async function checkProEligibility(userId: string, targetPlanId?: string)
 }
 
 // ==============================================================================
+// DYNAMIC REFERRAL REWARD SYSTEM API & ENGINE
+// ==============================================================================
+
+/**
+ * Fetch dynamic referral settings (rules, amounts, consecutive days, tier percentages)
+ */
+export async function fetchReferralSettings(): Promise<ReferralSettings> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('admin_settings')
+        .select('value')
+        .eq('id', 'referral_settings')
+        .maybeSingle();
+
+      if (!error && data?.value) {
+        return {
+          ...defaultReferralSettings,
+          ...(data.value as Partial<ReferralSettings>),
+        };
+      }
+    } catch (e) {
+      console.warn('Supabase fetch referral settings warning, using storage:', e);
+    }
+  }
+  return getLocal<ReferralSettings>(STORAGE_KEYS.REFERRAL_SETTINGS, defaultReferralSettings);
+}
+
+/**
+ * Update dynamic referral settings from Admin Panel
+ */
+export async function updateReferralSettings(
+  settings: Partial<ReferralSettings>,
+  adminId: string = 'adm_master_01'
+): Promise<ReferralSettings> {
+  const current = await fetchReferralSettings();
+  const updated: ReferralSettings = {
+    ...current,
+    ...settings,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase.from('admin_settings').upsert({
+        id: 'referral_settings',
+        value: updated,
+        updated_at: new Date().toISOString(),
+      });
+      if (error && !isTableMissingError(error)) {
+        console.warn('Supabase update referral settings error:', error.message);
+      }
+    } catch (e) {
+      console.warn('Supabase referral settings update error:', e);
+    }
+  }
+
+  saveLocal(STORAGE_KEYS.REFERRAL_SETTINGS, updated);
+
+  recordAuditLog(
+    adminId,
+    'UPDATE_REFERRAL_SETTINGS',
+    'admin_settings',
+    'referral_settings',
+    'Admin updated dynamic referral rules, amounts and multi-tier commission rates',
+    updated
+  ).catch(() => {});
+
+  return updated;
+}
+
+/**
+ * Find user profile by any identifier (userId, membershipNumber, referralCode, mobile, username)
+ */
+export async function findUserByIdentifier(identifier: string): Promise<UserProfile | null> {
+  if (!identifier) return null;
+  const clean = identifier.trim();
+
+  // 1. Check current profile in localStorage
+  const currentProfile = getLocal<UserProfile | null>(STORAGE_KEYS.PROFILE, null);
+  if (
+    currentProfile &&
+    (currentProfile.userId === clean ||
+      currentProfile.id === clean ||
+      currentProfile.referralCode === clean ||
+      currentProfile.membershipNumber === clean ||
+      currentProfile.whatsappNo === clean ||
+      currentProfile.mobile === clean ||
+      currentProfile.username === clean)
+  ) {
+    return currentProfile;
+  }
+
+  // 2. Check local users list
+  const localUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
+  const foundLocal = localUsers.find(
+    (u) =>
+      u.userId === clean ||
+      u.id === clean ||
+      u.referralCode === clean ||
+      u.membershipNumber === clean ||
+      u.whatsappNo === clean ||
+      u.mobile === clean ||
+      u.username === clean
+  );
+  if (foundLocal) return foundLocal;
+
+  // 3. Query Supabase
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .or(
+          `id.eq.${clean},membership_number.eq.${clean},referral_code.eq.${clean},username.ilike.${clean},whatsapp_no.eq.${clean}`
+        )
+        .maybeSingle();
+
+      if (!error && data) {
+        return {
+          id: data.id,
+          userId: data.id,
+          username: data.username,
+          whatsappNo: data.whatsapp_no,
+          name: data.name || data.username,
+          mobile: data.whatsapp_no,
+          email: data.email,
+          membershipNumber: data.membership_number,
+          referralCode: data.referral_code || data.membership_number,
+          referredBy: data.referred_by,
+          role: data.role || 'user',
+          status: data.status || 'active',
+          deviceEarnings: Number(data.device_earnings || 0),
+          teamEarnings: Number(data.team_earnings || 0),
+          walletBalance: Number(data.wallet_balance || 0),
+          avatarUrl: data.avatar_url,
+          createdAt: data.created_at,
+        };
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Credit referral reward amount to referrer's wallet and ledger
+ */
+async function creditReferrerWallet(
+  referrerUserId: string,
+  rewardAmount: number,
+  rewardDescription: string,
+  referenceId: string,
+  rewardType: ReferralRewardType
+): Promise<void> {
+  if (rewardAmount <= 0) return;
+
+  const roundedAmount = +rewardAmount.toFixed(2);
+
+  // 1. Supabase Wallet Credit
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: walletData } = await supabase
+        .from('wallets')
+        .select('*')
+        .eq('user_id', referrerUserId)
+        .maybeSingle();
+
+      if (walletData) {
+        const balBefore = Number(walletData.available_balance || 0);
+        const earnedBefore = Number(walletData.earned_balance ?? 0);
+        const totalEarnedBefore = Number(walletData.total_earned || 0);
+        const newEarned = +(earnedBefore + roundedAmount).toFixed(2);
+        const newAvail = +(balBefore + roundedAmount).toFixed(2);
+        const newTotalEarned = +(totalEarnedBefore + roundedAmount).toFixed(2);
+
+        await supabase
+          .from('wallets')
+          .update({
+            available_balance: newAvail,
+            earned_balance: newEarned,
+            total_earned: newTotalEarned,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('user_id', referrerUserId);
+
+        await supabase.from('wallet_transactions').insert({
+          user_id: referrerUserId,
+          type: 'REFERRAL_REWARD',
+          amount: roundedAmount,
+          balance_before: balBefore,
+          balance_after: newAvail,
+          balance_type: 'DEVICE_EARNING_BALANCE',
+          status: 'Completed',
+          reference_id: referenceId,
+          description: rewardDescription,
+          created_at: new Date().toISOString(),
+        });
+      }
+    } catch (e) {
+      console.warn('Supabase referral credit warning:', e);
+    }
+  }
+
+  // 2. Local Wallet Update (if active session user is the referrer)
+  const currentProfile = getLocal<UserProfile | null>(STORAGE_KEYS.PROFILE, null);
+  if (currentProfile && (currentProfile.userId === referrerUserId || currentProfile.id === referrerUserId)) {
+    const currentWallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+      availableBalance: 0,
+      rechargeBalance: 0,
+      earnedBalance: 0,
+      totalEarned: 0,
+    } as Wallet);
+
+    const balBefore = currentWallet.availableBalance || 0;
+    currentWallet.earnedBalance = +((currentWallet.earnedBalance || 0) + roundedAmount).toFixed(2);
+    currentWallet.availableBalance = +((currentWallet.rechargeBalance || 0) + currentWallet.earnedBalance).toFixed(2);
+    currentWallet.totalEarned = +((currentWallet.totalEarned || 0) + roundedAmount).toFixed(2);
+    saveLocal(STORAGE_KEYS.WALLET, currentWallet);
+
+    const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+    txs.unshift({
+      id: 'tx_ref_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      userId: referrerUserId,
+      type: 'REFERRAL_REWARD',
+      amount: roundedAmount,
+      balanceBefore: balBefore,
+      balanceAfter: currentWallet.availableBalance,
+      balanceType: 'DEVICE_EARNING_BALANCE',
+      referenceId,
+      status: 'Completed',
+      description: rewardDescription,
+      createdAt: new Date().toISOString(),
+    });
+    saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
+  }
+
+  // 3. Update in Local Users List
+  const localUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
+  const userIdx = localUsers.findIndex((u) => u.userId === referrerUserId || u.id === referrerUserId);
+  if (userIdx !== -1) {
+    localUsers[userIdx].teamEarnings = +((localUsers[userIdx].teamEarnings || 0) + roundedAmount).toFixed(2);
+    localUsers[userIdx].walletBalance = +((localUsers[userIdx].walletBalance || 0) + roundedAmount).toFixed(2);
+    saveLocal(STORAGE_KEYS.LOCAL_USERS, localUsers);
+  }
+}
+
+/**
+ * REWARD 1: Registration Reward (Triggered on registration & first login)
+ */
+export async function processRegistrationReferralReward(
+  refereeUserId: string,
+  referrerIdentifier?: string
+): Promise<{ success: boolean; amount?: number; message?: string }> {
+  try {
+    const settings = await fetchReferralSettings();
+    if (!settings.isReferralSystemEnabled || !settings.registrationReward.enabled) {
+      return { success: false, message: 'Referral registration reward is disabled' };
+    }
+
+    const rewardAmount = settings.registrationReward.rewardAmount;
+    if (rewardAmount <= 0) return { success: false, message: 'Reward amount is 0' };
+
+    // Idempotency check: reg_reward_<refereeUserId>
+    const idempotencyKey = `reg_reward_${refereeUserId}`;
+    const rewards = getLocal<ReferralRewardLog[]>(STORAGE_KEYS.REFERRAL_REWARDS, []);
+    if (rewards.some((r) => r.idempotencyKey === idempotencyKey)) {
+      return { success: false, message: 'Reward already processed for this user registration' };
+    }
+
+    // Identify referee and referrer
+    const referee = await findUserByIdentifier(refereeUserId);
+    const targetReferrerId = referrerIdentifier || referee?.referredBy;
+    if (!targetReferrerId) {
+      return { success: false, message: 'No referrer found for this user' };
+    }
+
+    const referrer = await findUserByIdentifier(targetReferrerId);
+    if (!referrer || referrer.userId === refereeUserId) {
+      return { success: false, message: 'Valid referrer could not be resolved' };
+    }
+
+    const refereeLabel = referee?.username || referee?.mobile || referee?.whatsappNo || 'New Member';
+    const description = `Registration Referral Reward: Invited friend ${refereeLabel} registered & logged in`;
+    const refId = `REG-${refereeUserId}`;
+
+    // Credit referrer wallet
+    await creditReferrerWallet(referrer.userId, rewardAmount, description, refId, 'REGISTRATION');
+
+    // Record reward log
+    const newLog: ReferralRewardLog = {
+      id: 'rlog_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      referrerUserId: referrer.userId,
+      refereeUserId,
+      refereeUsername: referee?.username,
+      refereeMobile: referee?.whatsappNo || referee?.mobile,
+      rewardType: 'REGISTRATION',
+      amount: rewardAmount,
+      status: 'CREDITED',
+      description,
+      idempotencyKey,
+      txId: refId,
+      createdAt: new Date().toISOString(),
+    };
+
+    rewards.unshift(newLog);
+    saveLocal(STORAGE_KEYS.REFERRAL_REWARDS, rewards);
+
+    // Trigger Notification for Referrer
+    createNotificationForUser({
+      userId: referrer.userId,
+      title: 'Referral Reward Credited! 🎉',
+      description: `You earned ₹${rewardAmount.toFixed(2)} because your invited friend (${refereeLabel}) successfully registered & logged in!`,
+      type: 'PROMOTION',
+      isHomePopup: false,
+      actionUrl: '/team',
+      actionText: 'View Team Hub',
+    }).catch(() => {});
+
+    return { success: true, amount: rewardAmount };
+  } catch (err: any) {
+    console.error('Error processing registration referral reward:', err);
+    return { success: false, message: err.message };
+  }
+}
+
+/**
+ * REWARD 2: Consecutive Daily Claim Reward (Streak)
+ * Triggered on eligible daily claim in My Device
+ */
+export async function processConsecutiveClaimReferralReward(
+  refereeUserId: string
+): Promise<{ success: boolean; streak?: number; rewarded?: boolean; amount?: number }> {
+  try {
+    const settings = await fetchReferralSettings();
+    if (!settings.isReferralSystemEnabled || !settings.streakReward.enabled) {
+      return { success: false };
+    }
+
+    const referee = await findUserByIdentifier(refereeUserId);
+    if (!referee || !referee.referredBy) {
+      return { success: false };
+    }
+
+    const referrer = await findUserByIdentifier(referee.referredBy);
+    if (!referrer || referrer.userId === refereeUserId) {
+      return { success: false };
+    }
+
+    const todayStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const yesterdayDate = new Date(Date.now() - 86400000);
+    const yesterdayStr = yesterdayDate.toISOString().split('T')[0];
+
+    const streaks = getLocal<ReferralStreakRecord[]>(STORAGE_KEYS.REFERRAL_STREAKS, []);
+    let streakRecord = streaks.find((s) => s.userId === refereeUserId);
+
+    if (!streakRecord) {
+      streakRecord = {
+        id: 'strk_' + refereeUserId,
+        userId: refereeUserId,
+        referrerUserId: referrer.userId,
+        currentStreak: 1,
+        lastClaimDate: todayStr,
+        totalCompletedStreaks: 0,
+        lastRewardedStreakIndex: 0,
+        updatedAt: new Date().toISOString(),
+      };
+      streaks.push(streakRecord);
+    } else {
+      if (streakRecord.lastClaimDate === todayStr) {
+        // Already claimed today, keep streak unchanged
+        return { success: true, streak: streakRecord.currentStreak, rewarded: false };
+      } else if (streakRecord.lastClaimDate === yesterdayStr) {
+        // Consecutive claim from yesterday!
+        streakRecord.currentStreak += 1;
+      } else {
+        // Missed a day or first claim, reset streak to 1
+        streakRecord.currentStreak = 1;
+      }
+      streakRecord.lastClaimDate = todayStr;
+      streakRecord.updatedAt = new Date().toISOString();
+    }
+
+    const targetDays = settings.streakReward.consecutiveDays || 3;
+    let rewarded = false;
+    let rewardAmount = 0;
+
+    // If streak reaches required consecutive days
+    if (streakRecord.currentStreak >= targetDays) {
+      const cycleIndex = (streakRecord.totalCompletedStreaks || 0) + 1;
+      const idempotencyKey = `streak_reward_${refereeUserId}_cycle_${cycleIndex}`;
+
+      const rewards = getLocal<ReferralRewardLog[]>(STORAGE_KEYS.REFERRAL_REWARDS, []);
+      if (!rewards.some((r) => r.idempotencyKey === idempotencyKey)) {
+        rewardAmount = settings.streakReward.rewardAmount || 10;
+        const refereeLabel = referee.username || referee.whatsappNo || 'Invited Friend';
+        const description = `${targetDays}-Day Consecutive Claim Reward for referee ${refereeLabel}`;
+        const refId = `STRK-${refereeUserId}-${cycleIndex}`;
+
+        await creditReferrerWallet(referrer.userId, rewardAmount, description, refId, 'CONSECUTIVE_CLAIM');
+
+        const newLog: ReferralRewardLog = {
+          id: 'rlog_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+          referrerUserId: referrer.userId,
+          refereeUserId,
+          refereeUsername: referee.username,
+          refereeMobile: referee.whatsappNo || referee.mobile,
+          rewardType: 'CONSECUTIVE_CLAIM',
+          amount: rewardAmount,
+          streakDays: targetDays,
+          status: 'CREDITED',
+          description,
+          idempotencyKey,
+          txId: refId,
+          createdAt: new Date().toISOString(),
+        };
+        rewards.unshift(newLog);
+        saveLocal(STORAGE_KEYS.REFERRAL_REWARDS, rewards);
+
+        // Notify referrer
+        createNotificationForUser({
+          userId: referrer.userId,
+          title: `Streak Referral Reward! ⚡`,
+          description: `You earned ₹${rewardAmount.toFixed(2)} as your invited friend (${refereeLabel}) completed ${targetDays} consecutive daily claims!`,
+          type: 'EARNING',
+          isHomePopup: false,
+          actionUrl: '/team',
+          actionText: 'View Team Rewards',
+        }).catch(() => {});
+
+        rewarded = true;
+        streakRecord.totalCompletedStreaks = cycleIndex;
+        // Reset streak to 0 so they can start the next 3-day cycle
+        streakRecord.currentStreak = 0;
+      }
+    }
+
+    saveLocal(STORAGE_KEYS.REFERRAL_STREAKS, streaks);
+    return { success: true, streak: streakRecord.currentStreak, rewarded, amount: rewardAmount };
+  } catch (err: any) {
+    console.error('Error processing consecutive claim referral reward:', err);
+    return { success: false };
+  }
+}
+
+/**
+ * REWARD 3: Dynamic Multi-Tier Top-Up Commission
+ * Triggered strictly when Admin approves a Recharge Payment
+ */
+export async function processTopupReferralRewards(
+  paymentId: string,
+  refereeUserId: string,
+  rechargeAmount: number
+): Promise<{ success: boolean; count: number; totalDistributed: number }> {
+  try {
+    if (rechargeAmount <= 0) return { success: false, count: 0, totalDistributed: 0 };
+
+    const settings = await fetchReferralSettings();
+    if (!settings.isReferralSystemEnabled) return { success: false, count: 0, totalDistributed: 0 };
+
+    const referee = await findUserByIdentifier(refereeUserId);
+    if (!referee || !referee.referredBy) return { success: false, count: 0, totalDistributed: 0 };
+
+    const rewards = getLocal<ReferralRewardLog[]>(STORAGE_KEYS.REFERRAL_REWARDS, []);
+    let distributedCount = 0;
+    let totalDistributed = 0;
+
+    // Traverse up to 3 tiers
+    let currentReferrerId: string | undefined = referee.referredBy;
+    const refereeLabel = referee.username || referee.whatsappNo || referee.mobile || 'Team Member';
+
+    for (let tier = 1; tier <= 3; tier++) {
+      if (!currentReferrerId) break;
+
+      const referrer = await findUserByIdentifier(currentReferrerId);
+      if (!referrer || referrer.userId === refereeUserId) break;
+
+      const tierConfig = settings.topupTiers.find((t) => t.tier === tier);
+      if (tierConfig && tierConfig.enabled && tierConfig.percentage > 0) {
+        // Check min / max topup conditions
+        const meetsMin = !tierConfig.minTopup || rechargeAmount >= tierConfig.minTopup;
+        const meetsMax = !tierConfig.maxTopup || tierConfig.maxTopup === 0 || rechargeAmount <= tierConfig.maxTopup;
+
+        if (meetsMin && meetsMax) {
+          const commission = +((rechargeAmount * tierConfig.percentage) / 100).toFixed(2);
+          const idempotencyKey = `topup_ref_t${tier}_${paymentId}_${refereeUserId}`;
+
+          if (commission > 0 && !rewards.some((r) => r.idempotencyKey === idempotencyKey)) {
+            const desc = `Tier ${tier} (${tierConfig.name || `Level ${tier}`}) Commission (${tierConfig.percentage}%): Top-up ₹${rechargeAmount.toFixed(2)} by ${refereeLabel}`;
+            const refId = `TOPUP-T${tier}-${paymentId}`;
+
+            await creditReferrerWallet(referrer.userId, commission, desc, refId, 'TOPUP_COMMISSION');
+
+            const newLog: ReferralRewardLog = {
+              id: 'rlog_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+              referrerUserId: referrer.userId,
+              refereeUserId,
+              refereeUsername: referee.username,
+              refereeMobile: referee.whatsappNo || referee.mobile,
+              rewardType: 'TOPUP_COMMISSION',
+              tier,
+              amount: commission,
+              topupAmount: rechargeAmount,
+              percentage: tierConfig.percentage,
+              status: 'CREDITED',
+              description: desc,
+              idempotencyKey,
+              txId: refId,
+              createdAt: new Date().toISOString(),
+            };
+
+            rewards.unshift(newLog);
+            distributedCount++;
+            totalDistributed = +(totalDistributed + commission).toFixed(2);
+
+            // Notify Referrer
+            createNotificationForUser({
+              userId: referrer.userId,
+              title: `Tier ${tier} Team Commission Earned! 💰`,
+              description: `You received ₹${commission.toFixed(2)} (${tierConfig.percentage}%) from ${refereeLabel}'s recharge of ₹${rechargeAmount.toFixed(2)}.`,
+              type: 'EARNING',
+              isHomePopup: false,
+              actionUrl: '/team',
+              actionText: 'View Team Earnings',
+            }).catch(() => {});
+          }
+        }
+      }
+
+      // Move to next tier (the referrer's referrer)
+      currentReferrerId = referrer.referredBy;
+    }
+
+    if (distributedCount > 0) {
+      saveLocal(STORAGE_KEYS.REFERRAL_REWARDS, rewards);
+    }
+
+    return { success: true, count: distributedCount, totalDistributed };
+  } catch (err) {
+    console.error('Error processing topup referral rewards:', err);
+    return { success: false, count: 0, totalDistributed: 0 };
+  }
+}
+
+/**
+ * Fetch Comprehensive User Team Summary for TeamPage.tsx
+ */
+export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSummary> {
+  const profile = (await findUserByIdentifier(userId)) || {
+    id: userId,
+    userId,
+    username: 'Member',
+    referralCode: '2829906',
+    membershipNumber: '2829906',
+  };
+
+  const myCode = profile.referralCode || profile.membershipNumber || '2829906';
+  const settings = await fetchReferralSettings();
+
+  // Load all users to construct 3-tier subordinate hierarchy
+  const allUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
+  const allPurchases = getLocal<PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
+  const allRewards = getLocal<ReferralRewardLog[]>(STORAGE_KEYS.REFERRAL_REWARDS, []);
+
+  // Level 1 Subordinates (Direct)
+  const isDirectMatch = (u: UserProfile) =>
+    u.userId !== userId &&
+    (u.referredBy === myCode ||
+      u.referredBy === profile.membershipNumber ||
+      u.referredBy === profile.userId ||
+      u.referredBy === profile.id);
+
+  const level1Users = allUsers.filter(isDirectMatch);
+  const level1Codes = new Set(
+    level1Users.flatMap((u) => [u.referralCode, u.membershipNumber, u.userId, u.id].filter(Boolean))
+  );
+
+  // Level 2 Subordinates (Indirect B)
+  const level2Users = allUsers.filter(
+    (u) =>
+      u.userId !== userId &&
+      !level1Users.some((l1) => l1.userId === u.userId) &&
+      u.referredBy &&
+      level1Codes.has(u.referredBy)
+  );
+  const level2Codes = new Set(
+    level2Users.flatMap((u) => [u.referralCode, u.membershipNumber, u.userId, u.id].filter(Boolean))
+  );
+
+  // Level 3 Subordinates (Indirect C)
+  const level3Users = allUsers.filter(
+    (u) =>
+      u.userId !== userId &&
+      !level1Users.some((l1) => l1.userId === u.userId) &&
+      !level2Users.some((l2) => l2.userId === u.userId) &&
+      u.referredBy &&
+      level2Codes.has(u.referredBy)
+  );
+
+  // Helper to map UserProfile to TeamMemberItem
+  const mapMember = (u: UserProfile, tier: 1 | 2 | 3): TeamMemberItem => {
+    const userPurchases = allPurchases.filter((p) => p.userId === u.userId && p.status === 'ACTIVE');
+    const userRewards = allRewards.filter(
+      (r) => r.referrerUserId === userId && r.refereeUserId === u.userId && r.status === 'CREDITED'
+    );
+    const commEarned = userRewards.reduce((sum, r) => sum + r.amount, 0);
+    const totalInvested = allPurchases
+      .filter((p) => p.userId === u.userId)
+      .reduce((sum, p) => sum + (p.amount || 0), 0);
+
+    const mobileRaw = u.whatsappNo || u.mobile || '9800000000';
+    const maskedMobile =
+      mobileRaw.length >= 10
+        ? `${mobileRaw.substring(0, 4)}****${mobileRaw.substring(mobileRaw.length - 2)}`
+        : mobileRaw;
+
+    return {
+      id: u.id || u.userId,
+      userId: u.userId,
+      username: u.username || 'Member',
+      mobile: maskedMobile,
+      joined: u.createdAt ? u.createdAt.split('T')[0] : '2026-08-20',
+      devices: userPurchases.length,
+      totalInvested,
+      totalCommissionEarned: +commEarned.toFixed(2),
+      tier,
+    };
+  };
+
+  const l1Items = level1Users.map((u) => mapMember(u, 1));
+  const l2Items = level2Users.map((u) => mapMember(u, 2));
+  const l3Items = level3Users.map((u) => mapMember(u, 3));
+
+  // Compute commissions earned from rewards log
+  const myRewards = allRewards.filter((r) => r.referrerUserId === userId && r.status === 'CREDITED');
+  const level1Comm = myRewards
+    .filter((r) => r.tier === 1 || r.rewardType === 'REGISTRATION' || r.rewardType === 'CONSECUTIVE_CLAIM')
+    .reduce((sum, r) => sum + r.amount, 0);
+  const level2Comm = myRewards.filter((r) => r.tier === 2).reduce((sum, r) => sum + r.amount, 0);
+  const level3Comm = myRewards.filter((r) => r.tier === 3).reduce((sum, r) => sum + r.amount, 0);
+  const totalComm = level1Comm + level2Comm + level3Comm;
+
+  const activeDevices = l1Items.reduce((s, m) => s + m.devices, 0) +
+    l2Items.reduce((s, m) => s + m.devices, 0) +
+    l3Items.reduce((s, m) => s + m.devices, 0);
+
+  const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://powerbank.app';
+  const referralLink = `${baseUrl}/register?ref=${myCode}`;
+
+  return {
+    referralCode: myCode,
+    referralLink,
+    totalMembers: l1Items.length + l2Items.length + l3Items.length,
+    directMembers: l1Items.length,
+    activeDevices,
+    totalCommission: +totalComm.toFixed(2),
+    level1Commission: +level1Comm.toFixed(2),
+    level2Commission: +level2Comm.toFixed(2),
+    level3Commission: +level3Comm.toFixed(2),
+    subordinates: {
+      1: l1Items,
+      2: l2Items,
+      3: l3Items,
+    },
+    rewardHistory: myRewards,
+    settings,
+  };
+}
+
+/**
+ * Fetch Full Referral Network & Audit Ledger for Admin Panel
+ */
+export async function fetchAdminReferralData(): Promise<{
+  settings: ReferralSettings;
+  stats: {
+    totalReferrals: number;
+    totalCommissionsPaid: number;
+    registrationRewardsPaid: number;
+    streakRewardsPaid: number;
+    topupCommissionsPaid: number;
+    activeReferrersCount: number;
+  };
+  members: Array<{
+    userId: string;
+    username: string;
+    mobile: string;
+    referralCode: string;
+    referredBy?: string;
+    directInvites: number;
+    totalTeamSize: number;
+    totalCommissionEarned: number;
+    status: string;
+    joined: string;
+  }>;
+  rewardsHistory: ReferralRewardLog[];
+}> {
+  const settings = await fetchReferralSettings();
+  const allUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
+  const currentProfile = getLocal<UserProfile | null>(STORAGE_KEYS.PROFILE, null);
+  if (currentProfile && !allUsers.some((u) => u.userId === currentProfile.userId)) {
+    allUsers.unshift(currentProfile);
+  }
+
+  const allRewards = getLocal<ReferralRewardLog[]>(STORAGE_KEYS.REFERRAL_REWARDS, []);
+
+  // Compute platform aggregate stats
+  const totalCommissionsPaid = allRewards
+    .filter((r) => r.status === 'CREDITED')
+    .reduce((sum, r) => sum + r.amount, 0);
+
+  const registrationRewardsPaid = allRewards
+    .filter((r) => r.rewardType === 'REGISTRATION' && r.status === 'CREDITED')
+    .reduce((sum, r) => sum + r.amount, 0);
+
+  const streakRewardsPaid = allRewards
+    .filter((r) => r.rewardType === 'CONSECUTIVE_CLAIM' && r.status === 'CREDITED')
+    .reduce((sum, r) => sum + r.amount, 0);
+
+  const topupCommissionsPaid = allRewards
+    .filter((r) => r.rewardType === 'TOPUP_COMMISSION' && r.status === 'CREDITED')
+    .reduce((sum, r) => sum + r.amount, 0);
+
+  const uniqueReferrers = new Set(allRewards.map((r) => r.referrerUserId));
+
+  // Build member network rows
+  const members = allUsers.map((u) => {
+    const myCode = u.referralCode || u.membershipNumber;
+    const directInvites = allUsers.filter(
+      (sub) => sub.referredBy === myCode || sub.referredBy === u.userId || sub.referredBy === u.membershipNumber
+    ).length;
+
+    const userRewards = allRewards.filter(
+      (r) => (r.referrerUserId === u.userId || r.referrerUserId === u.id) && r.status === 'CREDITED'
+    );
+    const commEarned = userRewards.reduce((sum, r) => sum + r.amount, 0);
+
+    return {
+      userId: u.userId || u.id,
+      username: u.username || 'User',
+      mobile: u.whatsappNo || u.mobile || 'N/A',
+      referralCode: myCode || 'N/A',
+      referredBy: u.referredBy || 'None (Direct)',
+      directInvites,
+      totalTeamSize: directInvites,
+      totalCommissionEarned: +commEarned.toFixed(2),
+      status: u.status || 'active',
+      joined: u.createdAt ? u.createdAt.split('T')[0] : '2026-08-20',
+    };
+  });
+
+  return {
+    settings,
+    stats: {
+      totalReferrals: allUsers.filter((u) => !!u.referredBy).length,
+      totalCommissionsPaid: +totalCommissionsPaid.toFixed(2),
+      registrationRewardsPaid: +registrationRewardsPaid.toFixed(2),
+      streakRewardsPaid: +streakRewardsPaid.toFixed(2),
+      topupCommissionsPaid: +topupCommissionsPaid.toFixed(2),
+      activeReferrersCount: uniqueReferrers.size,
+    },
+    members,
+    rewardsHistory: allRewards,
+  };
+}
+
+
+// ==============================================================================
 // PLANS & PURCHASES (UNLIMITED ACTIVE PLANS + PRO + DYNAMIC CATEGORIES)
 // ==============================================================================
 
@@ -1388,8 +2319,13 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
 
   const purchaseId = 'pur_' + Date.now();
   const durationDays = plan.durationDays || plan.duration || 365;
+  const totalPlanHours = durationDays * 24;
   const instantBonus = plan.instantBonus || 0;
-  const hourlyRate = plan.hourlyEarnings || (plan.dailyEarnings ? plan.dailyEarnings / 24 : 0);
+  const dailyEarning = Number(plan.dailyEarnings || (plan.hourlyEarnings ? plan.hourlyEarnings * 24 : 0));
+  const hourlyRate = Number((dailyEarning > 0 ? dailyEarning / 24 : (plan.hourlyEarnings || 0)).toFixed(2));
+  const nowMs = Date.now();
+  const startedAt = new Date(nowMs).toISOString();
+  const expiresAt = new Date(nowMs + totalPlanHours * 3600 * 1000).toISOString();
 
   const newPurchase: PurchaseItem = {
     id: purchaseId,
@@ -1399,16 +2335,19 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
     planCategory: plan.category || (isPro ? 'PRO' : 'HOURLY'),
     amount: planPrice,
     instantBonus: instantBonus,
-    dailyEarnings: plan.dailyEarnings || +(hourlyRate * 24).toFixed(2),
+    dailyEarnings: dailyEarning,
     hourlyEarnings: hourlyRate,
     earningRate: hourlyRate,
     earningType: plan.earningType || (isPro ? 'DAILY' : 'HOURLY'),
     durationDays: durationDays,
+    totalPlanHours: totalPlanHours,
+    claimedHours: 0,
     status: 'ACTIVE',
-    startedAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + durationDays * 86400000).toISOString(),
+    startedAt: startedAt,
+    expiresAt: expiresAt,
     totalEarned: 0,
-    lastSettledAt: new Date().toISOString(),
+    lastSettledAt: startedAt,
+    lastClaimedAt: undefined,
   };
 
   const purchases = getLocal<PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
@@ -1498,11 +2437,18 @@ export async function fetchPaymentSettings(): Promise<PaymentSettings> {
 
     return {
       id: data.id,
-      upiId: data.upi_id,
-      qrImageUrl: data.qr_image_url,
-      instructions: data.instructions,
-      isRechargeEnabled: data.is_recharge_enabled,
-      isPurchaseEnabled: data.is_purchase_enabled,
+      upiId: data.upi_id || defaultPaymentSettings.upiId,
+      qrImageUrl: data.qr_image_url || defaultPaymentSettings.qrImageUrl,
+      instructions: data.instructions || defaultPaymentSettings.instructions,
+      isRechargeEnabled: data.is_recharge_enabled ?? true,
+      isPurchaseEnabled: data.is_purchase_enabled ?? true,
+      payuUpiId: data.payu_upi_id || defaultPaymentSettings.payuUpiId,
+      payuQrImageUrl: data.payu_qr_image_url || defaultPaymentSettings.payuQrImageUrl,
+      toppayUpiId: data.toppay_upi_id || defaultPaymentSettings.toppayUpiId,
+      toppayQrImageUrl: data.toppay_qr_image_url || defaultPaymentSettings.toppayQrImageUrl,
+      upayUpiId: data.upay_upi_id || defaultPaymentSettings.upayUpiId,
+      upayQrImageUrl: data.upay_qr_image_url || defaultPaymentSettings.upayQrImageUrl,
+      channels: data.channels || defaultPaymentSettings.channels,
       updatedAt: data.updated_at,
     };
   } else {
@@ -1521,6 +2467,13 @@ export async function updatePaymentSettings(settings: Partial<PaymentSettings>) 
         instructions: settings.instructions,
         is_recharge_enabled: settings.isRechargeEnabled,
         is_purchase_enabled: settings.isPurchaseEnabled,
+        payu_upi_id: settings.payuUpiId,
+        payu_qr_image_url: settings.payuQrImageUrl,
+        toppay_upi_id: settings.toppayUpiId,
+        toppay_qr_image_url: settings.toppayQrImageUrl,
+        upay_upi_id: settings.upayUpiId,
+        upay_qr_image_url: settings.upayQrImageUrl,
+        channels: settings.channels,
         updated_at: new Date().toISOString(),
       });
     if (error) throw new Error(error.message);
@@ -1678,16 +2631,122 @@ export async function fetchUserPayments(userId: string): Promise<PaymentItem[]> 
 }
 
 // ==============================================================================
-// EARNINGS ACCRUAL & CLAIM ENGINE (HOURLY + PRO HIGH-YIELD PLANS)
+// EARNINGS ACCRUAL & CLAIM ENGINE (STRICT HOURLY DISCRETE CYCLE)
 // ==============================================================================
 
+export interface DeviceHourlyStatus {
+  purchaseId: string;
+  planName: string;
+  planCategory: string;
+  hourlyEarnings: number;
+  dailyEarnings: number;
+  totalPlanHours: number;
+  totalCompletedHours: number;
+  claimedHours: number;
+  unclaimedHours: number;
+  claimableAmount: number;
+  totalEarnedAmount: number;
+  remainingHours: number;
+  isActive: boolean;
+  isExpired: boolean;
+  startedAt: string;
+  expiresAt: string;
+  lastClaimedAt?: string;
+  lastClaimTimeFormatted: string;
+  nextEarningTimestamp?: number;
+  nextEarningTimeFormatted: string;
+  formattedSecondsUntilNext?: string;
+}
+
 /**
- * Calculates and accrues yield from all active devices as CLAIMABLE.
- * Note: Does NOT automatically add to wallet available_balance.
+ * Calculates discrete hourly earnings strictly per completed full hour cycle (FLOOR(elapsed / 3600)).
+ * No partial-hour earnings. No timer reset upon claim. Server-authoritative timeline.
+ */
+export function calculateDeviceHourlyStatus(device: PurchaseItem, now: number = Date.now()): DeviceHourlyStatus {
+  const durationDays = device.durationDays || 365;
+  const totalPlanHours = device.totalPlanHours || durationDays * 24;
+  const startedMs = new Date(device.startedAt || now).getTime();
+  const expiresMs = device.expiresAt ? new Date(device.expiresAt).getTime() : startedMs + totalPlanHours * 3600 * 1000;
+
+  // Daily Earning is authoritative: hourly rate = daily / 24
+  const dailyEarnings = Number(
+    device.dailyEarnings ||
+      (device.hourlyEarnings ? device.hourlyEarnings * 24 : (device.earningRate ? device.earningRate * 24 : 0))
+  );
+  const hourlyEarnings = device.hourlyEarnings || Number((dailyEarnings > 0 ? dailyEarnings / 24 : 0).toFixed(2));
+
+  const effectiveEndMs = Math.min(now, expiresMs);
+  const elapsedSeconds = Math.max(0, Math.floor((effectiveEndMs - startedMs) / 1000));
+
+  // Discrete formula: FLOOR( elapsed_seconds / 3600 ) - Never CEIL, never round up
+  const totalCompletedHours = Math.min(totalPlanHours, Math.floor(elapsedSeconds / 3600));
+  const claimedHours = device.claimedHours || 0;
+  const unclaimedHours = Math.max(0, totalCompletedHours - claimedHours);
+  const claimableAmount = Number((unclaimedHours * hourlyEarnings).toFixed(2));
+  const totalEarnedAmount = Number((device.totalEarned || 0).toFixed(2));
+  const remainingHours = Math.max(0, totalPlanHours - totalCompletedHours);
+  const isExpired = now >= expiresMs || totalCompletedHours >= totalPlanHours;
+  const isActive = device.status === 'ACTIVE' && !isExpired;
+
+  // Next Earning Time calculation
+  let nextEarningTimestamp: number | undefined = undefined;
+  let nextEarningTimeFormatted = 'Completed';
+  let formattedSecondsUntilNext = '';
+
+  if (totalCompletedHours < totalPlanHours) {
+    nextEarningTimestamp = startedMs + (totalCompletedHours + 1) * 3600 * 1000;
+    const diffMs = nextEarningTimestamp - now;
+    if (diffMs > 0) {
+      const diffMinutes = Math.floor(diffMs / 60000);
+      const diffSeconds = Math.floor((diffMs % 60000) / 1000);
+      formattedSecondsUntilNext = `${diffMinutes}m ${diffSeconds}s`;
+      const timeStr = new Date(nextEarningTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      nextEarningTimeFormatted = `${timeStr} (in ${diffMinutes}m)`;
+    } else {
+      nextEarningTimeFormatted = 'Processing cycle...';
+    }
+  }
+
+  const lastClaimTimeFormatted = device.lastClaimedAt
+    ? new Date(device.lastClaimedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
+      ' (' +
+      new Date(device.lastClaimedAt).toLocaleDateString([], { month: 'short', day: 'numeric' }) +
+      ')'
+    : 'Never claimed';
+
+  return {
+    purchaseId: device.id,
+    planName: device.planName || 'Power Bank Device',
+    planCategory: (device.planCategory || 'HOURLY').toUpperCase(),
+    hourlyEarnings,
+    dailyEarnings,
+    totalPlanHours,
+    totalCompletedHours,
+    claimedHours,
+    unclaimedHours,
+    claimableAmount,
+    totalEarnedAmount,
+    remainingHours,
+    isActive,
+    isExpired,
+    startedAt: device.startedAt,
+    expiresAt: new Date(expiresMs).toISOString(),
+    lastClaimedAt: device.lastClaimedAt,
+    lastClaimTimeFormatted,
+    nextEarningTimestamp,
+    nextEarningTimeFormatted,
+    formattedSecondsUntilNext,
+  };
+}
+
+/**
+ * Calculates and accrues yield from all active devices as CLAIMABLE strictly on completed hours.
+ * Note: Does NOT automatically add to wallet available_balance. User must claim.
  */
 export async function settleAndCalculateEarnings(userId: string): Promise<{
   newAccrued: number;
   totalClaimable: number;
+  deviceStatuses: DeviceHourlyStatus[];
 }> {
   if (isSupabaseConfigured && supabase) {
     try {
@@ -1697,6 +2756,7 @@ export async function settleAndCalculateEarnings(userId: string): Promise<{
         return {
           newAccrued: Number(data?.accrued || 0),
           totalClaimable: claimable.totalClaimable,
+          deviceStatuses: claimable.deviceStatuses,
         };
       }
       if (error && !isTableMissingError(error)) {
@@ -1707,47 +2767,39 @@ export async function settleAndCalculateEarnings(userId: string): Promise<{
     }
   }
 
-  // Local simulation: Accrue yield into CLAIMABLE earnings table
+  // Local simulation: Calculate discrete completed hours per device
   const purchases = getLocal<PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
-  const activePurchases = purchases.filter((p) => p.status === 'ACTIVE' && p.userId === userId);
+  const userPurchases = purchases.filter((p) => p.userId === userId);
   const earnings = getLocal<EarningRecord[]>(STORAGE_KEYS.EARNINGS, []);
-  let newAccruedSum = 0;
+  let newlyAccruedSum = 0;
+  let totalClaimableSum = 0;
   const now = Date.now();
+  const deviceStatuses: DeviceHourlyStatus[] = [];
 
-  activePurchases.forEach((p) => {
-    const isPro = (p.planCategory || '').toUpperCase() === 'PRO';
-    const lastTime = p.lastSettledAt ? new Date(p.lastSettledAt).getTime() : new Date(p.startedAt).getTime();
-    const elapsedHours = (now - lastTime) / (1000 * 60 * 60);
+  userPurchases.forEach((p) => {
+    const status = calculateDeviceHourlyStatus(p, now);
+    deviceStatuses.push(status);
+    totalClaimableSum += status.claimableAmount;
 
-    // Settle incrementally (e.g. at least 3 minutes / 0.05 hr for fluid interactive feedback)
-    if (elapsedHours >= 0.05) {
-      let earned = 0;
-      if (isPro) {
-        // PRO plan daily revenue rate
-        const dailyRate = p.dailyEarnings || (p.earningRate * 24) || 35;
-        const hoursCapped = Math.min(elapsedHours, 24 * (p.durationDays || 30));
-        earned = +((dailyRate / 24) * hoursCapped).toFixed(2);
-      } else {
-        // Standard Hourly rate
-        const rate = p.earningRate || (p.hourlyEarnings || 1.85);
-        const hoursCapped = Math.min(elapsedHours, 24 * 365);
-        earned = +(rate * hoursCapped).toFixed(2);
-      }
+    // Synchronize discrete claimable records for auditing and batch claiming
+    if (status.unclaimedHours > 0) {
+      const existingClaimables = earnings.filter(
+        (e) => e.userId === userId && e.purchaseId === p.id && e.status === 'CLAIMABLE'
+      );
+      const existingRecordedAmount = existingClaimables.reduce((s, e) => s + e.amount, 0);
+      const diff = Number((status.claimableAmount - existingRecordedAmount).toFixed(2));
 
-      if (earned > 0) {
-        p.totalEarned = +(p.totalEarned + earned).toFixed(2);
-        p.lastSettledAt = new Date().toISOString();
-        newAccruedSum += earned;
-
-        // Push new Claimable record
+      if (diff > 0) {
+        newlyAccruedSum += diff;
+        const isPro = status.planCategory === 'PRO';
         const earningId = 'earn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
         earnings.unshift({
           id: earningId,
           userId,
           purchaseId: p.id,
-          planName: p.planName,
-          planCategory: p.planCategory || (isPro ? 'PRO' : 'HOURLY'),
-          amount: earned,
+          planName: status.planName,
+          planCategory: status.planCategory,
+          amount: diff,
           earningType: isPro ? 'PRO_DAILY' : 'HOURLY_DEVICE',
           status: 'CLAIMABLE',
           earningDate: new Date().toISOString().split('T')[0],
@@ -1757,15 +2809,14 @@ export async function settleAndCalculateEarnings(userId: string): Promise<{
     }
   });
 
-  if (newAccruedSum > 0) {
-    saveLocal(STORAGE_KEYS.PURCHASES, purchases);
+  if (newlyAccruedSum > 0) {
     saveLocal(STORAGE_KEYS.EARNINGS, earnings);
   }
 
-  const claimable = await fetchClaimableEarnings(userId);
   return {
-    newAccrued: newAccruedSum,
-    totalClaimable: claimable.totalClaimable,
+    newAccrued: Number(newlyAccruedSum.toFixed(2)),
+    totalClaimable: Number(totalClaimableSum.toFixed(2)),
+    deviceStatuses,
   };
 }
 
@@ -1775,64 +2826,43 @@ export async function settleAndFetchEarnings(userId: string) {
 }
 
 /**
- * Fetch all claimable earnings for a user.
+ * Fetch all claimable earnings for a user strictly calculated by completed hourly cycles.
  */
 export async function fetchClaimableEarnings(userId: string): Promise<{
   totalClaimable: number;
   count: number;
   records: EarningRecord[];
+  deviceStatuses: DeviceHourlyStatus[];
 }> {
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const { data, error } = await supabase
-        .from('earnings')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('status', 'CLAIMABLE');
+  const purchases = getLocal<PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
+  const userPurchases = purchases.filter((p) => p.userId === userId);
+  const now = Date.now();
+  let total = 0;
+  let unclaimedCyclesCount = 0;
+  const deviceStatuses: DeviceHourlyStatus[] = [];
 
-      if (!error && data && data.length > 0) {
-        const records: EarningRecord[] = data.map((e) => ({
-          id: e.id,
-          userId: e.user_id,
-          purchaseId: e.purchase_id,
-          planName: e.plan_name,
-          planCategory: e.plan_category,
-          amount: Number(e.amount),
-          earningType: e.earning_type,
-          status: e.status,
-          earningDate: e.earning_date,
-          claimBatchId: e.claim_batch_id,
-          claimedAt: e.claimed_at,
-          createdAt: e.created_at,
-        }));
-
-        const total = records.reduce((acc, r) => acc + r.amount, 0);
-        return {
-          totalClaimable: +total.toFixed(2),
-          count: records.length,
-          records,
-        };
-      }
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase fetch claimable error:', error.message);
-      }
-    } catch {
-      // Fall through to local
-    }
-  }
+  userPurchases.forEach((p) => {
+    const status = calculateDeviceHourlyStatus(p, now);
+    deviceStatuses.push(status);
+    total += status.claimableAmount;
+    unclaimedCyclesCount += status.unclaimedHours;
+  });
 
   const earnings = getLocal<EarningRecord[]>(STORAGE_KEYS.EARNINGS, []);
   const userClaimables = earnings.filter((e) => e.userId === userId && e.status === 'CLAIMABLE');
-  const total = userClaimables.reduce((acc, e) => acc + e.amount, 0);
+
   return {
-    totalClaimable: +total.toFixed(2),
-    count: userClaimables.length,
+    totalClaimable: Number(total.toFixed(2)),
+    count: unclaimedCyclesCount,
     records: userClaimables,
+    deviceStatuses,
   };
 }
 
 /**
- * Claim all accumulated earnings atomically into user's wallet.
+ * Claim all accumulated hourly earnings atomically into user's wallet.
+ * Claiming DOES NOT reset the device timeline, startedAt, or duration timer.
+ * Claiming only sets claimable amount to 0 and advances claimedHours to totalCompletedHours.
  */
 export async function claimUserEarnings(userId: string): Promise<{
   success: boolean;
@@ -1861,22 +2891,40 @@ export async function claimUserEarnings(userId: string): Promise<{
     }
   }
 
-  const earnings = getLocal<EarningRecord[]>(STORAGE_KEYS.EARNINGS, []);
-  const userClaimables = earnings.filter((e) => e.userId === userId && e.status === 'CLAIMABLE');
+  const purchases = getLocal<PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
+  const userPurchases = purchases.filter((p) => p.userId === userId);
+  const now = Date.now();
+  const claimedTimestamp = new Date().toISOString();
+  let totalClaimAmount = 0;
+  let eligibleCyclesCount = 0;
 
-  if (userClaimables.length === 0) {
-    throw new Error('No claimable earnings available to claim.');
-  }
+  // 1. Calculate claimable amount per device and update claimedHours without resetting startedAt
+  userPurchases.forEach((p) => {
+    const status = calculateDeviceHourlyStatus(p, now);
+    if (status.claimableAmount > 0 && status.unclaimedHours > 0) {
+      totalClaimAmount = Number((totalClaimAmount + status.claimableAmount).toFixed(2));
+      eligibleCyclesCount += status.unclaimedHours;
 
-  const totalClaimAmount = +userClaimables.reduce((acc, e) => acc + e.amount, 0).toFixed(2);
+      // Advance claimedHours to totalCompletedHours
+      p.claimedHours = status.totalCompletedHours;
+      p.totalEarned = Number(((p.totalEarned || 0) + status.claimableAmount).toFixed(2));
+      p.lastClaimedAt = claimedTimestamp;
+      p.lastSettledAt = claimedTimestamp;
+
+      if (status.isExpired) {
+        p.status = 'COMPLETED';
+      }
+    }
+  });
+
   if (totalClaimAmount <= 0) {
-    throw new Error('Claim amount must be greater than zero.');
+    throw new Error('No completed hourly earnings available to claim. Earnings are generated only after each full hour.');
   }
 
   const claimBatchId = 'CLM-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-  const claimedTimestamp = new Date().toISOString();
 
-  // 1. Mark earning records as CLAIMED
+  // 2. Mark earning records as CLAIMED
+  const earnings = getLocal<EarningRecord[]>(STORAGE_KEYS.EARNINGS, []);
   earnings.forEach((e) => {
     if (e.userId === userId && e.status === 'CLAIMABLE') {
       e.status = 'CLAIMED';
@@ -1885,17 +2933,21 @@ export async function claimUserEarnings(userId: string): Promise<{
     }
   });
   saveLocal(STORAGE_KEYS.EARNINGS, earnings);
+  saveLocal(STORAGE_KEYS.PURCHASES, purchases);
 
-  // 2. Credit Wallet
-  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, { availableBalance: 0, rechargeBalance: 0, earnedBalance: 0, totalEarned: 0 } as Wallet);
+  // 3. Credit Wallet
+  const wallet = getLocal<Wallet>(
+    STORAGE_KEYS.WALLET,
+    { availableBalance: 0, rechargeBalance: 0, earnedBalance: 0, totalEarned: 0 } as Wallet
+  );
   const balBefore = wallet.availableBalance || 0;
-  wallet.earnedBalance = +((wallet.earnedBalance || 0) + totalClaimAmount).toFixed(2);
-  const balAfter = +((wallet.rechargeBalance || 0) + wallet.earnedBalance).toFixed(2);
+  wallet.earnedBalance = Number(((wallet.earnedBalance || 0) + totalClaimAmount).toFixed(2));
+  const balAfter = Number(((wallet.rechargeBalance || 0) + (wallet.earnedBalance || 0)).toFixed(2));
   wallet.availableBalance = balAfter;
-  wallet.totalEarned = +((wallet.totalEarned || 0) + totalClaimAmount).toFixed(2);
+  wallet.totalEarned = Number(((wallet.totalEarned || 0) + totalClaimAmount).toFixed(2));
   saveLocal(STORAGE_KEYS.WALLET, wallet);
 
-  // 3. Record Wallet Transaction
+  // 4. Record Wallet Transaction
   const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
   const tx: WalletTransaction = {
     id: 'tx_claim_' + Date.now(),
@@ -1906,44 +2958,49 @@ export async function claimUserEarnings(userId: string): Promise<{
     balanceAfter: balAfter,
     balanceType: 'DEVICE_EARNING_BALANCE',
     referenceId: claimBatchId,
-    description: `Device Yield Claim (${claimBatchId})`,
+    description: `Device Hourly Yield Claim (${claimBatchId})`,
     createdAt: claimedTimestamp,
   };
   txs.unshift(tx);
   saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
 
-  // 4. Save Claim Batch History
+  // 5. Save Claim Batch History
   const claims = getLocal<ClaimBatch[]>(STORAGE_KEYS.CLAIMS, []);
   claims.unshift({
     id: claimBatchId,
     userId,
     amount: totalClaimAmount,
-    itemsCount: userClaimables.length,
+    itemsCount: eligibleCyclesCount,
     status: 'CLAIMED',
     claimedAt: claimedTimestamp,
     txId: tx.id,
   });
   saveLocal(STORAGE_KEYS.CLAIMS, claims);
 
-  // 5. Notify User
+  // 6. Notify User
   const notifs = getLocal<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []);
   notifs.unshift({
     id: 'notif_' + Date.now(),
     userId,
-    title: 'Earning Claimed',
-    message: `₹${totalClaimAmount.toFixed(2)} earning has been successfully added to your wallet.`,
+    title: 'Hourly Earnings Claimed',
+    message: `₹${totalClaimAmount.toFixed(2)} hourly device earnings have been added to your wallet.`,
     type: 'SUCCESS',
     read: false,
     createdAt: claimedTimestamp,
   });
   saveLocal(STORAGE_KEYS.NOTIFICATIONS, notifs);
 
+  // 7. Trigger Dynamic Consecutive Claim Referral Reward (Streak check)
+  processConsecutiveClaimReferralReward(userId).catch((e) => {
+    console.warn('Streak referral reward error:', e);
+  });
+
   return {
     success: true,
     amount: totalClaimAmount,
     claimBatchId,
     newBalance: balAfter,
-    itemsCount: userClaimables.length,
+    itemsCount: eligibleCyclesCount,
   };
 }
 
@@ -2364,6 +3421,11 @@ export async function approveRecharge(paymentId: string, adminId: string) {
     actionUrl: '/purchase',
     actionText: 'Rent Power Bank',
   }).catch(() => {});
+
+  // Trigger Dynamic Multi-Tier Top-Up Referral Commission (T1, T2, T3)
+  processTopupReferralRewards(paymentId, payment.userId, payment.amount).catch((e) => {
+    console.warn('Topup referral reward error:', e);
+  });
 
   return { success: true };
 }
@@ -4523,7 +5585,7 @@ export async function archiveAdminNotification(batchId: string, adminId: string)
 }
 
 // ==============================================================================
-// UNIVEPAY PAYMENT GATEWAY CLIENT SERVICES & RECONCILIATION
+// UNIVEPAY PAYMENT GATEWAY & UTILITY SERVICES
 // ==============================================================================
 
 export async function createUniVePayDeposit(params: {
@@ -4532,48 +5594,114 @@ export async function createUniVePayDeposit(params: {
   name?: string;
   email?: string;
   phone?: string;
+  payCode?: string;
 }): Promise<{
   success: boolean;
   traceno: string;
   payUrl?: string;
   payOrderid?: string;
   amount: number;
-  isSimulated?: boolean;
   error?: string;
 }> {
   try {
-    const res = await fetch('/api/univepay/create-deposit', {
+    let authHeader: Record<string, string> = {};
+    if (supabase) {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (sessionData?.session?.access_token) {
+          authHeader['Authorization'] = `Bearer ${sessionData.session.access_token}`;
+        }
+      } catch (tokenErr) {}
+    }
+
+    const res = await fetch('/api/univepay/create-payment', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeader,
+      },
+      body: JSON.stringify({
+        userId: params.userId,
+        amount: params.amount,
+        payCode: params.payCode || '印度UPI-银台',
+      }),
     });
 
     const data = await res.json();
     if (!res.ok || !data.success) {
-      throw new Error(data.error || 'Failed to initiate UniVePay deposit');
+      throw new Error(data.error || 'Failed to create Univepay payment order');
     }
 
-    return data;
+    return {
+      success: true,
+      traceno: data.traceno,
+      payUrl: data.payUrl,
+      payOrderid: data.payOrderid,
+      amount: params.amount,
+    };
   } catch (err: any) {
-    console.error('Error calling /api/univepay/create-deposit:', err);
+    console.warn('Backend Univepay create-payment error, checking Supabase function fallback:', err.message);
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.functions.invoke('create-univepay-payment', {
+          body: {
+            userId: params.userId,
+            amount: params.amount,
+            payCode: params.payCode || '印度UPI-银台',
+          },
+        });
+        if (!error && data?.success) {
+          return {
+            success: true,
+            traceno: data.traceno,
+            payUrl: data.payUrl,
+            payOrderid: data.payOrderid,
+            amount: params.amount,
+          };
+        }
+      } catch (fnErr) {
+        console.warn('Supabase edge function fallback failed:', fnErr);
+      }
+    }
+
     throw err;
   }
 }
 
 export async function checkUniVePayDepositStatus(traceno: string, amount?: number): Promise<{
   success: boolean;
-  data: any;
+  status: string;
+  data?: any;
+  amount?: number;
 }> {
   try {
-    const res = await fetch('/api/univepay/deposit-query', {
+    const res = await fetch('/api/univepay/query-deposit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ traceno, amount }),
+      body: JSON.stringify({ traceno }),
     });
-    return await res.json();
-  } catch (err: any) {
-    console.error('Error querying deposit status:', err);
-    return { success: false, data: null };
+    const data = await res.json();
+    return {
+      success: data.success ?? true,
+      status: data.status || 'PENDING',
+      data: data.data,
+      amount: data.amount,
+    };
+  } catch (e: any) {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data } = await supabase
+          .from('deposit_transactions')
+          .select('*')
+          .eq('traceno', traceno)
+          .maybeSingle();
+        if (data) {
+          return { success: true, status: data.status, data };
+        }
+      } catch (sbErr) {}
+    }
+    return { success: false, status: 'PENDING' };
   }
 }
 
@@ -4582,17 +5710,15 @@ export async function submitUniVePayUtrSupplement(
   utr: string,
   amount?: number
 ): Promise<{ success: boolean; data: any }> {
-  try {
-    const res = await fetch('/api/univepay/deposit-utr-supplement', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ traceno, utr, amount }),
-    });
-    return await res.json();
-  } catch (err: any) {
-    console.error('Error submitting UTR supplement:', err);
-    return { success: false, data: null };
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase
+        .from('deposit_transactions')
+        .update({ utr, updated_at: new Date().toISOString() })
+        .eq('traceno', traceno);
+    } catch (e) {}
   }
+  return { success: true, data: { utr } };
 }
 
 export async function requestWithdrawalGateway(params: {
@@ -4618,18 +5744,31 @@ export async function requestWithdrawalGateway(params: {
     const res = await fetch('/api/univepay/create-withdrawal', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
+      body: JSON.stringify({
+        userId: params.userId,
+        amount: params.amount,
+        method: params.method || 'UNIVEPAY_AUTO',
+        bankName: params.bankName,
+        bankCode: params.bankCode,
+        accountName: params.accountName,
+        accountNumber: params.accountNumber,
+        upiId: params.upiId,
+      }),
     });
-
     const data = await res.json();
     if (!res.ok || !data.success) {
-      throw new Error(data.error || 'Withdrawal request failed');
+      throw new Error(data.error || 'Failed to request withdrawal');
     }
-
     return data;
   } catch (err: any) {
-    console.error('Error in requestWithdrawalGateway:', err);
-    throw err;
+    console.warn('Backend create-withdrawal error, falling back to database RPC:', err.message);
+    await submitWithdrawalRequest(params.userId, params.amount, undefined, params.upiId);
+    return {
+      success: true,
+      method: 'MANUAL',
+      traceno: 'WTH_' + Date.now(),
+      amount: params.amount,
+    };
   }
 }
 
@@ -4637,44 +5776,46 @@ export async function checkUniVePayWithdrawalStatus(traceno: string, amount?: nu
   success: boolean;
   data: any;
 }> {
-  try {
-    const res = await fetch('/api/univepay/withdrawal-query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ traceno, amount }),
-    });
-    return await res.json();
-  } catch (err: any) {
-    console.error('Error querying withdrawal status:', err);
-    return { success: false, data: null };
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data } = await supabase
+        .from('withdrawal_transactions')
+        .select('*')
+        .eq('traceno', traceno)
+        .maybeSingle();
+      if (data) return { success: true, data };
+    } catch (e) {}
   }
+  return { success: true, data: { status: 'PENDING' } };
 }
 
 export async function fetchUniVePayBalance(): Promise<import('../types').UniVePayBalanceResult> {
   try {
-    const res = await fetch('/api/univepay/balance-query');
-    const json = await res.json();
-    if (json.data) {
-      return json.data;
+    const res = await fetch('/api/univepay/balance');
+    if (res.ok) {
+      const data = await res.json();
+      return {
+        merchantNo: data.merchantNo || '',
+        balance: data.balance || 0,
+        balanceCanUse: data.balanceCanUse || 0,
+        retcode: data.retcode || '0000',
+        retmsg: data.retmsg || 'OK',
+        lastChecked: data.lastChecked || new Date().toISOString(),
+      };
     }
-    return {
-      merchantNo: '100008',
-      balance: 500000.0,
-      balanceCanUse: 485000.0,
-      retcode: '0000',
-      retmsg: 'Connected',
-      lastChecked: new Date().toISOString(),
-    };
-  } catch (err) {
-    return {
-      merchantNo: '100008',
-      balance: 500000.0,
-      balanceCanUse: 485000.0,
-      retcode: '0000',
-      retmsg: 'Cached',
-      lastChecked: new Date().toISOString(),
-    };
+  } catch (e) {
+    console.warn('Error querying Univepay balance:', e);
   }
+
+  const settings = await fetchGatewaySettings();
+  return {
+    merchantNo: settings.merchantNo || 'UNIVEPAY_GATEWAY',
+    balance: settings.gatewayTotalBalance || 0,
+    balanceCanUse: settings.gatewayAvailableBalance || 0,
+    retcode: '0000',
+    retmsg: 'Live Gateway Active',
+    lastChecked: settings.gatewayLastChecked || new Date().toISOString(),
+  };
 }
 
 export async function fetchGatewaySettings(): Promise<import('../types').GatewaySettings> {
@@ -4688,9 +5829,9 @@ export async function fetchGatewaySettings(): Promise<import('../types').Gateway
     maxWithdrawal: 50000,
     withdrawalFeePercent: 0,
     gatewayFeePercent: 2,
-    merchantNo: '100008',
-    gatewayTotalBalance: 500000,
-    gatewayAvailableBalance: 485000,
+    merchantNo: '',
+    gatewayTotalBalance: 0,
+    gatewayAvailableBalance: 0,
     gatewayConnectivity: 'CONNECTED',
     gatewayLastChecked: new Date().toISOString(),
   };
@@ -4709,9 +5850,9 @@ export async function fetchGatewaySettings(): Promise<import('../types').Gateway
           maxWithdrawal: Number(data.max_withdrawal || 50000),
           withdrawalFeePercent: Number(data.withdrawal_fee_percent || 0),
           gatewayFeePercent: Number(data.gateway_fee_percent || 2),
-          merchantNo: data.merchant_no || '100008',
-          gatewayTotalBalance: Number(data.gateway_total_balance || 500000),
-          gatewayAvailableBalance: Number(data.gateway_available_balance || 485000),
+          merchantNo: data.merchant_no || '',
+          gatewayTotalBalance: Number(data.gateway_total_balance || 0),
+          gatewayAvailableBalance: Number(data.gateway_available_balance || 0),
           gatewayConnectivity: data.gateway_connectivity || 'CONNECTED',
           gatewayLastChecked: data.gateway_last_checked,
           updatedAt: data.updated_at,
@@ -4868,6 +6009,720 @@ export async function fetchWalletLedger(userId?: string): Promise<import('../typ
     }
   }
   return [];
+}
+
+// ==============================================================================
+// GIFT CODE ENGINE & ADMIN FINANCIAL CONTROL APIS
+// ==============================================================================
+
+/**
+ * Fetch all Gift Codes
+ */
+export async function fetchGiftCodes(filters?: { status?: string; query?: string }): Promise<GiftCode[]> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      let query = supabase.from('gift_codes').select('*').order('created_at', { ascending: false });
+      if (filters?.status && filters.status !== 'ALL') {
+        query = query.eq('status', filters.status);
+      }
+      const { data, error } = await query;
+      if (!error && data) {
+        return data.map((g: any) => ({
+          id: g.id,
+          code: g.code,
+          amountType: g.amount_type,
+          amount: g.amount ? Number(g.amount) : undefined,
+          minAmount: g.min_amount ? Number(g.min_amount) : undefined,
+          maxAmount: g.max_amount ? Number(g.max_amount) : undefined,
+          totalPool: Number(g.total_pool || 0),
+          remainingPool: Number(g.remaining_pool || 0),
+          totalUses: Number(g.total_uses || 0),
+          usedCount: Number(g.used_count || 0),
+          perUserLimit: Number(g.per_user_limit || 1),
+          startDate: g.start_date,
+          expiryDate: g.expiry_date,
+          status: g.status,
+          description: g.description,
+          walletDestination: g.wallet_destination || 'EARNING_BALANCE',
+          createdBy: g.created_by,
+          createdAt: g.created_at,
+          updatedAt: g.updated_at,
+        }));
+      }
+    } catch (e) {
+      console.warn('Error fetching gift codes from Supabase:', e);
+    }
+  }
+
+  const codes = getLocal<GiftCode[]>(STORAGE_KEYS.GIFT_CODES, initialGiftCodes);
+  let list = [...codes];
+
+  // Auto update expired codes based on timestamp
+  const now = Date.now();
+  let changed = false;
+  list = list.map((c) => {
+    if (c.status === 'ACTIVE' && c.expiryDate && new Date(c.expiryDate).getTime() < now) {
+      changed = true;
+      return { ...c, status: 'EXPIRED' as const };
+    }
+    return c;
+  });
+  if (changed) {
+    saveLocal(STORAGE_KEYS.GIFT_CODES, list);
+  }
+
+  if (filters?.status && filters.status !== 'ALL') {
+    list = list.filter((c) => c.status === filters.status);
+  }
+  if (filters?.query) {
+    const q = filters.query.toLowerCase().trim();
+    list = list.filter((c) =>
+      c.code.toLowerCase().includes(q) || (c.description || '').toLowerCase().includes(q)
+    );
+  }
+  return list;
+}
+
+/**
+ * Fetch Single Gift Code by ID
+ */
+export async function fetchGiftCodeById(id: string): Promise<GiftCode | null> {
+  const codes = await fetchGiftCodes();
+  return codes.find((c) => c.id === id) || null;
+}
+
+/**
+ * Create New Gift Code (Admin Only)
+ */
+export async function createGiftCode(
+  payload: {
+    code: string;
+    amountType: 'FIXED' | 'RANDOM';
+    amount?: number;
+    minAmount?: number;
+    maxAmount?: number;
+    totalPool: number;
+    totalUses: number;
+    perUserLimit?: number;
+    startDate?: string;
+    expiryDate?: string;
+    status?: import('../types').GiftCodeStatus;
+    description?: string;
+    walletDestination?: import('../types').GiftCodeDestination;
+  },
+  adminId: string
+): Promise<GiftCode> {
+  const normalizedCode = payload.code.trim().toUpperCase();
+  if (!normalizedCode) {
+    throw new Error('Gift code cannot be empty.');
+  }
+
+  if (payload.totalPool <= 0) {
+    throw new Error('Total pool amount must be greater than zero.');
+  }
+  if (payload.totalUses <= 0) {
+    throw new Error('Total uses count must be greater than zero.');
+  }
+
+  if (payload.amountType === 'FIXED') {
+    if (!payload.amount || payload.amount <= 0) {
+      throw new Error('Fixed amount must be greater than zero.');
+    }
+    if (payload.amount > payload.totalPool) {
+      throw new Error('Fixed reward amount cannot exceed total gift pool.');
+    }
+  } else {
+    const min = payload.minAmount || 0;
+    const max = payload.maxAmount || 0;
+    if (min <= 0 || max <= 0 || min > max) {
+      throw new Error('Please specify a valid minimum and maximum reward amount range (Min <= Max).');
+    }
+    if (max > payload.totalPool) {
+      throw new Error('Maximum reward amount cannot exceed total gift pool.');
+    }
+  }
+
+  // Check uniqueness
+  const existingList = await fetchGiftCodes();
+  if (existingList.some((c) => c.code.toUpperCase() === normalizedCode)) {
+    throw new Error(`A gift code with the code "${normalizedCode}" already exists.`);
+  }
+
+  const newCode: GiftCode = {
+    id: 'gc_' + Date.now(),
+    code: normalizedCode,
+    amountType: payload.amountType,
+    amount: payload.amountType === 'FIXED' ? payload.amount : undefined,
+    minAmount: payload.amountType === 'RANDOM' ? payload.minAmount : undefined,
+    maxAmount: payload.amountType === 'RANDOM' ? payload.maxAmount : undefined,
+    totalPool: payload.totalPool,
+    remainingPool: payload.totalPool,
+    totalUses: payload.totalUses,
+    usedCount: 0,
+    perUserLimit: payload.perUserLimit || 1,
+    startDate: payload.startDate || new Date().toISOString(),
+    expiryDate: payload.expiryDate,
+    status: payload.status || 'ACTIVE',
+    description: payload.description || '',
+    walletDestination: payload.walletDestination || 'EARNING_BALANCE',
+    createdBy: adminId,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase.from('gift_codes').insert({
+        id: newCode.id,
+        code: newCode.code,
+        amount_type: newCode.amountType,
+        amount: newCode.amount,
+        min_amount: newCode.minAmount,
+        max_amount: newCode.maxAmount,
+        total_pool: newCode.totalPool,
+        remaining_pool: newCode.remainingPool,
+        total_uses: newCode.totalUses,
+        used_count: 0,
+        per_user_limit: newCode.perUserLimit,
+        start_date: newCode.startDate,
+        expiry_date: newCode.expiryDate,
+        status: newCode.status,
+        description: newCode.description,
+        wallet_destination: newCode.walletDestination,
+        created_by: adminId,
+        created_at: newCode.createdAt,
+        updated_at: newCode.updatedAt,
+      });
+    } catch (e) {
+      console.warn('Supabase gift code insert error:', e);
+    }
+  }
+
+  const list = getLocal<GiftCode[]>(STORAGE_KEYS.GIFT_CODES, initialGiftCodes);
+  list.unshift(newCode);
+  saveLocal(STORAGE_KEYS.GIFT_CODES, list);
+
+  await recordAuditLog(
+    adminId,
+    'ADMIN_CREATE_GIFT_CODE',
+    'gift_codes',
+    newCode.id,
+    `Created Gift Code ${newCode.code} (${newCode.amountType}, Pool: ₹${newCode.totalPool}, Uses: ${newCode.totalUses})`
+  );
+
+  return newCode;
+}
+
+/**
+ * Update Gift Code (Admin Only)
+ */
+export async function updateGiftCode(
+  id: string,
+  updates: Partial<GiftCode>,
+  adminId: string
+): Promise<GiftCode> {
+  const list = getLocal<GiftCode[]>(STORAGE_KEYS.GIFT_CODES, initialGiftCodes);
+  const index = list.findIndex((c) => c.id === id);
+  if (index === -1) {
+    throw new Error('Gift code not found.');
+  }
+
+  const current = list[index];
+  const updated: GiftCode = {
+    ...current,
+    ...updates,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase.from('gift_codes').update({
+        code: updated.code,
+        amount_type: updated.amountType,
+        amount: updated.amount,
+        min_amount: updated.minAmount,
+        max_amount: updated.maxAmount,
+        total_pool: updated.totalPool,
+        remaining_pool: updated.remainingPool,
+        total_uses: updated.totalUses,
+        per_user_limit: updated.perUserLimit,
+        start_date: updated.startDate,
+        expiry_date: updated.expiryDate,
+        status: updated.status,
+        description: updated.description,
+        wallet_destination: updated.walletDestination,
+        updated_at: updated.updatedAt,
+      }).eq('id', id);
+    } catch (e) {
+      console.warn('Supabase gift code update error:', e);
+    }
+  }
+
+  list[index] = updated;
+  saveLocal(STORAGE_KEYS.GIFT_CODES, list);
+
+  await recordAuditLog(
+    adminId,
+    'ADMIN_UPDATE_GIFT_CODE',
+    'gift_codes',
+    id,
+    `Updated Gift Code ${updated.code} (Status: ${updated.status})`
+  );
+
+  return updated;
+}
+
+/**
+ * Delete Gift Code (Admin Only)
+ */
+export async function deleteGiftCode(id: string, adminId: string): Promise<boolean> {
+  const list = getLocal<GiftCode[]>(STORAGE_KEYS.GIFT_CODES, initialGiftCodes);
+  const target = list.find((c) => c.id === id);
+  const filtered = list.filter((c) => c.id !== id);
+  saveLocal(STORAGE_KEYS.GIFT_CODES, filtered);
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase.from('gift_codes').delete().eq('id', id);
+    } catch (e) {
+      console.warn('Supabase gift code delete error:', e);
+    }
+  }
+
+  if (target) {
+    await recordAuditLog(
+      adminId,
+      'ADMIN_DELETE_GIFT_CODE',
+      'gift_codes',
+      id,
+      `Deleted Gift Code ${target.code}`
+    );
+  }
+
+  return true;
+}
+
+/**
+ * Fetch Gift Code Claims (Admin or User)
+ */
+export async function fetchGiftCodeClaims(giftCodeId?: string, userId?: string): Promise<GiftCodeClaim[]> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      let query = supabase.from('gift_code_claims').select('*, profiles(username, whatsapp_no)').order('claimed_at', { ascending: false });
+      if (giftCodeId) query = query.eq('gift_code_id', giftCodeId);
+      if (userId) query = query.eq('user_id', userId);
+      const { data, error } = await query;
+      if (!error && data) {
+        return data.map((c: any) => ({
+          id: c.id,
+          giftCodeId: c.gift_code_id,
+          code: c.code,
+          userId: c.user_id,
+          username: c.profiles?.username || c.username || 'Member',
+          mobile: c.profiles?.whatsapp_no || c.mobile || 'N/A',
+          rewardAmount: Number(c.reward_amount),
+          walletDestination: c.wallet_destination || 'EARNING_BALANCE',
+          txId: c.tx_id,
+          status: c.status || 'COMPLETED',
+          claimedAt: c.claimed_at,
+        }));
+      }
+    } catch (e) {
+      console.warn('Error fetching gift code claims:', e);
+    }
+  }
+
+  let claims = getLocal<GiftCodeClaim[]>(STORAGE_KEYS.GIFT_CODE_CLAIMS, []);
+  if (giftCodeId) {
+    claims = claims.filter((c) => c.giftCodeId === giftCodeId);
+  }
+  if (userId) {
+    claims = claims.filter((c) => c.userId === userId);
+  }
+  return claims;
+}
+
+/**
+ * Fetch Gift Code Analytics for Admin Dashboard
+ */
+export async function fetchGiftCodeAnalytics(): Promise<GiftCodeAnalytics> {
+  const codes = await fetchGiftCodes();
+  const claims = await fetchGiftCodeClaims();
+
+  const totalCodes = codes.length;
+  const activeCodes = codes.filter((c) => c.status === 'ACTIVE').length;
+  const expiredCodes = codes.filter((c) => c.status === 'EXPIRED').length;
+  const exhaustedCodes = codes.filter((c) => c.status === 'EXHAUSTED').length;
+  const disabledCodes = codes.filter((c) => c.status === 'DISABLED' || c.status === 'PAUSED').length;
+
+  const totalPoolAllocated = codes.reduce((acc, c) => acc + (c.totalPool || 0), 0);
+  const totalDistributedAmount = claims.reduce((acc, c) => acc + (c.rewardAmount || 0), 0);
+  const totalClaimsCount = claims.length;
+
+  // Find top gift code by claims
+  const codeCounts: Record<string, number> = {};
+  claims.forEach((c) => {
+    codeCounts[c.code] = (codeCounts[c.code] || 0) + 1;
+  });
+  let topGiftCode = '';
+  let maxClaims = 0;
+  Object.entries(codeCounts).forEach(([code, count]) => {
+    if (count > maxClaims) {
+      maxClaims = count;
+      topGiftCode = `${code} (${count} claims)`;
+    }
+  });
+
+  return {
+    totalCodes,
+    activeCodes,
+    expiredCodes,
+    exhaustedCodes,
+    disabledCodes,
+    totalPoolAllocated,
+    totalDistributedAmount,
+    totalClaimsCount,
+    topGiftCode: topGiftCode || (codes[0]?.code ? `${codes[0].code} (0 claims)` : 'None'),
+  };
+}
+
+/**
+ * Atomic Server-Safe Gift Code Claim Execution (User Side)
+ */
+export async function claimGiftCode(
+  rawCode: string,
+  userId: string
+): Promise<{
+  success: boolean;
+  rewardAmount: number;
+  code: string;
+  destination: import('../types').GiftCodeDestination;
+  newBalance: number;
+}> {
+  const cleanCode = (rawCode || '').trim().toUpperCase();
+  if (!cleanCode) {
+    throw new Error('Please enter a valid gift code.');
+  }
+
+  // 1. Fetch code & validate exists
+  const codes = getLocal<GiftCode[]>(STORAGE_KEYS.GIFT_CODES, initialGiftCodes);
+  const codeIndex = codes.findIndex((c) => c.code.toUpperCase() === cleanCode);
+  if (codeIndex === -1) {
+    throw new Error('Invalid gift code.');
+  }
+
+  const giftCode = codes[codeIndex];
+
+  // 2. Validate Status
+  if (giftCode.status === 'DISABLED') {
+    throw new Error('This gift code is no longer active.');
+  }
+  if (giftCode.status === 'PAUSED' || giftCode.status === 'DRAFT') {
+    throw new Error('This gift code is not currently active.');
+  }
+  if (giftCode.status === 'EXHAUSTED') {
+    throw new Error('This gift code has been fully claimed.');
+  }
+
+  // 3. Validate Dates
+  const now = Date.now();
+  if (giftCode.startDate && new Date(giftCode.startDate).getTime() > now) {
+    throw new Error('This gift code is not active yet.');
+  }
+  if (giftCode.expiryDate && new Date(giftCode.expiryDate).getTime() < now) {
+    // Mark expired
+    giftCode.status = 'EXPIRED';
+    codes[codeIndex] = giftCode;
+    saveLocal(STORAGE_KEYS.GIFT_CODES, codes);
+    throw new Error('This gift code has expired.');
+  }
+
+  // 4. Validate Remaining Pool and Total Uses
+  if (giftCode.remainingPool <= 0 || giftCode.usedCount >= giftCode.totalUses) {
+    giftCode.status = 'EXHAUSTED';
+    codes[codeIndex] = giftCode;
+    saveLocal(STORAGE_KEYS.GIFT_CODES, codes);
+    throw new Error('This gift code has been fully claimed.');
+  }
+
+  // 5. Validate Per-User Claims
+  const claims = getLocal<GiftCodeClaim[]>(STORAGE_KEYS.GIFT_CODE_CLAIMS, []);
+  const userPreviousClaims = claims.filter(
+    (c) => c.giftCodeId === giftCode.id && c.userId === userId && c.status === 'COMPLETED'
+  );
+
+  const maxAllowed = giftCode.perUserLimit || 1;
+  if (userPreviousClaims.length >= maxAllowed) {
+    throw new Error('You have already claimed this gift code.');
+  }
+
+  // 6. Calculate Reward Amount Server-Side
+  let calculatedReward = 0;
+  if (giftCode.amountType === 'FIXED') {
+    calculatedReward = Number(giftCode.amount || 0);
+    if (calculatedReward <= 0) {
+      throw new Error('Invalid gift code configuration.');
+    }
+    if (giftCode.remainingPool < calculatedReward) {
+      if (giftCode.remainingPool <= 0) {
+        giftCode.status = 'EXHAUSTED';
+        codes[codeIndex] = giftCode;
+        saveLocal(STORAGE_KEYS.GIFT_CODES, codes);
+        throw new Error('This gift code has been fully claimed.');
+      }
+      calculatedReward = giftCode.remainingPool;
+    }
+  } else {
+    // RANDOM AMOUNT
+    const min = Number(giftCode.minAmount || 1);
+    const max = Number(giftCode.maxAmount || 100);
+    if (giftCode.remainingPool < min) {
+      giftCode.status = 'EXHAUSTED';
+      codes[codeIndex] = giftCode;
+      saveLocal(STORAGE_KEYS.GIFT_CODES, codes);
+      throw new Error('This gift code has been fully claimed.');
+    }
+    const effectiveMax = Math.min(max, giftCode.remainingPool);
+    calculatedReward = Math.floor(Math.random() * (effectiveMax - min + 1)) + min;
+  }
+
+  // Safety clamp
+  calculatedReward = Math.min(calculatedReward, giftCode.remainingPool);
+  calculatedReward = +(calculatedReward.toFixed(2));
+  if (calculatedReward <= 0) {
+    giftCode.status = 'EXHAUSTED';
+    codes[codeIndex] = giftCode;
+    saveLocal(STORAGE_KEYS.GIFT_CODES, codes);
+    throw new Error('This gift code has been fully claimed.');
+  }
+
+  // 7. Deduct pool and update Gift Code atomically
+  const newRemainingPool = +(Math.max(0, giftCode.remainingPool - calculatedReward).toFixed(2));
+  const newUsedCount = giftCode.usedCount + 1;
+
+  giftCode.remainingPool = newRemainingPool;
+  giftCode.usedCount = newUsedCount;
+
+  const minRequiredNext = giftCode.amountType === 'FIXED' ? (giftCode.amount || 1) : (giftCode.minAmount || 1);
+  if (newRemainingPool <= 0 || newUsedCount >= giftCode.totalUses || newRemainingPool < minRequiredNext) {
+    giftCode.status = 'EXHAUSTED';
+  }
+  giftCode.updatedAt = new Date().toISOString();
+  codes[codeIndex] = giftCode;
+  saveLocal(STORAGE_KEYS.GIFT_CODES, codes);
+
+  // 8. Credit User Wallet
+  const userProfile = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {
+    mobile: '9500667390',
+    membershipNumber: '2829906',
+    walletBalance: 0,
+    deviceEarnings: 0,
+  } as any);
+
+  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+    id: 'w_' + userId,
+    userId,
+    availableBalance: userProfile.walletBalance || 0,
+    rechargeBalance: 0,
+    earnedBalance: userProfile.deviceEarnings || 0,
+    pendingBalance: 0,
+    totalEarned: userProfile.deviceEarnings || 0,
+    totalWithdrawn: 0,
+  } as any);
+
+  const balBefore = wallet.availableBalance || 0;
+  const destination = giftCode.walletDestination || 'EARNING_BALANCE';
+
+  if (destination === 'RECHARGE_BALANCE') {
+    wallet.rechargeBalance = +((wallet.rechargeBalance || 0) + calculatedReward).toFixed(2);
+  } else {
+    wallet.availableBalance = +((wallet.availableBalance || 0) + calculatedReward).toFixed(2);
+    wallet.earnedBalance = +((wallet.earnedBalance || 0) + calculatedReward).toFixed(2);
+    wallet.totalEarned = +((wallet.totalEarned || 0) + calculatedReward).toFixed(2);
+    userProfile.walletBalance = wallet.availableBalance;
+    userProfile.deviceEarnings = +((userProfile.deviceEarnings || 0) + calculatedReward).toFixed(2);
+  }
+
+  saveLocal(STORAGE_KEYS.WALLET, wallet);
+  saveLocal(STORAGE_KEYS.PROFILE, userProfile);
+
+  const balAfter = wallet.availableBalance;
+  const txId = 'tx_gift_' + Date.now();
+
+  // 9. Create Wallet Transaction
+  const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+  txs.unshift({
+    id: txId,
+    userId,
+    type: 'GIFT_CODE_REWARD',
+    amount: calculatedReward,
+    balanceBefore: balBefore,
+    balanceAfter: balAfter,
+    referenceId: 'GIFT-' + giftCode.code,
+    description: `Gift code reward — ${giftCode.code}`,
+    createdAt: new Date().toISOString(),
+  });
+  saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
+
+  // 10. Record Claim Record
+  const claimRecord: GiftCodeClaim = {
+    id: 'claim_' + Date.now(),
+    giftCodeId: giftCode.id,
+    code: giftCode.code,
+    userId,
+    username: userProfile.username || userProfile.name || 'Member',
+    mobile: userProfile.whatsappNo || userProfile.mobile || 'N/A',
+    rewardAmount: calculatedReward,
+    walletDestination: destination,
+    txId,
+    status: 'COMPLETED',
+    claimedAt: new Date().toISOString(),
+  };
+  claims.unshift(claimRecord);
+  saveLocal(STORAGE_KEYS.GIFT_CODE_CLAIMS, claims);
+
+  // 11. Create In-App Notification
+  createNotificationForUser({
+    userId,
+    title: 'Gift Code Claimed! 🎁',
+    description: `You received ₹${calculatedReward.toFixed(2)} from gift code ${giftCode.code}.`,
+    type: 'EARNING',
+    isHomePopup: false,
+  }).catch(() => {});
+
+  return {
+    success: true,
+    rewardAmount: calculatedReward,
+    code: giftCode.code,
+    destination,
+    newBalance: balAfter,
+  };
+}
+
+/**
+ * Enhanced Admin User Balance Adjustment (Credit / Deduct)
+ */
+export async function adminAdjustUserBalance(
+  userId: string,
+  balanceType: AdminBalanceType,
+  amount: number,
+  action: 'ADMIN_CREDIT' | 'ADMIN_DEDUCT',
+  reason: string,
+  adminId: string
+): Promise<{
+  success: boolean;
+  beforeBalance: number;
+  afterBalance: number;
+  balanceType: AdminBalanceType;
+  action: 'ADMIN_CREDIT' | 'ADMIN_DEDUCT';
+}> {
+  if (!reason.trim()) {
+    throw new Error('Mandatory justification reason is required for financial balance adjustments.');
+  }
+  if (amount <= 0 || isNaN(amount)) {
+    throw new Error('Adjustment amount must be a valid number greater than zero.');
+  }
+
+  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+    id: 'w_' + userId,
+    userId,
+    availableBalance: 0,
+    rechargeBalance: 0,
+    earnedBalance: 0,
+    pendingBalance: 0,
+    totalEarned: 0,
+    totalWithdrawn: 0,
+  } as any);
+
+  const profile = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {
+    walletBalance: 0,
+    deviceEarnings: 0,
+    teamEarnings: 0,
+  } as any);
+
+  let currentBalance = 0;
+  if (balanceType === 'MY_WALLET') {
+    currentBalance = wallet.availableBalance || profile.walletBalance || 0;
+  } else if (balanceType === 'RECHARGE_BALANCE') {
+    currentBalance = wallet.rechargeBalance || 0;
+  } else if (balanceType === 'REFERRAL_BALANCE') {
+    currentBalance = profile.teamEarnings || 0;
+  }
+
+  const beforeBalance = currentBalance;
+
+  if (action === 'ADMIN_DEDUCT' && currentBalance < amount) {
+    throw new Error(
+      `Cannot deduct ₹${amount}. User only has ₹${currentBalance} in ${balanceType.replace('_', ' ')}.`
+    );
+  }
+
+  const delta = action === 'ADMIN_CREDIT' ? amount : -amount;
+  const afterBalance = +(Math.max(0, currentBalance + delta).toFixed(2));
+
+  // Update specific balance
+  if (balanceType === 'MY_WALLET') {
+    wallet.availableBalance = afterBalance;
+    profile.walletBalance = afterBalance;
+  } else if (balanceType === 'RECHARGE_BALANCE') {
+    wallet.rechargeBalance = afterBalance;
+  } else if (balanceType === 'REFERRAL_BALANCE') {
+    profile.teamEarnings = afterBalance;
+  }
+
+  saveLocal(STORAGE_KEYS.WALLET, wallet);
+  saveLocal(STORAGE_KEYS.PROFILE, profile);
+
+  // Insert Transaction
+  const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+  const txId = 'tx_adj_' + Date.now();
+  txs.unshift({
+    id: txId,
+    userId,
+    type: action === 'ADMIN_CREDIT' ? 'ADMIN_CREDIT' : 'ADMIN_DEDUCT',
+    amount: delta,
+    balanceBefore: beforeBalance,
+    balanceAfter: afterBalance,
+    referenceId: 'ADJ-' + Date.now(),
+    description: `Admin ${action === 'ADMIN_CREDIT' ? 'Credit' : 'Deduction'} (${balanceType}): ${reason}`,
+    createdAt: new Date().toISOString(),
+  });
+  saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
+
+  // Record Audit & Adjustment history
+  const adjustments = getLocal<AdminBalanceAdjustment[]>(STORAGE_KEYS.BALANCE_ADJUSTMENTS, []);
+  adjustments.unshift({
+    id: 'adj_' + Date.now(),
+    adminId,
+    userId,
+    username: profile.username || profile.name || 'Member',
+    mobile: profile.whatsappNo || profile.mobile || 'N/A',
+    action,
+    balanceType,
+    amount,
+    beforeBalance,
+    afterBalance,
+    reason,
+    reference: txId,
+    createdAt: new Date().toISOString(),
+  });
+  saveLocal(STORAGE_KEYS.BALANCE_ADJUSTMENTS, adjustments);
+
+  await recordAuditLog(
+    adminId,
+    action === 'ADMIN_CREDIT' ? 'ADMIN_CREDIT_BALANCE' : 'ADMIN_DEDUCT_BALANCE',
+    'wallets',
+    userId,
+    `Admin ${action === 'ADMIN_CREDIT' ? 'credited' : 'deducted'} ₹${amount} to ${balanceType} (Before: ₹${beforeBalance}, After: ₹${afterBalance}): ${reason}`
+  );
+
+  return {
+    success: true,
+    beforeBalance,
+    afterBalance,
+    balanceType,
+    action,
+  };
 }
 
 

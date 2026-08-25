@@ -19,6 +19,7 @@ import {
   ChevronRight,
   RefreshCw,
   Cpu,
+  Sparkles,
 } from 'lucide-react';
 import { AdminSession, AdminDashboardStats, AuditLogEntry } from '../../types';
 import { fetchAdminDashboardStats, fetchAdminAuditLogs, logoutAdmin } from '../../services/api';
@@ -36,6 +37,7 @@ import { AdminBannersNewsTab } from './AdminBannersNewsTab';
 import { AdminSettingsTab } from './AdminSettingsTab';
 import { AdminNotificationsTab } from './AdminNotificationsTab';
 import { AdminAuditTab } from './AdminAuditTab';
+import { AdminGiftCodesTab } from './AdminGiftCodesTab';
 
 interface AdminDashboardPageProps {
   session: AdminSession;
@@ -57,6 +59,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     if (path.includes('/adminbank/transactions')) return 'TRANSACTIONS';
     if (path.includes('/adminbank/earnings')) return 'EARNINGS';
     if (path.includes('/adminbank/referrals')) return 'REFERRALS';
+    if (path.includes('/adminbank/gift-codes') || path.includes('/adminbank/giftcodes')) return 'GIFT_CODES';
     if (path.includes('/adminbank/notifications')) return 'NOTIFICATIONS';
     if (path.includes('/adminbank/platform-news') || path.includes('/adminbank/banners')) return 'BANNERS_NEWS';
     if (path.includes('/adminbank/settings')) return 'SETTINGS';
@@ -98,6 +101,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
         TRANSACTIONS: '/adminbank/transactions',
         EARNINGS: '/adminbank/earnings',
         REFERRALS: '/adminbank/referrals',
+        GIFT_CODES: '/adminbank/gift-codes',
         NOTIFICATIONS: '/adminbank/notifications',
         BANNERS_NEWS: '/adminbank/platform-news',
         SETTINGS: '/adminbank/settings',
@@ -159,6 +163,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     { id: 'TRANSACTIONS', label: 'Financial Ledger', icon: CreditCard, badge: null },
     { id: 'EARNINGS', label: 'Device Yields & Claims', icon: Zap, badge: null },
     { id: 'REFERRALS', label: 'Referrals & Affiliates', icon: Gift, badge: null },
+    { id: 'GIFT_CODES', label: 'Gift Code Vouchers', icon: Sparkles, badge: null },
     { id: 'NOTIFICATIONS', label: 'Broadcast Notifications', icon: Bell, badge: null },
     { id: 'BANNERS_NEWS', label: 'Banners & Announcements', icon: Newspaper, badge: null },
     { id: 'SETTINGS', label: 'System Configuration', icon: Sliders, badge: null },
@@ -370,6 +375,13 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
           {activeTab === 'REFERRALS' && (
             <AdminReferralsTab onShowToast={showToast} />
+          )}
+
+          {activeTab === 'GIFT_CODES' && (
+            <AdminGiftCodesTab
+              adminId={adminIdentifier}
+              onShowToast={showToast}
+            />
           )}
 
           {activeTab === 'NOTIFICATIONS' && (

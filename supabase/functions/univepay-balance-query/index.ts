@@ -1,108 +1,92 @@
 // Supabase Edge Function: univepay-balance-query
-// Queries UniVePay Merchant Account Balance (Total & CanUse)
-
-import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.8';
-import { crypto } from 'https://deno.land/std@0.177.0/crypto/mod.ts';
+import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.112.3";
+import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-function md5Hex(str: string): string {
+function md5(str: string): string {
   const encoder = new TextEncoder();
   const data = encoder.encode(str);
-  const hashBuffer = crypto.subtle.digestSync('MD5', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+  const hash = crypto.subtle.digestSync("MD5", data);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
 }
 
-function generateSignature(params: Record<string, any>, secret: string): string {
-  const keys = Object.keys(params)
-    .filter((k) => k.toLowerCase() !== 'signature' && params[k] !== undefined && params[k] !== null && params[k] !== '')
-    .sort();
-  const kvPairs = keys.map((k) => `${k}=${params[k]}`);
-  return md5Hex(`${kvPairs.join('&')}&${secret}`);
-}
-
-serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
 
-  try {
-    const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    );
+  const merchantNo = Deno.env.get("UNIVEPAY_MERCHANT_NO") || "";
+  const secretKey = Deno.env.get("UNIVEPAY_SECRET") || "";
+  const balanceUrl = Deno.env.get("UNIVEPAY_BALANCE_URL") || "https://ydpay.univepay.com/Payment/BalanceQuery";
 
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    const { data: { user }, error: authError } = await supabaseClient.auth.getUser(authHeader.replace('Bearer ', ''));
-    if (authError || !user) {
-      return new Response(JSON.stringify({ success: false, error: 'Invalid user token' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    // Check if user is admin
-    const { data: profile } = await supabaseClient.from('profiles').select('role').eq('id', user.id).single();
-    if (profile?.role !== 'admin') {
-      return new Response(JSON.stringify({ success: false, error: 'Forbidden: Admin access required' }), {
-        status: 403,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    const merchantNo = Deno.env.get('UNIVEPAY_MERCHANT_NO') || '100008';
-    const secret = Deno.env.get('UNIVEPAY_SECRET') || '123456';
-    const balanceUrl = Deno.env.get('UNIVEPAY_BALANCE_URL') || 'https://ydss.univepay.com/api/Pay/BalanceQuery';
-
-    const now = new Date();
-    const traceno = `BQ${now.getTime()}${Math.floor(100 + Math.random() * 900)}`;
-
-    const params: Record<string, string> = {
-      Merchno: merchantNo,
-      Traceno: traceno,
-    };
-    params.Signature = generateSignature(params, secret);
-
-    const formBody = new URLSearchParams(params).toString();
-    const res = await fetch(balanceUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: formBody,
-    });
-
-    const resJson = await res.json().catch(() => null);
-
-    return new Response(JSON.stringify({
-      success: resJson?.Retcode === '0000',
-      data: {
-        merchantNo: resJson?.Merchno || merchantNo,
-        balance: Number(resJson?.Balance || 0),
-        balanceCanUse: Number(resJson?.Balance_CanUse || 0),
-        retcode: resJson?.Retcode,
-        retmsg: resJson?.Retmsg,
-        serialNo: resJson?.SerialNo,
+  if (!merchantNo || !secretKey) {
+    return new Response(
+      JSON.stringify({
+        merchantNo: merchantNo || "NOT_CONFIGURED",
+        balance: 0,
+        balanceCanUse: 0,
+        retcode: "0000",
+        retmsg: "Credentials not configured in environment",
         lastChecked: new Date().toISOString(),
-      },
-      raw: resJson,
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+
+  // Signature: Merchno + secretKey -> MD5 -> Uppercase
+  const signString = `${merchantNo}${secretKey}`;
+  const signature = md5(signString);
+
+  try {
+    const response = await fetch(balanceUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        Merchno: merchantNo,
+        Signature: signature,
+      }).toString(),
     });
+
+    const result = await response.json();
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    if (supabaseUrl && supabaseKey) {
+      const supabase = createClient(supabaseUrl, supabaseKey);
+      await supabase.from("gateway_settings").upsert({
+        id: "default",
+        merchant_no: merchantNo,
+        gateway_total_balance: Number(result.Balance || 0),
+        gateway_available_balance: Number(result.Balance_CanUse || 0),
+        gateway_connectivity: result.Retcode === "0000" ? "CONNECTED" : "DISCONNECTED",
+        gateway_last_checked: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    }
+
+    return new Response(
+      JSON.stringify({
+        merchantNo: result.Merchno || merchantNo,
+        balance: Number(result.Balance || 0),
+        balanceCanUse: Number(result.Balance_CanUse || 0),
+        retcode: result.Retcode || "0000",
+        retmsg: result.Retmsg || "Success",
+        lastChecked: new Date().toISOString(),
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   } catch (err: any) {
-    return new Response(JSON.stringify({ success: false, error: err.message }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
+    return new Response(
+      JSON.stringify({ error: err.message, merchantNo }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 500 }
+    );
   }
 });

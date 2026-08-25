@@ -57,13 +57,15 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
   }, []);
 
   const handleOpenCreate = (category: 'HOURLY' | 'PRO' = 'HOURLY') => {
+    const daily = category === 'PRO' ? 850 : 84;
+    const hourly = Number((daily / 24).toFixed(2));
     setIsNewPlan(true);
     setEditingPlan({
       name: category === 'PRO' ? 'PRO-Cabinet ' + Math.floor(Math.random() * 900 + 100) : 'Cabinet-H' + Math.floor(Math.random() * 900 + 100),
       category,
       devicePrice: category === 'PRO' ? 10000 : 1500,
-      hourlyEarnings: category === 'PRO' ? 0 : 3.5,
-      dailyEarnings: category === 'PRO' ? 850 : 84,
+      hourlyEarnings: hourly,
+      dailyEarnings: daily,
       limit: 5,
       durationDays: category === 'PRO' ? 45 : 30,
       instantBonus: category === 'PRO' ? 500 : 0,
@@ -341,27 +343,45 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-gray-300 font-semibold mb-1">Hourly Yield (₹)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={editingPlan.hourlyEarnings || 0}
-                    onChange={(e) => setEditingPlan({ ...editingPlan, hourlyEarnings: Number(e.target.value) })}
-                    className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
-                  />
-                </div>
-
-                <div>
                   <label className="block text-gray-300 font-semibold mb-1">Daily Total (₹)</label>
                   <input
                     type="number"
                     step="0.01"
                     value={editingPlan.dailyEarnings || 0}
-                    onChange={(e) => setEditingPlan({ ...editingPlan, dailyEarnings: Number(e.target.value) })}
+                    onChange={(e) => {
+                      const daily = Number(e.target.value);
+                      const hourly = Number((daily / 24).toFixed(2));
+                      setEditingPlan({ ...editingPlan, dailyEarnings: daily, hourlyEarnings: hourly });
+                    }}
                     required
-                    className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
+                    className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none focus:border-[#FF6000]"
                   />
                 </div>
+
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1">Hourly Yield (₹/hr)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editingPlan.hourlyEarnings || 0}
+                    onChange={(e) => {
+                      const hourly = Number(e.target.value);
+                      const daily = Number((hourly * 24).toFixed(2));
+                      setEditingPlan({ ...editingPlan, hourlyEarnings: hourly, dailyEarnings: daily });
+                    }}
+                    className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none focus:border-[#FF6000]"
+                  />
+                </div>
+              </div>
+
+              {/* Hourly Yield Auto-Calculation helper note */}
+              <div className="p-2.5 rounded-xl bg-[#0d1117] border border-gray-800 flex items-center justify-between text-[11px] text-gray-400">
+                <span>
+                  Hourly Rate: <strong className="text-orange-400 font-mono">₹{((editingPlan.dailyEarnings || 0) / 24).toFixed(2)}/hr</strong> (Daily ÷ 24)
+                </span>
+                <span>
+                  Est. Total: <strong className="text-amber-400 font-mono">₹{((editingPlan.dailyEarnings || 0) * (editingPlan.durationDays || 30)).toFixed(2)}</strong> ({editingPlan.durationDays || 30} days)
+                </span>
               </div>
 
               <div className="grid grid-cols-3 gap-3">

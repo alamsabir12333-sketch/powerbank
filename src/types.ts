@@ -1,4 +1,16 @@
-export type TabType = 'home' | 'fortune' | 'purchase' | 'team' | 'me' | 'admin' | 'transactions' | 'notifications';
+export type TabType =
+  | 'home'
+  | 'fortune'
+  | 'purchase'
+  | 'team'
+  | 'me'
+  | 'admin'
+  | 'transactions'
+  | 'notifications'
+  | 'withdrawal'
+  | 'recharge'
+  | 'bank_card'
+  | 'add_bank_card';
 
 export type UserRole = 'user' | 'admin';
 
@@ -59,6 +71,10 @@ export type TransactionType =
   | 'EARNING_CLAIM'
   | 'PRO_INSTANT_BONUS'
   | 'REFERRAL_BONUS'
+  | 'REFERRAL_REWARD'
+  | 'GIFT_CODE_REWARD'
+  | 'ADMIN_CREDIT'
+  | 'ADMIN_DEDUCT'
   | 'TEAM_BONUS'
   | 'WITHDRAWAL'
   | 'WITHDRAWAL_REVERSAL'
@@ -151,11 +167,14 @@ export interface PurchaseItem {
   earningRate: number;
   earningType?: EarningType;
   durationDays?: number;
+  totalPlanHours?: number;
+  claimedHours?: number;
   status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
   startedAt: string;
   expiresAt?: string;
   totalEarned: number;
   lastSettledAt?: string;
+  lastClaimedAt?: string;
   lastCalculatedAt?: string;
 }
 
@@ -268,6 +287,8 @@ export interface BankAccount {
   userId: string;
   accountHolderName: string;
   holderName?: string;
+  mobileNumber?: string;
+  email?: string;
   bankName: string;
   accountNumber: string;
   ifsc: string;
@@ -383,6 +404,15 @@ export interface AppNotification {
   createdAt: string;
 }
 
+export interface PaymentChannelConfig {
+  id: 'payu' | 'toppay' | 'upay' | string;
+  name: string;
+  subtitle?: string;
+  upiId: string;
+  qrImageUrl?: string;
+  isEnabled: boolean;
+}
+
 export interface PaymentSettings {
   id: string;
   upiId: string;
@@ -390,6 +420,17 @@ export interface PaymentSettings {
   instructions: string;
   isRechargeEnabled: boolean;
   isPurchaseEnabled: boolean;
+  payuUpiId?: string;
+  payuQrImageUrl?: string;
+  toppayUpiId?: string;
+  toppayQrImageUrl?: string;
+  upayUpiId?: string;
+  upayQrImageUrl?: string;
+  channels?: {
+    payu?: PaymentChannelConfig;
+    toppay?: PaymentChannelConfig;
+    upay?: PaymentChannelConfig;
+  };
   updatedAt?: string;
 }
 
@@ -581,4 +622,182 @@ export interface UniVePayBalanceResult {
   serialNo?: string;
   lastChecked: string;
 }
+
+// ==============================================================================
+// DYNAMIC REFERRAL REWARD SYSTEM TYPES
+// ==============================================================================
+
+export type ReferralRewardType = 'REGISTRATION' | 'CONSECUTIVE_CLAIM' | 'TOPUP_COMMISSION';
+
+export interface ReferralRegistrationRule {
+  enabled: boolean;
+  name: string;
+  rewardAmount: number; // e.g. ₹5
+  trigger: 'REGISTRATION_AND_FIRST_LOGIN' | string;
+  description?: string;
+}
+
+export interface ReferralStreakRule {
+  enabled: boolean;
+  name: string;
+  rewardAmount: number; // e.g. ₹10
+  consecutiveDays: number; // e.g. 3
+  trigger: 'ELIGIBLE_EARNING_CLAIM' | string;
+  description?: string;
+}
+
+export interface ReferralTopupTier {
+  tier: 1 | 2 | 3 | number;
+  name: string; // e.g. "Tier 1 (Direct A)"
+  percentage: number; // e.g. 7, 2, 1
+  minTopup: number;
+  maxTopup: number; // 0 for unlimited
+  enabled: boolean;
+}
+
+export interface ReferralSettings {
+  id?: string;
+  isReferralSystemEnabled: boolean;
+  registrationReward: ReferralRegistrationRule;
+  streakReward: ReferralStreakRule;
+  topupTiers: ReferralTopupTier[];
+  exampleTopupAmount: number;
+  updatedAt?: string;
+}
+
+export interface ReferralStreakRecord {
+  id: string;
+  userId: string; // referee
+  referrerUserId: string;
+  currentStreak: number;
+  lastClaimDate?: string; // YYYY-MM-DD
+  totalCompletedStreaks: number;
+  lastRewardedStreakIndex: number;
+  updatedAt: string;
+}
+
+export interface ReferralRewardLog {
+  id: string;
+  referrerUserId: string;
+  refereeUserId: string;
+  refereeUsername?: string;
+  refereeMobile?: string;
+  rewardType: ReferralRewardType;
+  tier?: number;
+  amount: number;
+  topupAmount?: number;
+  percentage?: number;
+  streakDays?: number;
+  status: 'CREDITED' | 'PENDING' | 'CANCELLED';
+  description: string;
+  idempotencyKey: string;
+  txId?: string;
+  createdAt: string;
+}
+
+export interface TeamMemberItem {
+  id: string;
+  userId: string;
+  username: string;
+  mobile: string;
+  joined: string;
+  devices: number;
+  totalInvested: number;
+  totalCommissionEarned: number;
+  tier: 1 | 2 | 3;
+}
+
+export interface UserTeamSummary {
+  referralCode: string;
+  referralLink: string;
+  totalMembers: number;
+  directMembers: number;
+  activeDevices: number;
+  totalCommission: number;
+  level1Commission: number;
+  level2Commission: number;
+  level3Commission: number;
+  subordinates: {
+    1: TeamMemberItem[];
+    2: TeamMemberItem[];
+    3: TeamMemberItem[];
+  };
+  rewardHistory: ReferralRewardLog[];
+  settings: ReferralSettings;
+}
+
+// ==============================================================================
+// GIFT CODE ENGINE & ADMIN FINANCIAL CONTROL TYPES
+// ==============================================================================
+
+export type GiftCodeAmountType = 'FIXED' | 'RANDOM';
+export type GiftCodeStatus = 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'EXPIRED' | 'EXHAUSTED' | 'DISABLED';
+export type GiftCodeDestination = 'EARNING_BALANCE' | 'RECHARGE_BALANCE';
+
+export interface GiftCode {
+  id: string;
+  code: string;
+  amountType: GiftCodeAmountType;
+  amount?: number; // for FIXED
+  minAmount?: number; // for RANDOM
+  maxAmount?: number; // for RANDOM
+  totalPool: number;
+  remainingPool: number;
+  totalUses: number;
+  usedCount: number;
+  perUserLimit: number;
+  startDate?: string;
+  expiryDate?: string;
+  status: GiftCodeStatus;
+  description?: string;
+  walletDestination: GiftCodeDestination;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface GiftCodeClaim {
+  id: string;
+  giftCodeId: string;
+  code: string;
+  userId: string;
+  username?: string;
+  mobile?: string;
+  rewardAmount: number;
+  walletDestination: GiftCodeDestination;
+  txId?: string;
+  status: 'COMPLETED' | 'REVERSED';
+  claimedAt: string;
+}
+
+export interface GiftCodeAnalytics {
+  totalCodes: number;
+  activeCodes: number;
+  expiredCodes: number;
+  exhaustedCodes: number;
+  disabledCodes: number;
+  totalPoolAllocated: number;
+  totalDistributedAmount: number;
+  totalClaimsCount: number;
+  topGiftCode?: string;
+}
+
+export type AdminBalanceType = 'MY_WALLET' | 'RECHARGE_BALANCE' | 'REFERRAL_BALANCE';
+
+export interface AdminBalanceAdjustment {
+  id: string;
+  adminId: string;
+  userId: string;
+  username?: string;
+  mobile?: string;
+  action: 'ADMIN_CREDIT' | 'ADMIN_DEDUCT';
+  balanceType: AdminBalanceType;
+  amount: number;
+  beforeBalance: number;
+  afterBalance: number;
+  reason: string;
+  reference?: string;
+  createdAt: string;
+}
+
 

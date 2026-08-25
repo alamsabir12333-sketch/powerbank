@@ -12,16 +12,20 @@ import {
   Building,
   DollarSign,
   AlertCircle,
-  Activity,
+  Upload,
+  Image as ImageIcon,
+  Check,
+  Info,
+  Layers,
 } from 'lucide-react';
 import {
   fetchSystemSettings,
   updateSystemSettings,
-  fetchGatewaySettings,
-  updateGatewaySettings,
-  fetchUniVePayBalance,
+  fetchPaymentSettings,
+  updatePaymentSettings,
+  uploadQrImage,
 } from '../../services/api';
-import { SystemSettings, GatewaySettings, UniVePayBalanceResult } from '../../types';
+import { SystemSettings, PaymentSettings } from '../../types';
 
 interface AdminSettingsTabProps {
   adminId: string;
@@ -35,65 +39,78 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
   onRefreshGlobalStats,
 }) => {
   const [settings, setSettings] = useState<SystemSettings | null>(null);
-  const [gatewaySettings, setGatewaySettings] = useState<GatewaySettings | null>(null);
-  const [liveBalance, setLiveBalance] = useState<UniVePayBalanceResult | null>(null);
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [balanceLoading, setBalanceLoading] = useState(false);
+
+  // QR Upload states for each channel
+  const [uploadingChannel, setUploadingChannel] = useState<string | null>(null);
 
   const loadData = async () => {
     setLoading(true);
     try {
-      const [sys, gw] = await Promise.all([
+      const [sys, pay] = await Promise.all([
         fetchSystemSettings(),
-        fetchGatewaySettings(),
+        fetchPaymentSettings(),
       ]);
       setSettings(sys);
-      setGatewaySettings(gw);
+      setPaymentSettings(pay);
     } catch (e: any) {
-      onShowToast(e.message || 'Error loading system settings');
+      onShowToast(e.message || 'Error loading platform settings');
     } finally {
       setLoading(false);
     }
   };
 
-  const loadBalance = async () => {
-    setBalanceLoading(true);
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const handleChannelQrUpload = async (
+    channel: 'payu' | 'toppay' | 'upay' | 'default',
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      onShowToast('QR image file must be less than 5MB.');
+      return;
+    }
+
+    setUploadingChannel(channel);
     try {
-      const bal = await fetchUniVePayBalance();
-      setLiveBalance(bal);
-      if (gatewaySettings) {
-        setGatewaySettings({
-          ...gatewaySettings,
-          gatewayTotalBalance: bal.balance,
-          gatewayAvailableBalance: bal.balanceCanUse,
-          gatewayLastChecked: bal.lastChecked,
-          gatewayConnectivity: bal.retcode === '0000' ? 'CONNECTED' : 'DISCONNECTED',
-        });
+      const uploadedUrl = await uploadQrImage(file);
+      if (paymentSettings) {
+        if (channel === 'payu') {
+          setPaymentSettings({ ...paymentSettings, payuQrImageUrl: uploadedUrl });
+        } else if (channel === 'toppay') {
+          setPaymentSettings({ ...paymentSettings, toppayQrImageUrl: uploadedUrl });
+        } else if (channel === 'upay') {
+          setPaymentSettings({ ...paymentSettings, upayQrImageUrl: uploadedUrl });
+        } else {
+          setPaymentSettings({ ...paymentSettings, qrImageUrl: uploadedUrl });
+        }
       }
-    } catch (e: any) {
-      console.warn('Balance check failed:', e);
+      onShowToast(`${channel.toUpperCase()} QR code uploaded! Click 'Save Settings' to apply.`);
+    } catch (err: any) {
+      onShowToast(err.message || 'Failed to upload QR code.');
     } finally {
-      setBalanceLoading(false);
+      setUploadingChannel(null);
     }
   };
 
-  useEffect(() => {
-    loadData();
-    loadBalance();
-  }, []);
-
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!settings || !gatewaySettings) return;
+    if (!settings || !paymentSettings) return;
 
     setSaving(true);
     try {
       await Promise.all([
         updateSystemSettings(settings, adminId),
-        updateGatewaySettings(gatewaySettings, adminId),
+        updatePaymentSettings(paymentSettings),
       ]);
-      onShowToast('System & UniVePay gateway settings updated successfully.');
+      onShowToast('Platform & Payment Channels updated successfully!');
       onRefreshGlobalStats();
     } catch (e: any) {
       onShowToast(e.message || 'Failed to save settings');
@@ -102,11 +119,11 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
     }
   };
 
-  if (loading || !settings || !gatewaySettings) {
+  if (loading || !settings || !paymentSettings) {
     return (
       <div className="py-20 text-center text-gray-500 bg-[#161b22] rounded-2xl border border-gray-800">
         <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-[#FF6000]" />
-        <span>Loading system configuration...</span>
+        <span>Loading manual payment settings...</span>
       </div>
     );
   }
@@ -119,157 +136,275 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
           <div>
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <Sliders className="w-5 h-5 text-[#FF6000]" />
-              Platform Configuration & Payment Gateway
+              Platform Settings & Multi-Channel Payment Configuration
             </h2>
             <p className="text-xs text-gray-400 mt-0.5">
-              Control UniVePay payment gateway, withdrawal parameters, automated settlement, and operational switches.
+              Set separate UPI IDs and QR codes for PayU, TopPay, and UPay deposit channels.
             </p>
           </div>
 
           <button
-            onClick={() => {
-              loadData();
-              loadBalance();
-            }}
-            disabled={saving || balanceLoading}
+            onClick={loadData}
+            disabled={saving}
             className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 cursor-pointer self-start sm:self-auto flex items-center gap-1.5 text-xs font-bold"
           >
-            <RefreshCw className={`w-4 h-4 ${balanceLoading ? 'animate-spin' : ''}`} />
-            <span>Sync Live Status</span>
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <span>Refresh Settings</span>
           </button>
-        </div>
-      </div>
-
-      {/* UniVePay Live Gateway Monitor Banner */}
-      <div className="bg-gradient-to-r from-[#0d1626] to-[#0a1120] border border-cyan-900/50 rounded-2xl p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-cyan-500/15 text-cyan-400 flex items-center justify-center">
-              <Activity className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-bold text-sm text-white">UniVePay Master Gateway Status</h3>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                  {gatewaySettings.gatewayConnectivity || 'CONNECTED'}
-                </span>
-              </div>
-              <p className="text-[11px] text-gray-400">
-                Merchant No: <span className="font-mono text-cyan-300 font-bold">{gatewaySettings.merchantNo || '100008'}</span>
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={loadBalance}
-            disabled={balanceLoading}
-            className="px-3 py-1.5 rounded-lg bg-cyan-950/60 border border-cyan-800 text-cyan-300 text-xs font-bold hover:bg-cyan-900/60 transition-colors flex items-center gap-1.5"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${balanceLoading ? 'animate-spin' : ''}`} />
-            <span>Check Balance</span>
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-cyan-950/80">
-          <div className="bg-[#090d16] p-3 rounded-xl border border-cyan-950">
-            <span className="text-[10.5px] text-gray-400 block font-medium">Gateway Usable Balance (CanUse)</span>
-            <span className="text-lg font-extrabold text-emerald-400">
-              ₹{(liveBalance?.balanceCanUse ?? gatewaySettings.gatewayAvailableBalance ?? 485000).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-            </span>
-          </div>
-
-          <div className="bg-[#090d16] p-3 rounded-xl border border-cyan-950">
-            <span className="text-[10.5px] text-gray-400 block font-medium">Gateway Total Merchant Balance</span>
-            <span className="text-lg font-extrabold text-cyan-300">
-              ₹{(liveBalance?.balance ?? gatewaySettings.gatewayTotalBalance ?? 500000).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-            </span>
-          </div>
-
-          <div className="bg-[#090d16] p-3 rounded-xl border border-cyan-950">
-            <span className="text-[10.5px] text-gray-400 block font-medium">Last Reconciliation</span>
-            <span className="text-xs font-semibold text-gray-300">
-              {gatewaySettings.gatewayLastChecked ? new Date(gatewaySettings.gatewayLastChecked).toLocaleTimeString() : 'Just Now'}
-            </span>
-          </div>
         </div>
       </div>
 
       <form onSubmit={handleSave} className="space-y-5">
-        {/* Section 1: UniVePay Payment Gateway Controls */}
+        {/* Section 1: Multi-Channel Manual UPI Settings (PayU, TopPay, UPay) */}
         <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 space-y-4">
-          <h3 className="font-bold text-sm text-white flex items-center gap-2 pb-3 border-b border-gray-800">
-            <Zap className="w-4 h-4 text-[#FF6000]" />
-            UniVePay Gateway Routing & Rules
-          </h3>
+          <div className="flex items-center justify-between pb-3 border-b border-gray-800">
+            <h3 className="font-bold text-sm text-white flex items-center gap-2">
+              <Layers className="w-4 h-4 text-[#FF6000]" />
+              Deposit Channels (PayU, TopPay, UPay)
+            </h3>
+            <span className="text-[11px] text-gray-400">Independent UPI & QR for Each Channel</span>
+          </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* 1. PayU Channel */}
+            <div className="bg-[#0d1117] border border-amber-900/40 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5" /> Channel 1: PayU
+                </span>
+                <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded font-semibold">
+                  Fast UPI
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-300 mb-1">
+                  PayU UPI ID
+                </label>
+                <input
+                  type="text"
+                  value={paymentSettings.payuUpiId || ''}
+                  onChange={(e) =>
+                    setPaymentSettings({ ...paymentSettings, payuUpiId: e.target.value })
+                  }
+                  placeholder="payu@okhdfcbank"
+                  className="w-full bg-[#161b22] border border-gray-700 focus:border-amber-500 rounded-lg p-2 text-xs text-white font-mono outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-300 mb-1">
+                  Upload PayU QR Image
+                </label>
+                <label className="border border-dashed border-gray-700 hover:border-amber-500 rounded-lg p-2.5 flex items-center justify-center gap-2 cursor-pointer bg-[#161b22] transition-colors">
+                  {uploadingChannel === 'payu' ? (
+                    <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+                  ) : (
+                    <Upload className="w-3.5 h-3.5 text-gray-400" />
+                  )}
+                  <span className="text-[11px] text-gray-300 font-semibold">
+                    {uploadingChannel === 'payu' ? 'Uploading...' : 'Upload PayU QR'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleChannelQrUpload('payu', e)}
+                    disabled={uploadingChannel === 'payu'}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+
+              {/* PayU Preview */}
+              <div className="bg-[#161b22] p-2.5 rounded-lg border border-gray-800 flex items-center gap-3">
+                <div className="bg-white p-1 rounded-md shrink-0">
+                  <img
+                    src={
+                      paymentSettings.payuQrImageUrl ||
+                      `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(
+                        `upi://pay?pa=${paymentSettings.payuUpiId || 'payu@upi'}&pn=PowerBank_PayU&cu=INR`
+                      )}`
+                    }
+                    alt="PayU QR"
+                    className="w-14 h-14 object-contain"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+                <div className="overflow-hidden">
+                  <span className="text-[10px] text-gray-400 block font-medium">Active PayU UPI</span>
+                  <span className="text-xs font-mono font-bold text-white truncate block">
+                    {paymentSettings.payuUpiId || 'payu@upi'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* 2. TopPay Channel */}
+            <div className="bg-[#0d1117] border border-blue-900/40 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-blue-400 flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5" /> Channel 2: TopPay
+                </span>
+                <span className="text-[10px] bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded font-semibold">
+                  Auto Scan
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-300 mb-1">
+                  TopPay UPI ID
+                </label>
+                <input
+                  type="text"
+                  value={paymentSettings.toppayUpiId || ''}
+                  onChange={(e) =>
+                    setPaymentSettings({ ...paymentSettings, toppayUpiId: e.target.value })
+                  }
+                  placeholder="toppay@okaxis"
+                  className="w-full bg-[#161b22] border border-gray-700 focus:border-blue-500 rounded-lg p-2 text-xs text-white font-mono outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-300 mb-1">
+                  Upload TopPay QR Image
+                </label>
+                <label className="border border-dashed border-gray-700 hover:border-blue-500 rounded-lg p-2.5 flex items-center justify-center gap-2 cursor-pointer bg-[#161b22] transition-colors">
+                  {uploadingChannel === 'toppay' ? (
+                    <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+                  ) : (
+                    <Upload className="w-3.5 h-3.5 text-gray-400" />
+                  )}
+                  <span className="text-[11px] text-gray-300 font-semibold">
+                    {uploadingChannel === 'toppay' ? 'Uploading...' : 'Upload TopPay QR'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleChannelQrUpload('toppay', e)}
+                    disabled={uploadingChannel === 'toppay'}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+
+              {/* TopPay Preview */}
+              <div className="bg-[#161b22] p-2.5 rounded-lg border border-gray-800 flex items-center gap-3">
+                <div className="bg-white p-1 rounded-md shrink-0">
+                  <img
+                    src={
+                      paymentSettings.toppayQrImageUrl ||
+                      `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(
+                        `upi://pay?pa=${paymentSettings.toppayUpiId || 'toppay@upi'}&pn=PowerBank_TopPay&cu=INR`
+                      )}`
+                    }
+                    alt="TopPay QR"
+                    className="w-14 h-14 object-contain"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+                <div className="overflow-hidden">
+                  <span className="text-[10px] text-gray-400 block font-medium">Active TopPay UPI</span>
+                  <span className="text-xs font-mono font-bold text-white truncate block">
+                    {paymentSettings.toppayUpiId || 'toppay@upi'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. UPay Channel */}
+            <div className="bg-[#0d1117] border border-emerald-900/40 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5" /> Channel 3: UPay
+                </span>
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-semibold">
+                  Instant QR
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-300 mb-1">
+                  UPay UPI ID
+                </label>
+                <input
+                  type="text"
+                  value={paymentSettings.upayUpiId || ''}
+                  onChange={(e) =>
+                    setPaymentSettings({ ...paymentSettings, upayUpiId: e.target.value })
+                  }
+                  placeholder="upay@icici"
+                  className="w-full bg-[#161b22] border border-gray-700 focus:border-emerald-500 rounded-lg p-2 text-xs text-white font-mono outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-gray-300 mb-1">
+                  Upload UPay QR Image
+                </label>
+                <label className="border border-dashed border-gray-700 hover:border-emerald-500 rounded-lg p-2.5 flex items-center justify-center gap-2 cursor-pointer bg-[#161b22] transition-colors">
+                  {uploadingChannel === 'upay' ? (
+                    <Loader2 className="w-3.5 h-3.5 text-emerald-400 animate-spin" />
+                  ) : (
+                    <Upload className="w-3.5 h-3.5 text-gray-400" />
+                  )}
+                  <span className="text-[11px] text-gray-300 font-semibold">
+                    {uploadingChannel === 'upay' ? 'Uploading...' : 'Upload UPay QR'}
+                  </span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleChannelQrUpload('upay', e)}
+                    disabled={uploadingChannel === 'upay'}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+
+              {/* UPay Preview */}
+              <div className="bg-[#161b22] p-2.5 rounded-lg border border-gray-800 flex items-center gap-3">
+                <div className="bg-white p-1 rounded-md shrink-0">
+                  <img
+                    src={
+                      paymentSettings.upayQrImageUrl ||
+                      `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(
+                        `upi://pay?pa=${paymentSettings.upayUpiId || 'upay@upi'}&pn=PowerBank_UPay&cu=INR`
+                      )}`
+                    }
+                    alt="UPay QR"
+                    className="w-14 h-14 object-contain"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+                <div className="overflow-hidden">
+                  <span className="text-[10px] text-gray-400 block font-medium">Active UPay UPI</span>
+                  <span className="text-xs font-mono font-bold text-white truncate block">
+                    {paymentSettings.upayUpiId || 'upay@upi'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-2">
             <label
-              className={`p-3.5 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
-                gatewaySettings.isUniVePayDepositEnabled
+              className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
+                paymentSettings.isRechargeEnabled
                   ? 'bg-[#0d1117] border-emerald-500/40 text-white'
                   : 'bg-[#0d1117]/60 border-gray-800 text-gray-400'
               }`}
             >
               <div>
-                <div className="text-xs font-bold text-white">UniVePay UPI Gateway Deposit</div>
-                <div className="text-[10.5px] text-gray-500">Automated UPI payment gateway checkout</div>
+                <div className="text-xs font-bold text-white">Enable Recharge & Deposit System</div>
+                <div className="text-[10.5px] text-gray-500">Allow users to view deposit channels and submit UTR</div>
               </div>
               <input
                 type="checkbox"
-                checked={gatewaySettings.isUniVePayDepositEnabled}
+                checked={paymentSettings.isRechargeEnabled}
                 onChange={(e) =>
-                  setGatewaySettings({
-                    ...gatewaySettings,
-                    isUniVePayDepositEnabled: e.target.checked,
-                  })
-                }
-                className="w-4 h-4 accent-[#FF6000] cursor-pointer"
-              />
-            </label>
-
-            <label
-              className={`p-3.5 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
-                gatewaySettings.isUniVePayAutoWithdrawalEnabled
-                  ? 'bg-[#0d1117] border-emerald-500/40 text-white'
-                  : 'bg-[#0d1117]/60 border-gray-800 text-gray-400'
-              }`}
-            >
-              <div>
-                <div className="text-xs font-bold text-white">UniVePay Auto Payout (Withdrawal)</div>
-                <div className="text-[10.5px] text-gray-500">Instant automatic settlement via UniVePay API</div>
-              </div>
-              <input
-                type="checkbox"
-                checked={gatewaySettings.isUniVePayAutoWithdrawalEnabled}
-                onChange={(e) =>
-                  setGatewaySettings({
-                    ...gatewaySettings,
-                    isUniVePayAutoWithdrawalEnabled: e.target.checked,
-                  })
-                }
-                className="w-4 h-4 accent-[#FF6000] cursor-pointer"
-              />
-            </label>
-
-            <label
-              className={`p-3.5 rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
-                gatewaySettings.isManualWithdrawalEnabled
-                  ? 'bg-[#0d1117] border-emerald-500/40 text-white'
-                  : 'bg-[#0d1117]/60 border-gray-800 text-gray-400'
-              }`}
-            >
-              <div>
-                <div className="text-xs font-bold text-white">Manual Withdrawal Support</div>
-                <div className="text-[10.5px] text-gray-500">Allows users to request manual admin settlement</div>
-              </div>
-              <input
-                type="checkbox"
-                checked={gatewaySettings.isManualWithdrawalEnabled}
-                onChange={(e) =>
-                  setGatewaySettings({
-                    ...gatewaySettings,
-                    isManualWithdrawalEnabled: e.target.checked,
+                  setPaymentSettings({
+                    ...paymentSettings,
+                    isRechargeEnabled: e.target.checked,
                   })
                 }
                 className="w-4 h-4 accent-[#FF6000] cursor-pointer"
@@ -281,8 +416,8 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
         {/* Section 2: Financial & Withdrawal Thresholds */}
         <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 space-y-4">
           <h3 className="font-bold text-sm text-white flex items-center gap-2 pb-3 border-b border-gray-800">
-            <CreditCard className="w-4 h-4 text-emerald-400" />
-            Withdrawal Thresholds & Fees
+            <CreditCard className="w-4 h-4 text-purple-400" />
+            Manual Withdrawal Limits & Fee
           </h3>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -341,6 +476,32 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
                 className="w-full bg-[#0d1117] border border-gray-700 focus:border-[#FF6000] rounded-xl p-2.5 text-xs text-white outline-none"
               />
             </div>
+
+            <div className="flex items-end">
+              <label
+                className={`p-2.5 rounded-xl border flex items-center justify-between w-full cursor-pointer transition-all ${
+                  settings.isWithdrawalEnabled
+                    ? 'bg-[#0d1117] border-emerald-500/40 text-white'
+                    : 'bg-[#0d1117]/60 border-gray-800 text-gray-400'
+                }`}
+              >
+                <div>
+                  <div className="text-xs font-bold text-white">Enable Manual Withdrawals</div>
+                  <div className="text-[10px] text-gray-500">Allow users to submit withdrawal requests</div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.isWithdrawalEnabled}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      isWithdrawalEnabled: e.target.checked,
+                    })
+                  }
+                  className="w-4 h-4 accent-[#FF6000] cursor-pointer"
+                />
+              </label>
+            </div>
           </div>
         </div>
 
@@ -348,23 +509,11 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
         <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 space-y-4">
           <h3 className="font-bold text-sm text-white flex items-center gap-2 pb-3 border-b border-gray-800">
             <Shield className="w-4 h-4 text-amber-400" />
-            Operational Switches & Store Controls
+            Store Hall & Yield Operational Switches
           </h3>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {[
-              {
-                id: 'isRechargeEnabled',
-                label: 'Recharge / Deposit System',
-                sub: 'Allows users to initiate new recharge deposits',
-                val: settings.isRechargeEnabled,
-              },
-              {
-                id: 'isWithdrawalEnabled',
-                label: 'Withdrawal Cashout System',
-                sub: 'Allows users to submit withdrawal requests',
-                val: settings.isWithdrawalEnabled,
-              },
               {
                 id: 'isClaimEnabled',
                 label: 'Device Yield Claiming (My Device)',
@@ -415,7 +564,7 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
             className="px-6 py-3 rounded-xl bg-gradient-to-r from-[#FF6000] to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold text-xs shadow-lg shadow-orange-950/40 inline-flex items-center gap-2 cursor-pointer disabled:opacity-50"
           >
             {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            <span>Save System & Gateway Parameters</span>
+            <span>Save Platform & Payment Settings</span>
           </button>
         </div>
       </form>

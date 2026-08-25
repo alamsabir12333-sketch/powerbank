@@ -1,8 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, ShieldCheck, CreditCard, AlertCircle, Plus, Zap, Banknote, CheckCircle2, RefreshCw } from 'lucide-react';
+import {
+  X,
+  ShieldCheck,
+  CreditCard,
+  AlertCircle,
+  Plus,
+  Banknote,
+  CheckCircle2,
+  RefreshCw,
+  Info,
+} from 'lucide-react';
 import { BankAccount, Wallet } from '../types';
-import { fetchBankAccounts, requestWithdrawalGateway, fetchGatewaySettings } from '../services/api';
+import { fetchBankAccounts, submitWithdrawalRequest } from '../services/api';
 
 interface WithdrawalModalProps {
   isOpen: boolean;
@@ -26,7 +36,6 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
   const [selectedBankId, setSelectedBankId] = useState<string>('');
   const [upiId, setUpiId] = useState<string>('');
   const [channel, setChannel] = useState<'bank' | 'upi'>('bank');
-  const [payoutType, setPayoutType] = useState<'UNIVEPAY_AUTO' | 'MANUAL'>('UNIVEPAY_AUTO');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,12 +48,6 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
           const def = banks.find((b) => b.isDefault) || banks[0];
           setSelectedBankId(def.id);
           if (def.upiId) setUpiId(def.upiId);
-        }
-      });
-
-      fetchGatewaySettings().then((st) => {
-        if (!st.isUniVePayAutoWithdrawalEnabled && st.isManualWithdrawalEnabled) {
-          setPayoutType('MANUAL');
         }
       });
     }
@@ -63,7 +66,8 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
 
   const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (numAmount < 100) {
       setError('Minimum withdrawal amount is ₹100.');
       return;
@@ -85,29 +89,17 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
     setError(null);
 
     try {
-      const res = await requestWithdrawalGateway({
+      await submitWithdrawalRequest(
         userId,
-        amount: numAmount,
-        method: payoutType,
-        bankName: selectedBank?.bankName,
-        bankCode: 'UPI',
-        accountName: selectedBank?.accountHolderName,
-        accountNumber: selectedBank?.accountNumber,
-        upiId: channel === 'upi' ? upiId : selectedBank?.upiId,
-      });
+        numAmount,
+        channel === 'bank' ? selectedBankId : undefined,
+        channel === 'upi' ? upiId.trim() : undefined
+      );
 
-      if (res.success) {
-        onSuccess(
-          payoutType === 'UNIVEPAY_AUTO'
-            ? `Instant Payout of ₹${numAmount} initiated via UniVePay! Status: ${res.gatewayStatus || 'Processing'}`
-            : `Manual withdrawal request of ₹${numAmount} submitted for Admin review.`
-        );
-        onClose();
-      } else {
-        throw new Error(res.error || 'Failed to submit withdrawal');
-      }
+      onSuccess(`Manual withdrawal request of ₹${numAmount} submitted for Admin review.`);
+      onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to process withdrawal');
+      setError(err.message || 'Failed to submit withdrawal request.');
     } finally {
       setLoading(false);
     }
@@ -134,11 +126,11 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
           <div className="flex items-center justify-between px-5 py-4 border-b border-[#2a2a2a] bg-[#181818]">
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-lg bg-[#FF6000]/15 text-[#FF6000] flex items-center justify-center">
-                <ShieldCheck className="w-5 h-5" />
+                <Banknote className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="font-bold text-base text-white">Withdrawal Cashout</h3>
-                <span className="text-[10px] text-gray-400 font-medium">Device Earning Balance</span>
+                <h3 className="font-bold text-base text-white">Manual Withdrawal</h3>
+                <span className="text-[10px] text-gray-400 font-medium">Device Earnings Payout</span>
               </div>
             </div>
             <button
@@ -169,7 +161,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setAmount(withdrawableEarnings.toString())}
-                  className="px-2.5 py-1 rounded-lg bg-[#2a2a2a] hover:bg-[#333] text-gray-300 text-xs font-bold transition-colors"
+                  className="px-2.5 py-1 rounded-lg bg-[#2a2a2a] hover:bg-[#333] text-gray-300 text-xs font-bold transition-colors cursor-pointer"
                 >
                   All In
                 </button>
@@ -182,46 +174,6 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                 <div className="text-gray-400 text-right">
                   Recharge (Non-withdrawable): <strong className="text-gray-400">₹{rechargeBalance.toFixed(2)}</strong>
                 </div>
-              </div>
-            </div>
-
-            {/* Withdrawal Mode: Auto Gateway vs Manual */}
-            <div>
-              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
-                Withdrawal Mode
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPayoutType('UNIVEPAY_AUTO')}
-                  className={`p-2.5 rounded-xl border text-left transition-all ${
-                    payoutType === 'UNIVEPAY_AUTO'
-                      ? 'bg-emerald-950/40 border-emerald-500/60 text-emerald-300 shadow-sm'
-                      : 'bg-[#121212] border-[#2a2a2a] text-gray-400'
-                  }`}
-                >
-                  <div className="flex items-center gap-1 font-bold text-xs">
-                    <Zap className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Auto Gateway</span>
-                  </div>
-                  <span className="text-[10px] text-gray-400 block mt-0.5">UniVePay Payout</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setPayoutType('MANUAL')}
-                  className={`p-2.5 rounded-xl border text-left transition-all ${
-                    payoutType === 'MANUAL'
-                      ? 'bg-orange-950/40 border-orange-500/60 text-orange-300 shadow-sm'
-                      : 'bg-[#121212] border-[#2a2a2a] text-gray-400'
-                  }`}
-                >
-                  <div className="flex items-center gap-1 font-bold text-xs">
-                    <Banknote className="w-3.5 h-3.5 text-[#FF6000]" />
-                    <span>Manual Transfer</span>
-                  </div>
-                  <span className="text-[10px] text-gray-400 block mt-0.5">Admin Review</span>
-                </button>
               </div>
             </div>
 
@@ -256,7 +208,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setChannel('bank')}
-                  className={`py-2 rounded-xl text-xs font-bold border transition-all ${
+                  className={`py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
                     channel === 'bank'
                       ? 'bg-[#FF6000]/15 border-[#FF6000] text-[#FF6000]'
                       : 'bg-[#121212] border-[#2a2a2a] text-gray-400'
@@ -267,7 +219,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setChannel('upi')}
-                  className={`py-2 rounded-xl text-xs font-bold border transition-all ${
+                  className={`py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
                     channel === 'upi'
                       ? 'bg-[#FF6000]/15 border-[#FF6000] text-[#FF6000]'
                       : 'bg-[#121212] border-[#2a2a2a] text-gray-400'
@@ -289,7 +241,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                       onClose();
                       onOpenBindCard();
                     }}
-                    className="text-xs text-[#FF6000] font-bold flex items-center gap-0.5 hover:underline"
+                    className="text-xs text-[#FF6000] font-bold flex items-center gap-0.5 hover:underline cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>Add New</span>
@@ -305,7 +257,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                         onClose();
                         onOpenBindCard();
                       }}
-                      className="px-3 py-1.5 rounded-lg bg-[#FF6000] text-white text-xs font-bold"
+                      className="px-3 py-1.5 rounded-lg bg-[#FF6000] text-white text-xs font-bold cursor-pointer"
                     >
                       Bind Bank Card Now
                     </button>
@@ -378,17 +330,17 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             {/* Submit Button */}
             <button
               type="button"
-              disabled={loading || withdrawableEarnings < 100}
+              disabled={loading || withdrawableEarnings < 100 || numAmount < 100}
               onClick={handleSubmit}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF6000] to-[#FF8C00] text-white font-bold text-sm shadow-md shadow-orange-500/25 active:scale-98 transition-transform disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF6000] to-[#FF8C00] text-white font-bold text-sm shadow-md shadow-orange-500/25 active:scale-98 transition-transform disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
             >
               {loading ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Processing Payout...</span>
+                  <span>Submitting Request...</span>
                 </>
               ) : (
-                <span>Confirm {payoutType === 'UNIVEPAY_AUTO' ? 'Instant Gateway' : 'Manual'} Withdrawal</span>
+                <span>Submit Withdrawal Request (₹{numAmount.toFixed(2)})</span>
               )}
             </button>
           </div>

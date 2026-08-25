@@ -11,19 +11,18 @@ import {
   X,
   CreditCard,
   AlertTriangle,
-  Zap,
   ExternalLink,
+  Copy,
+  Check,
+  ImageIcon,
   ShieldCheck,
 } from 'lucide-react';
 import {
   fetchAdminPayments,
   approveRecharge,
   rejectRecharge,
-  fetchDepositTransactions,
-  checkUniVePayDepositStatus,
-  submitUniVePayUtrSupplement,
 } from '../../services/api';
-import { PaymentItem, DepositTransaction } from '../../types';
+import { PaymentItem } from '../../types';
 
 interface AdminRechargeTabProps {
   adminId: string;
@@ -37,15 +36,10 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
   onRefreshGlobalStats,
 }) => {
   const [payments, setPayments] = useState<PaymentItem[]>([]);
-  const [gatewayDeposits, setGatewayDeposits] = useState<DepositTransaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [reconcilingId, setReconcilingId] = useState<string | null>(null);
-
-  // UTR supplement modal
-  const [supplementItem, setSupplementItem] = useState<DepositTransaction | null>(null);
-  const [supplementUtr, setSupplementUtr] = useState('');
+  const [copiedUtr, setCopiedUtr] = useState<string | null>(null);
 
   // Screenshot preview modal
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -58,14 +52,10 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
   const loadPayments = async () => {
     setLoading(true);
     try {
-      const [data, gw] = await Promise.all([
-        fetchAdminPayments(),
-        fetchDepositTransactions(),
-      ]);
+      const data = await fetchAdminPayments();
       setPayments(data);
-      setGatewayDeposits(gw);
     } catch (e: any) {
-      onShowToast(e.message || 'Error loading recharges');
+      onShowToast(e.message || 'Error loading recharge requests');
     } finally {
       setLoading(false);
     }
@@ -75,12 +65,18 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
     loadPayments();
   }, []);
 
+  const handleCopyUtr = (utr: string) => {
+    navigator.clipboard.writeText(utr);
+    setCopiedUtr(utr);
+    setTimeout(() => setCopiedUtr(null), 2000);
+  };
+
   const handleApprove = async (item: PaymentItem) => {
     if (!window.confirm(`Approve recharge of ₹${item.amount} for user ID ${item.userId}?`)) return;
     setProcessingId(item.id);
     try {
       await approveRecharge(item.id, adminId);
-      onShowToast(`Recharge of ₹${item.amount} approved and credited.`);
+      onShowToast(`Recharge of ₹${item.amount} approved and credited to user's recharge balance.`);
       loadPayments();
       onRefreshGlobalStats();
     } catch (e: any) {
@@ -112,55 +108,14 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
     }
   };
 
-  const handleQueryGateway = async (traceno: string, amount: number) => {
-    setReconcilingId(traceno);
-    try {
-      const res = await checkUniVePayDepositStatus(traceno, amount);
-      if (res.success) {
-        onShowToast(`Gateway status: ${res.data?.data?.status || res.data?.status || 'UPDATED'}`);
-        loadPayments();
-      } else {
-        onShowToast('Failed to check gateway status');
-      }
-    } catch (e: any) {
-      onShowToast(e.message || 'Error querying gateway');
-    } finally {
-      setReconcilingId(null);
-    }
-  };
-
-  const handleConfirmUtrSupplement = async () => {
-    if (!supplementItem || !supplementUtr.trim()) {
-      onShowToast('Please enter a valid 12-digit UTR');
-      return;
-    }
-
-    setProcessingId(supplementItem.id);
-    try {
-      const res = await submitUniVePayUtrSupplement(
-        supplementItem.traceno,
-        supplementUtr.trim(),
-        supplementItem.amount
-      );
-      if (res.success) {
-        onShowToast(`UTR ${supplementUtr} submitted to UniVePay for reconciliation.`);
-        setSupplementItem(null);
-        setSupplementUtr('');
-        loadPayments();
-      } else {
-        onShowToast('Failed to submit UTR supplement');
-      }
-    } catch (e: any) {
-      onShowToast(e.message || 'UTR supplement failed');
-    } finally {
-      setProcessingId(null);
-    }
-  };
-
   const filteredPayments = payments.filter((p) => {
     if (statusFilter !== 'ALL') {
       if (statusFilter === 'PENDING') {
-        if (p.status !== 'PENDING_VERIFICATION' && p.status !== 'PAYMENT_PENDING') return false;
+        if (p.status !== 'PENDING_VERIFICATION' && p.status !== 'PAYMENT_PENDING') {
+          return false;
+        }
+      } else if (statusFilter === 'PAID') {
+        if (p.status !== 'PAID') return false;
       } else if (p.status !== statusFilter) {
         return false;
       }
@@ -168,16 +123,23 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       return (
-        (p.utrNumber || '').toLowerCase().includes(q) ||
+        (p.utr || '').toLowerCase().includes(q) ||
         (p.id || '').toLowerCase().includes(q) ||
-        (p.userId || '').toLowerCase().includes(q)
+        (p.orderId || '').toLowerCase().includes(q) ||
+        (p.userId || '').toLowerCase().includes(q) ||
+        (p.userMobile || '').toLowerCase().includes(q) ||
+        (p.username || '').toLowerCase().includes(q)
       );
     }
     return true;
   });
 
-  const pendingCount = payments.filter((p) => p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING').length;
-  const approvedTotal = payments.filter((p) => p.status === 'PAID').reduce((acc, p) => acc + p.amount, 0);
+  const pendingCount = payments.filter(
+    (p) => p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING'
+  ).length;
+  const approvedTotal = payments
+    .filter((p) => p.status === 'PAID')
+    .reduce((acc, p) => acc + p.amount, 0);
 
   return (
     <div className="space-y-5">
@@ -187,10 +149,10 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
           <div>
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <ArrowDownLeft className="w-5 h-5 text-emerald-400" />
-              UniVePay Gateway Recharges & Deposits
+              Manual UPI Deposits & Recharge Review
             </h2>
             <p className="text-xs text-gray-400 mt-0.5">
-              Automated UniVePay UPI Gateway transactions, real-time webhook verifications, and UTR supplements.
+              Review user-submitted UPI UTR numbers and payment screenshots, approve balance credits, or reject invalid requests.
             </p>
           </div>
 
@@ -216,7 +178,7 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by 12-digit UTR, Order Traceno, or User ID..."
+              placeholder="Search by 12-digit UTR, Order ID, User Mobile or ID..."
               className="w-full bg-[#0d1117] border border-gray-700/80 focus:border-[#FF6000] rounded-xl py-2.5 pl-10 pr-4 text-xs text-white placeholder-gray-500 outline-none"
             />
           </div>
@@ -250,10 +212,11 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
           <table className="w-full text-left text-xs text-gray-300">
             <thead className="bg-[#0d1117] text-gray-400 text-[11px] font-semibold uppercase tracking-wider border-b border-gray-800">
               <tr>
-                <th className="py-3.5 px-4">Order Traceno & Date</th>
+                <th className="py-3.5 px-4">Order ID & Date</th>
                 <th className="py-3.5 px-4">User</th>
                 <th className="py-3.5 px-4">Amount</th>
-                <th className="py-3.5 px-4">Channel / UTR</th>
+                <th className="py-3.5 px-4">12-Digit UTR</th>
+                <th className="py-3.5 px-4">Payment Screenshot</th>
                 <th className="py-3.5 px-4">Status</th>
                 <th className="py-3.5 px-4 text-right">Actions</th>
               </tr>
@@ -261,34 +224,30 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
             <tbody className="divide-y divide-gray-800/60">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-gray-500">
+                  <td colSpan={7} className="py-12 text-center text-gray-500">
                     <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-[#FF6000]" />
-                    <span>Loading deposit ledger...</span>
+                    <span>Loading deposit requests...</span>
                   </td>
                 </tr>
               ) : filteredPayments.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-10 text-center text-gray-500">
-                    No recharge records found.
+                  <td colSpan={7} className="py-10 text-center text-gray-500">
+                    No manual deposit records found.
                   </td>
                 </tr>
               ) : (
                 filteredPayments.map((item) => {
                   const isPending =
-                    item.status === 'PENDING_VERIFICATION' || item.status === 'PAYMENT_PENDING';
+                    item.status === 'PENDING_VERIFICATION' ||
+                    item.status === 'PAYMENT_PENDING';
                   const isPaid = item.status === 'PAID';
-                  const isRejected = item.status === 'REJECTED';
-
-                  const gwTxn = gatewayDeposits.find(
-                    (g) => g.id === item.id || g.traceno === item.id || g.utr === item.utrNumber
-                  );
+                  const isRejected = item.status === 'REJECTED' || item.status === 'FAILED';
 
                   return (
                     <tr key={item.id} className="hover:bg-gray-800/30 transition-colors">
                       <td className="py-3 px-4 font-mono">
-                        <div className="font-bold text-white text-[11.5px] flex items-center gap-1.5">
-                          <Zap className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                          <span>{item.id}</span>
+                        <div className="font-bold text-white text-[11.5px]">
+                          {item.orderId || item.id}
                         </div>
                         <div className="text-[10px] text-gray-500">
                           {new Date(item.createdAt).toLocaleString()}
@@ -296,7 +255,7 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
                       </td>
 
                       <td className="py-3 px-4">
-                        <div className="font-semibold text-gray-200">{item.username || 'User'}</div>
+                        <div className="font-semibold text-gray-200">{item.username || item.userMobile || 'User'}</div>
                         <div className="text-[10px] text-gray-500 font-mono">
                           ID: {item.userId?.substring(0, 8)}...
                         </div>
@@ -309,17 +268,41 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
                       </td>
 
                       <td className="py-3 px-4 font-mono">
-                        <div className="text-xs font-bold text-white">
-                          {item.utrNumber ? (
-                            <span className="text-amber-400">{item.utrNumber}</span>
-                          ) : (
-                            <span className="text-cyan-300 font-sans text-[11px]">UniVePay Gateway</span>
-                          )}
-                        </div>
-                        {gwTxn?.gatewayOrderId && (
-                          <div className="text-[10px] text-gray-500 font-mono">
-                            OID: {gwTxn.gatewayOrderId}
+                        {item.utr ? (
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-amber-400 bg-amber-950/40 px-2 py-0.5 rounded border border-amber-800/40 text-[11px]">
+                              {item.utr}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleCopyUtr(item.utr!)}
+                              className="p-1 text-gray-400 hover:text-white rounded hover:bg-gray-700 cursor-pointer"
+                              title="Copy UTR"
+                            >
+                              {copiedUtr === item.utr ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
                           </div>
+                        ) : (
+                          <span className="text-gray-500 italic text-[11px]">No UTR provided</span>
+                        )}
+                      </td>
+
+                      <td className="py-3 px-4">
+                        {item.proofUrl ? (
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImage(item.proofUrl!)}
+                            className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-cyan-300 font-semibold text-[11px] cursor-pointer"
+                          >
+                            <ImageIcon className="w-3.5 h-3.5" />
+                            <span>View Proof</span>
+                          </button>
+                        ) : (
+                          <span className="text-[10.5px] text-gray-500">No screenshot</span>
                         )}
                       </td>
 
@@ -335,33 +318,15 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
                         >
                           {item.status}
                         </span>
+                        {item.rejectionReason && (
+                          <div className="text-[9.5px] text-red-400 mt-0.5 line-clamp-1" title={item.rejectionReason}>
+                            Reason: {item.rejectionReason}
+                          </div>
+                        )}
                       </td>
 
                       <td className="py-3 px-4 text-right space-x-1.5 whitespace-nowrap">
-                        {gwTxn?.traceno && isPending && (
-                          <button
-                            onClick={() => handleQueryGateway(gwTxn.traceno, item.amount)}
-                            disabled={reconcilingId === gwTxn.traceno}
-                            className="px-2 py-1 rounded-lg bg-cyan-950/60 border border-cyan-800 text-cyan-300 hover:bg-cyan-900 text-[11px] font-bold inline-flex items-center gap-1"
-                          >
-                            <RefreshCw className={`w-3 h-3 ${reconcilingId === gwTxn.traceno ? 'animate-spin' : ''}`} />
-                            <span>Check Gateway</span>
-                          </button>
-                        )}
-
-                        {gwTxn && isPending && (
-                          <button
-                            onClick={() => {
-                              setSupplementItem(gwTxn);
-                              setSupplementUtr('');
-                            }}
-                            className="px-2 py-1 rounded-lg bg-purple-950/60 border border-purple-800 text-purple-300 hover:bg-purple-900 text-[11px] font-bold inline-flex items-center gap-1"
-                          >
-                            <span>UTR Supplement</span>
-                          </button>
-                        )}
-
-                        {isPending && (
+                        {isPending ? (
                           <>
                             <button
                               onClick={() => handleApprove(item)}
@@ -384,6 +349,8 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
                               <span>Reject</span>
                             </button>
                           </>
+                        ) : (
+                          <span className="text-[10px] text-gray-500 font-mono">Processed</span>
                         )}
                       </td>
                     </tr>
@@ -395,62 +362,41 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
         </div>
       </div>
 
-      {/* MODAL 1: UTR Supplement Dialog */}
-      {supplementItem && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#161b22] border border-gray-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-gray-800 mb-4">
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <Zap className="w-5 h-5 text-cyan-400" />
-                Submit UTR Supplement to UniVePay
+      {/* MODAL 1: Screenshot Preview */}
+      {previewImage && (
+        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#161b22] border border-gray-800 rounded-2xl max-w-2xl w-full p-4 overflow-hidden shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-800 mb-3">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <ImageIcon className="w-4 h-4 text-[#FF6000]" />
+                <span>Payment Screenshot Proof</span>
               </h3>
-              <button onClick={() => setSupplementItem(null)} className="text-gray-400 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <a
+                  href={previewImage}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs flex items-center gap-1 px-2"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Open Full Size</span>
+                </a>
+                <button
+                  onClick={() => setPreviewImage(null)}
+                  className="p-1 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
-            <p className="text-xs text-gray-300 mb-3">
-              If user completed payment via bank UPI app and gateway order is pending, forward the 12-digit UTR directly to UniVePay for automated reconciliation:
-            </p>
-
-            <div className="bg-[#0d1117] p-3 rounded-xl border border-gray-800 mb-4 text-xs font-mono">
-              <div className="flex justify-between">
-                <span className="text-gray-400 font-sans">Order Ref:</span>
-                <span className="text-cyan-300 font-bold">{supplementItem.traceno}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-400 font-sans">Amount:</span>
-                <span className="text-emerald-400 font-bold">₹{supplementItem.amount}</span>
-              </div>
-            </div>
-
-            <div className="mb-4">
-              <label className="block text-xs font-semibold text-gray-300 uppercase mb-1.5">
-                12-Digit Bank UTR Number
-              </label>
-              <input
-                type="text"
-                value={supplementUtr}
-                onChange={(e) => setSupplementUtr(e.target.value)}
-                placeholder="e.g. 423985729104"
-                className="w-full bg-[#0d1117] border border-gray-700 focus:border-cyan-500 rounded-xl p-2.5 text-xs text-white outline-none font-mono"
+            <div className="max-h-[70vh] overflow-auto flex items-center justify-center bg-[#090d16] rounded-xl p-2">
+              <img
+                src={previewImage}
+                alt="Payment proof screenshot"
+                className="max-h-[65vh] object-contain rounded-lg shadow-lg"
+                referrerPolicy="no-referrer"
               />
-            </div>
-
-            <div className="flex gap-2">
-              <button
-                onClick={() => setSupplementItem(null)}
-                className="flex-1 py-2.5 rounded-xl bg-gray-800 text-gray-300 text-xs font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmUtrSupplement}
-                disabled={processingId === supplementItem.id}
-                className="flex-1 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                {processingId === supplementItem.id ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Submit to Gateway'}
-              </button>
             </div>
           </div>
         </div>
@@ -463,7 +409,7 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
             <div className="flex items-center justify-between pb-3 border-b border-gray-800 mb-4">
               <h3 className="text-base font-bold text-white flex items-center gap-2">
                 <AlertTriangle className="w-5 h-5 text-red-400" />
-                Reject Recharge Request #{rejectItem.id}
+                Reject Recharge Request #{rejectItem.orderId || rejectItem.id}
               </h3>
               <button onClick={() => setRejectItem(null)} className="text-gray-400 hover:text-white">
                 <X className="w-5 h-5" />
@@ -471,13 +417,13 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
             </div>
 
             <p className="text-xs text-gray-300 mb-3">
-              Rejecting will notify the user and void this deposit submission.
+              Please enter the rejection reason. This reason will be recorded and no balance will be credited:
             </p>
 
             <textarea
               value={rejectReason}
               onChange={(e) => setRejectReason(e.target.value)}
-              placeholder="e.g. Invalid UTR / Payment not received on gateway"
+              placeholder="e.g. Invalid 12-digit UTR / Payment not received in bank account"
               rows={3}
               className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-3 text-xs text-white outline-none focus:border-red-500 mb-4"
             />
@@ -485,14 +431,14 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
             <div className="flex gap-2">
               <button
                 onClick={() => setRejectItem(null)}
-                className="flex-1 py-2.5 rounded-xl bg-gray-800 text-gray-300 text-xs font-semibold"
+                className="flex-1 py-2.5 rounded-xl bg-gray-800 text-gray-300 text-xs font-semibold cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 onClick={handleConfirmReject}
                 disabled={processingId === rejectItem.id}
-                className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
               >
                 {processingId === rejectItem.id ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Confirm Rejection'}
               </button>

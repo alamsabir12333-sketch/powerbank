@@ -9,6 +9,7 @@ import {
   ResaleModal,
   InviteFriendsModal,
 } from '../components/FunctionModals';
+import { ClaimGiftCodeModal } from '../components/ClaimGiftCodeModal';
 import { TabType, UserProfile, Wallet, PurchaseItem } from '../types';
 import {
   ShieldCheck,
@@ -66,6 +67,7 @@ export const MePage: React.FC<MePageProps> = ({
   const [isBankCardOpen, setIsBankCardOpen] = useState(false);
   const [isResaleOpen, setIsResaleOpen] = useState(false);
   const [isInviteOpen, setIsInviteOpen] = useState(false);
+  const [isGiftCodeOpen, setIsGiftCodeOpen] = useState(false);
 
   const showPlaceholder = (title: string, message: string) => {
     setModalState({
@@ -98,7 +100,7 @@ export const MePage: React.FC<MePageProps> = ({
       icon: CreditCard,
       bgColor: 'bg-[#E6F4FF]',
       iconColor: 'text-[#1890FF]',
-      onClick: () => setIsBankCardOpen(true),
+      onClick: () => onNavigateTab('bank_card'),
     },
     {
       id: 'resale',
@@ -246,24 +248,55 @@ export const MePage: React.FC<MePageProps> = ({
           </div>
         </div>
 
-        {/* 3. Promotional Banner */}
-        <div
-          onClick={() => setIsInviteOpen(true)}
-          className="relative w-full rounded-xl overflow-hidden p-4 bg-[#FFF4ED] border border-[#FFD9C0] shadow-2xs cursor-pointer active:scale-[0.99] transition-transform"
-        >
-          <div className="relative z-10 flex items-center justify-between">
-            <div>
-              <p className="text-[#FF6000] font-black italic text-base tracking-tight">
-                INVITE FRIENDS
-              </p>
-              <p className="text-gray-500 text-[10px] font-medium mt-0.5">
-                Earn more commissions & double equipment benefits
-              </p>
-            </div>
+        {/* 3. Promotional Banners */}
+        <div className="space-y-3">
+          {/* 3.1 Invite Friends */}
+          <div
+            onClick={() => setIsInviteOpen(true)}
+            className="relative w-full rounded-xl overflow-hidden p-4 bg-[#FFF4ED] border border-[#FFD9C0] shadow-2xs cursor-pointer active:scale-[0.99] transition-transform"
+          >
+            <div className="relative z-10 flex items-center justify-between">
+              <div>
+                <p className="text-[#FF6000] font-black italic text-base tracking-tight">
+                  INVITE FRIENDS
+                </p>
+                <p className="text-gray-500 text-[10px] font-medium mt-0.5">
+                  Earn more commissions & double equipment benefits
+                </p>
+              </div>
 
-            {/* Circular GO Button */}
-            <div className="w-10 h-10 rounded-full bg-[#FF6000] text-white flex items-center justify-center font-bold text-xs shadow-sm active:scale-95 shrink-0">
-              GO
+              {/* Circular GO Button */}
+              <div className="w-10 h-10 rounded-full bg-[#FF6000] text-white flex items-center justify-center font-bold text-xs shadow-sm active:scale-95 shrink-0">
+                GO
+              </div>
+            </div>
+          </div>
+
+          {/* 3.2 CLAIM GIFT CODE */}
+          <div
+            id="me-claim-gift-code-card"
+            onClick={() => setIsGiftCodeOpen(true)}
+            className="relative w-full rounded-xl overflow-hidden p-4 bg-gradient-to-r from-[#FFF8F3] to-[#FFF0E6] border border-[#FFD9C0] shadow-2xs cursor-pointer active:scale-[0.99] transition-transform"
+          >
+            <div className="relative z-10 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-amber-400 to-[#FF6000] text-white flex items-center justify-center shadow-xs shrink-0">
+                  <Gift className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-[#FF6000] font-black italic text-base tracking-tight flex items-center gap-1.5">
+                    CLAIM GIFT CODE
+                  </p>
+                  <p className="text-gray-500 text-[10px] font-medium mt-0.5">
+                    Enter your gift code and claim your reward
+                  </p>
+                </div>
+              </div>
+
+              {/* Pill CLAIM Button */}
+              <div className="px-3.5 h-9 rounded-full bg-[#FF6000] hover:bg-[#e05500] text-white flex items-center justify-center font-bold text-xs shadow-sm active:scale-95 shrink-0 tracking-wide">
+                CLAIM
+              </div>
             </div>
           </div>
         </div>
@@ -346,6 +379,16 @@ export const MePage: React.FC<MePageProps> = ({
         onClose={() => setIsInviteOpen(false)}
         referralCode={referralCode}
         onCopyToast={(msg) => onShowToast(msg)}
+      />
+
+      <ClaimGiftCodeModal
+        isOpen={isGiftCodeOpen}
+        onClose={() => setIsGiftCodeOpen(false)}
+        userId={userId}
+        onSuccess={(amount, msg) => {
+          onShowToast(msg);
+          onRefreshData?.();
+        }}
       />
     </div>
   );
