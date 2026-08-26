@@ -63,13 +63,11 @@ export const AddBankCardPage: React.FC<AddBankCardPageProps> = ({
     try {
       await saveBankAccount(userId, {
         accountHolderName: fullName.trim(),
-        holderName: fullName.trim(),
         mobileNumber: mobileNumber.trim(),
         email: emailAddress.trim() || undefined,
         bankName: bankName.trim(),
         accountNumber: accountNumber.trim(),
         ifsc: ifscCode.trim().toUpperCase(),
-        ifscCode: ifscCode.trim().toUpperCase(),
         isDefault: true,
       });
 

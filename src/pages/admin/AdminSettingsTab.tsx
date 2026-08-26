@@ -17,6 +17,10 @@ import {
   Check,
   Info,
   Layers,
+  Gift,
+  CalendarCheck,
+  Sparkles,
+  Flame,
 } from 'lucide-react';
 import {
   fetchSystemSettings,
@@ -505,7 +509,177 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
           </div>
         </div>
 
-        {/* Section 3: Platform Operational Switches */}
+        {/* Section 3: Dynamic Sign-up Welcome Bonus Configuration */}
+        <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-gray-800">
+            <h3 className="font-bold text-sm text-white flex items-center gap-2">
+              <Gift className="w-4 h-4 text-amber-400" />
+              Sign-up Welcome Bonus (Fully Dynamic)
+            </h3>
+            <span className="text-[11px] text-gray-400">Credited instantly upon new account registration</span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
+                Sign-up Bonus Amount (₹)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-2.5 text-xs text-amber-400 font-bold">₹</span>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={settings.signUpBonusAmount !== undefined ? settings.signUpBonusAmount : 50}
+                  onChange={(e) => setSettings({ ...settings, signUpBonusAmount: Number(e.target.value) })}
+                  required
+                  placeholder="50"
+                  className="w-full bg-[#0d1117] border border-gray-700 focus:border-[#FF6000] rounded-xl p-2.5 pl-8 text-xs text-white outline-none font-mono"
+                />
+              </div>
+              <p className="text-[10.5px] text-gray-500 mt-1">
+                Amount dynamically credited to newly registered user wallet balance.
+              </p>
+            </div>
+
+            <div className="flex items-end">
+              <label
+                className={`p-3 rounded-xl border flex items-center justify-between w-full cursor-pointer transition-all ${
+                  settings.isSignUpBonusEnabled !== false
+                    ? 'bg-[#0d1117] border-emerald-500/40 text-white'
+                    : 'bg-[#0d1117]/60 border-gray-800 text-gray-400'
+                }`}
+              >
+                <div>
+                  <div className="text-xs font-bold text-white">Enable Sign-up Bonus</div>
+                  <div className="text-[10px] text-gray-500">Auto-credit welcome bonus to new users</div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.isSignUpBonusEnabled !== false}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      isSignUpBonusEnabled: e.target.checked,
+                    })
+                  }
+                  className="w-4 h-4 accent-[#FF6000] cursor-pointer"
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        {/* Section 4: Dynamic Daily Check-in Rewards Configuration */}
+        <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-gray-800">
+            <h3 className="font-bold text-sm text-white flex items-center gap-2">
+              <CalendarCheck className="w-4 h-4 text-[#FF6000]" />
+              Daily Check-in Reward System (Fully Dynamic)
+            </h3>
+            <span className="text-[11px] text-gray-400">Configurable 7-day cash reward streak</span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
+                Daily Check-in Amount (Day 1-6) (₹)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-2.5 text-xs text-[#FF6000] font-bold">₹</span>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  value={settings.dailyCheckInAmount !== undefined ? settings.dailyCheckInAmount : 5}
+                  onChange={(e) => setSettings({ ...settings, dailyCheckInAmount: Number(e.target.value) })}
+                  required
+                  placeholder="5"
+                  className="w-full bg-[#0d1117] border border-gray-700 focus:border-[#FF6000] rounded-xl p-2.5 pl-8 text-xs text-white outline-none font-mono"
+                />
+              </div>
+              <p className="text-[10.5px] text-gray-500 mt-1">Standard reward for Days 1 through 6.</p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
+                Day 7 Mega Bonus Reward (₹)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-2.5 text-xs text-amber-400 font-bold">₹</span>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={settings.dailyCheckInDay7Bonus !== undefined ? settings.dailyCheckInDay7Bonus : 100}
+                  onChange={(e) => setSettings({ ...settings, dailyCheckInDay7Bonus: Number(e.target.value) })}
+                  required
+                  placeholder="100"
+                  className="w-full bg-[#0d1117] border border-gray-700 focus:border-[#FF6000] rounded-xl p-2.5 pl-8 text-xs text-white outline-none font-mono"
+                />
+              </div>
+              <p className="text-[10.5px] text-gray-500 mt-1">Milestone bonus on 7th consecutive day.</p>
+            </div>
+
+            <div className="flex items-end">
+              <label
+                className={`p-3 rounded-xl border flex items-center justify-between w-full cursor-pointer transition-all ${
+                  settings.isDailyCheckInEnabled !== false
+                    ? 'bg-[#0d1117] border-emerald-500/40 text-white'
+                    : 'bg-[#0d1117]/60 border-gray-800 text-gray-400'
+                }`}
+              >
+                <div>
+                  <div className="text-xs font-bold text-white">Enable Daily Check-in</div>
+                  <div className="text-[10px] text-gray-500">Allow users to claim daily rewards</div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.isDailyCheckInEnabled !== false}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      isDailyCheckInEnabled: e.target.checked,
+                    })
+                  }
+                  className="w-4 h-4 accent-[#FF6000] cursor-pointer"
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* 7-Day Live Preview for Admin */}
+          <div className="bg-[#0d1117] border border-gray-800 rounded-xl p-3.5">
+            <div className="text-[11px] font-bold text-gray-400 mb-2 flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+              <span>Live 7-Day Reward Schedule Preview (What users will see on Fortune page):</span>
+            </div>
+            <div className="grid grid-cols-7 gap-2 text-center">
+              {[1, 2, 3, 4, 5, 6, 7].map((day) => {
+                const isDay7 = day === 7;
+                const amt = isDay7
+                  ? (settings.dailyCheckInDay7Bonus !== undefined ? settings.dailyCheckInDay7Bonus : 100)
+                  : (settings.dailyCheckInAmount !== undefined ? settings.dailyCheckInAmount : 5);
+                return (
+                  <div
+                    key={day}
+                    className={`p-2 rounded-lg border ${
+                      isDay7
+                        ? 'bg-amber-950/40 border-amber-500/60 text-amber-300'
+                        : 'bg-[#161b22] border-gray-700 text-gray-200'
+                    }`}
+                  >
+                    <div className="text-[10px] text-gray-400 font-semibold">Day {day}</div>
+                    <div className="text-xs font-black mt-0.5">₹{amt}</div>
+                    {isDay7 && <div className="text-[9px] text-amber-400 font-bold uppercase">Milestone</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Section 5: Platform Operational Switches */}
         <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 space-y-4">
           <h3 className="font-bold text-sm text-white flex items-center gap-2 pb-3 border-b border-gray-800">
             <Shield className="w-4 h-4 text-amber-400" />

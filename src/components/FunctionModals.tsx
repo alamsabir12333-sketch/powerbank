@@ -124,7 +124,6 @@ export const BindBankCardModal: React.FC<{
   const [account, setAccount] = useState('');
   const [ifsc, setIfsc] = useState('');
   const [bank, setBank] = useState('');
-  const [upi, setUpi] = useState('');
   const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -138,7 +137,6 @@ export const BindBankCardModal: React.FC<{
         accountNumber: account.trim(),
         bankName: bank.trim(),
         ifsc: ifsc.trim().toUpperCase(),
-        upiId: upi.trim() || undefined,
         isDefault: true,
       });
       setSaved(true);
@@ -228,19 +226,6 @@ export const BindBankCardModal: React.FC<{
             </div>
           </div>
 
-          <div>
-            <label className="text-xs font-semibold text-gray-700 block mb-1">
-              UPI ID (Optional)
-            </label>
-            <input
-              type="text"
-              placeholder="e.g. username@okhdfcbank"
-              value={upi}
-              onChange={(e) => setUpi(e.target.value)}
-              className="w-full px-3 py-2 text-xs border border-gray-200 rounded-xl focus:border-[#FF6200] focus:ring-1 focus:ring-[#FF6200] outline-none font-mono"
-            />
-          </div>
-
           <div className="pt-2">
             <button
               type="submit"
@@ -256,52 +241,7 @@ export const BindBankCardModal: React.FC<{
   );
 };
 
-// 3. Resale Modal
-export const ResaleModal: React.FC<{
-  isOpen: boolean;
-  onClose: () => void;
-}> = ({ isOpen, onClose }) => {
-  return (
-    <BaseModal
-      isOpen={isOpen}
-      onClose={onClose}
-      title="Equipment Resale"
-      icon={<RefreshCw className="w-4 h-4 text-[#FF6200]" />}
-    >
-      <div className="space-y-3 text-center py-2">
-        <div className="w-14 h-14 mx-auto rounded-full bg-orange-50 text-[#FF6200] flex items-center justify-center">
-          <RefreshCw className="w-7 h-7" />
-        </div>
-        <h4 className="text-base font-bold text-gray-900">
-          Secondary Market Resale
-        </h4>
-        <p className="text-xs text-gray-600 leading-relaxed">
-          You currently do not have any transferable shared power bank cabinets eligible for liquidation. Resale is unlocked after 30 days of active station runtime.
-        </p>
-        <div className="p-3 bg-gray-50 rounded-xl text-left text-xs space-y-1.5 border border-gray-100">
-          <div className="flex justify-between">
-            <span className="text-gray-500">Eligible Devices:</span>
-            <span className="font-bold text-gray-800">0 Units</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-500">Est. Resale Yield:</span>
-            <span className="font-bold text-[#FF6200]">0.00 ₹</span>
-          </div>
-        </div>
-      </div>
-      <div className="mt-4">
-        <button
-          onClick={onClose}
-          className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#FF6200] to-[#FF8A00] text-white font-semibold text-sm shadow-md shadow-orange-500/20 active:scale-98 transition-all"
-        >
-          Understood
-        </button>
-      </div>
-    </BaseModal>
-  );
-};
-
-// 4. Invite Friends Modal
+// 3. Invite Friends Modal
 export const InviteFriendsModal: React.FC<{
   isOpen: boolean;
   onClose: () => void;

@@ -424,7 +424,9 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                   onChange={(e) => setAdjustBalanceType(e.target.value as AdminBalanceType)}
                   className="w-full bg-[#0d1117] border border-gray-700 focus:border-[#FF6000] rounded-xl py-2.5 px-3 text-xs text-white outline-none font-semibold"
                 >
-                  <option value="MY_WALLET">My Wallet (Earning / Withdrawable Balance)</option>
+                  <option value="TOPUP_WALLET">Topup Wallet (Plan Purchase Balance)</option>
+                  <option value="WITHDRAW_WALLET">Withdraw Wallet (Earnings & Withdrawals)</option>
+                  <option value="MY_WALLET">My Wallet (Earning Balance)</option>
                   <option value="RECHARGE_BALANCE">Recharge Balance</option>
                   <option value="REFERRAL_BALANCE">Referral / Team Commission Balance</option>
                 </select>

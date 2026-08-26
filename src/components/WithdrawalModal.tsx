@@ -9,7 +9,7 @@ import {
   Banknote,
   CheckCircle2,
   RefreshCw,
-  Info,
+  Building2,
 } from 'lucide-react';
 import { BankAccount, Wallet } from '../types';
 import { fetchBankAccounts, submitWithdrawalRequest } from '../services/api';
@@ -31,11 +31,9 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
   onOpenBindCard,
   onSuccess,
 }) => {
-  const [amount, setAmount] = useState<string>('500');
+  const [amount, setAmount] = useState<string>('300');
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [selectedBankId, setSelectedBankId] = useState<string>('');
-  const [upiId, setUpiId] = useState<string>('');
-  const [channel, setChannel] = useState<'bank' | 'upi'>('bank');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,7 +45,6 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
         if (banks.length > 0) {
           const def = banks.find((b) => b.isDefault) || banks[0];
           setSelectedBankId(def.id);
-          if (def.upiId) setUpiId(def.upiId);
         }
       });
     }
@@ -55,15 +52,10 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
 
   if (!isOpen) return null;
 
-  const availableBalance = wallet?.availableBalance || 0;
-  const earnedBalance = wallet?.earnedBalance !== undefined ? wallet.earnedBalance : availableBalance;
-  const rechargeBalance = wallet?.rechargeBalance || 0;
-  const withdrawableEarnings = earnedBalance;
+  const withdrawableEarnings = wallet?.withdrawBalance ?? wallet?.earnedBalance ?? wallet?.availableBalance ?? 0;
+  const rechargeBalance = wallet?.topupBalance ?? wallet?.rechargeBalance ?? 0;
 
   const numAmount = parseFloat(amount) || 0;
-  const fee = 0;
-  const netAmount = Math.max(0, numAmount - fee);
-
   const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -73,15 +65,11 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
       return;
     }
     if (numAmount > withdrawableEarnings) {
-      setError('Insufficient withdrawable device earnings. Recharge money cannot be withdrawn.');
+      setError('Insufficient withdrawable balance in Withdraw Wallet.');
       return;
     }
-    if (channel === 'bank' && !selectedBankId) {
+    if (!selectedBankId) {
       setError('Please select or bind a bank account first.');
-      return;
-    }
-    if (channel === 'upi' && !upiId.trim()) {
-      setError('Please enter a valid UPI ID.');
       return;
     }
 
@@ -92,11 +80,10 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
       await submitWithdrawalRequest(
         userId,
         numAmount,
-        channel === 'bank' ? selectedBankId : undefined,
-        channel === 'upi' ? upiId.trim() : undefined
+        selectedBankId
       );
 
-      onSuccess(`Manual withdrawal request of ₹${numAmount} submitted for Admin review.`);
+      onSuccess(`Bank withdrawal request of ₹${numAmount} submitted for processing.`);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Failed to submit withdrawal request.');
@@ -129,8 +116,8 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                 <Banknote className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="font-bold text-base text-white">Manual Withdrawal</h3>
-                <span className="text-[10px] text-gray-400 font-medium">Device Earnings Payout</span>
+                <h3 className="font-bold text-base text-white">Bank Withdrawal</h3>
+                <span className="text-[10px] text-gray-400 font-medium">Direct Bank Settlement (IMPS/NEFT)</span>
               </div>
             </div>
             <button
@@ -153,7 +140,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             <div className="p-3.5 bg-[#121212] rounded-xl border border-[#2a2a2a] space-y-2">
               <div className="flex items-center justify-between">
                 <div>
-                  <span className="text-[11px] text-gray-400 block font-medium">Withdrawable Device Earnings</span>
+                  <span className="text-[11px] text-gray-400 block font-medium">Withdraw Wallet Balance</span>
                   <span className="text-xl font-extrabold text-[#FF6000]">
                     ₹{withdrawableEarnings.toFixed(2)}
                   </span>
@@ -167,14 +154,11 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#222] text-[10.5px]">
-                <div className="text-gray-400">
-                  Total Balance: <strong className="text-gray-200">₹{availableBalance.toFixed(2)}</strong>
+              {rechargeBalance > 0 && (
+                <div className="pt-2 border-t border-[#222] text-[10.5px] text-gray-400">
+                  Topup Wallet (Non-withdrawable): <strong className="text-gray-200">₹{rechargeBalance.toFixed(2)}</strong>
                 </div>
-                <div className="text-gray-400 text-right">
-                  Recharge (Non-withdrawable): <strong className="text-gray-400">₹{rechargeBalance.toFixed(2)}</strong>
-                </div>
-              </div>
+              )}
             </div>
 
             {/* Amount input */}
@@ -195,154 +179,113 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                 />
               </div>
               <span className="text-[10.5px] text-gray-500 mt-1 block">
-                Minimum withdrawal amount is ₹100. Fee: 0%
+                Minimum withdrawal amount is ₹100.
               </span>
             </div>
 
-            {/* Transfer Destination */}
-            <div>
-              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
-                Payout Destination
-              </label>
-              <div className="grid grid-cols-2 gap-2">
+            {/* Bank Accounts List */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-300">Select Bank Card</span>
                 <button
                   type="button"
-                  onClick={() => setChannel('bank')}
-                  className={`py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                    channel === 'bank'
-                      ? 'bg-[#FF6000]/15 border-[#FF6000] text-[#FF6000]'
-                      : 'bg-[#121212] border-[#2a2a2a] text-gray-400'
-                  }`}
+                  onClick={() => {
+                    onClose();
+                    onOpenBindCard();
+                  }}
+                  className="text-xs text-[#FF6000] font-bold flex items-center gap-0.5 hover:underline cursor-pointer"
                 >
-                  Bank Account
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setChannel('upi')}
-                  className={`py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                    channel === 'upi'
-                      ? 'bg-[#FF6000]/15 border-[#FF6000] text-[#FF6000]'
-                      : 'bg-[#121212] border-[#2a2a2a] text-gray-400'
-                  }`}
-                >
-                  UPI ID
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Bank Card</span>
                 </button>
               </div>
-            </div>
 
-            {/* Bank Accounts List or UPI Input */}
-            {channel === 'bank' ? (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-gray-300">Saved Bank Cards</span>
+              {bankAccounts.length === 0 ? (
+                <div className="p-4 bg-[#121212] rounded-xl border border-dashed border-[#333] text-center space-y-2">
+                  <Building2 className="w-6 h-6 text-gray-500 mx-auto" />
+                  <p className="text-xs text-gray-400">No bank account linked yet.</p>
                   <button
                     type="button"
                     onClick={() => {
                       onClose();
                       onOpenBindCard();
                     }}
-                    className="text-xs text-[#FF6000] font-bold flex items-center gap-0.5 hover:underline cursor-pointer"
+                    className="px-3 py-1.5 rounded-lg bg-[#FF6000] text-white text-xs font-bold"
                   >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add New</span>
+                    Bind Bank Card Now
                   </button>
                 </div>
-
-                {bankAccounts.length === 0 ? (
-                  <div className="p-3 bg-[#121212] rounded-xl border border-dashed border-[#2a2a2a] text-center">
-                    <p className="text-xs text-gray-400 mb-2">No bank account bound yet.</p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onClose();
-                        onOpenBindCard();
-                      }}
-                      className="px-3 py-1.5 rounded-lg bg-[#FF6000] text-white text-xs font-bold cursor-pointer"
-                    >
-                      Bind Bank Card Now
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-1.5 max-h-36 overflow-y-auto no-scrollbar">
-                    {bankAccounts.map((b) => (
-                      <label
-                        key={b.id}
-                        className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
-                          selectedBankId === b.id
-                            ? 'bg-[#181818] border-[#FF6000]'
-                            : 'bg-[#121212] border-[#2a2a2a] opacity-80'
+              ) : (
+                <div className="space-y-1.5 max-h-40 overflow-y-auto no-scrollbar">
+                  {bankAccounts.map((bank) => {
+                    const isSelected = bank.id === selectedBankId;
+                    return (
+                      <div
+                        key={bank.id}
+                        onClick={() => setSelectedBankId(bank.id)}
+                        className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between ${
+                          isSelected
+                            ? 'bg-[#FF6000]/15 border-[#FF6000] text-white'
+                            : 'bg-[#121212] border-[#2a2a2a] text-gray-400 hover:border-gray-600'
                         }`}
                       >
                         <div className="flex items-center gap-2.5">
-                          <CreditCard className="w-4 h-4 text-[#FF6000]" />
+                          <Building2 className={`w-4 h-4 ${isSelected ? 'text-[#FF6000]' : 'text-gray-500'}`} />
                           <div>
-                            <p className="text-xs font-bold text-white leading-tight">
-                              {b.bankName}
-                            </p>
-                            <p className="text-[10px] text-gray-400 font-mono">
-                              •••• {b.accountNumber.slice(-4)} ({b.accountHolderName})
-                            </p>
+                            <span className="text-xs font-bold text-gray-200 block">
+                              {bank.bankName} - {bank.accountHolderName || bank.holderName}
+                            </span>
+                            <span className="text-[10px] font-mono text-gray-400">
+                              A/C: •••• {bank.accountNumber.slice(-4)} | IFSC: {bank.ifsc || bank.ifscCode}
+                            </span>
                           </div>
                         </div>
-                        <input
-                          type="radio"
-                          name="bank_choice"
-                          checked={selectedBankId === b.id}
-                          onChange={() => setSelectedBankId(b.id)}
-                          className="accent-[#FF6000]"
-                        />
-                      </label>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div>
-                <label className="block text-xs font-semibold text-gray-300 mb-1">
-                  Recipient UPI ID
-                </label>
-                <input
-                  type="text"
-                  value={upiId}
-                  onChange={(e) => setUpiId(e.target.value)}
-                  placeholder="e.g. mobile@upi or username@okhdfcbank"
-                  className="w-full bg-[#121212] border border-[#2a2a2a] rounded-xl px-3.5 py-2.5 text-white font-mono text-sm focus:outline-none focus:border-[#FF6000]"
-                />
-              </div>
-            )}
 
-            {/* Summary */}
-            <div className="bg-[#121212] p-3 rounded-xl border border-[#2a2a2a] text-xs space-y-1">
-              <div className="flex justify-between text-gray-400">
-                <span>Requested Amount</span>
-                <span className="font-bold text-white">₹{numAmount.toFixed(2)}</span>
+                        {isSelected && <CheckCircle2 className="w-4 h-4 text-[#FF6000]" />}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Summary info */}
+            <div className="p-3 bg-[#181818] rounded-xl border border-[#262626] text-xs text-gray-400 space-y-1.5">
+              <div className="flex justify-between">
+                <span>Requested Amount:</span>
+                <span className="text-white font-bold">₹{numAmount.toFixed(2)}</span>
               </div>
-              <div className="flex justify-between text-gray-400">
-                <span>Platform Fee</span>
-                <span className="font-bold text-emerald-400">₹0.00</span>
-              </div>
-              <div className="flex justify-between text-white font-bold pt-1 border-t border-[#2a2a2a]">
-                <span>Net Received</span>
-                <span className="text-[#FF6000] text-sm font-extrabold">₹{netAmount.toFixed(2)}</span>
+              <div className="flex justify-between">
+                <span>Payout Method:</span>
+                <span className="text-[#FF6000] font-semibold">Bank Account</span>
               </div>
             </div>
 
-            {/* Submit Button */}
-            <button
-              type="button"
-              disabled={loading || withdrawableEarnings < 100 || numAmount < 100}
-              onClick={handleSubmit}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#FF6000] to-[#FF8C00] text-white font-bold text-sm shadow-md shadow-orange-500/25 active:scale-98 transition-transform disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
-            >
-              {loading ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Submitting Request...</span>
-                </>
-              ) : (
-                <span>Submit Withdrawal Request (₹{numAmount.toFixed(2)})</span>
-              )}
-            </button>
+            {/* Actions */}
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex-1 py-3 rounded-xl bg-[#2a2a2a] hover:bg-[#333] text-gray-300 font-bold text-xs transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={loading || !selectedBankId}
+                className="flex-1 py-3 rounded-xl bg-[#FF6000] hover:bg-[#E05300] text-white font-bold text-xs shadow-lg shadow-orange-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {loading ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Processing...</span>
+                  </>
+                ) : (
+                  <span>Confirm Withdraw</span>
+                )}
+              </button>
+            </div>
           </div>
         </motion.div>
       </div>

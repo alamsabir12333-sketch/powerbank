@@ -20,6 +20,9 @@ import {
   RefreshCw,
   Cpu,
   Sparkles,
+  Crown,
+  Info,
+  Target,
 } from 'lucide-react';
 import { AdminSession, AdminDashboardStats, AuditLogEntry } from '../../types';
 import { fetchAdminDashboardStats, fetchAdminAuditLogs, logoutAdmin } from '../../services/api';
@@ -33,11 +36,14 @@ import { AdminWithdrawalsTab } from './AdminWithdrawalsTab';
 import { AdminTransactionsTab } from './AdminTransactionsTab';
 import { AdminEarningsTab } from './AdminEarningsTab';
 import { AdminReferralsTab } from './AdminReferralsTab';
+import { AdminMissionsTab } from './AdminMissionsTab';
 import { AdminBannersNewsTab } from './AdminBannersNewsTab';
 import { AdminSettingsTab } from './AdminSettingsTab';
 import { AdminNotificationsTab } from './AdminNotificationsTab';
 import { AdminAuditTab } from './AdminAuditTab';
 import { AdminGiftCodesTab } from './AdminGiftCodesTab';
+import { AdminVipLevelsTab } from './AdminVipLevelsTab';
+import { AdminAboutPlatformTab } from './AdminAboutPlatformTab';
 
 interface AdminDashboardPageProps {
   session: AdminSession;
@@ -54,14 +60,17 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     const path = window.location.pathname.toLowerCase();
     if (path.includes('/adminbank/users')) return 'USERS';
     if (path.includes('/adminbank/plans')) return 'PLANS';
+    if (path.includes('/adminbank/vip-levels') || path.includes('/adminbank/vip')) return 'VIP_LEVELS';
     if (path.includes('/adminbank/recharge')) return 'RECHARGE';
     if (path.includes('/adminbank/withdrawals')) return 'WITHDRAWALS';
     if (path.includes('/adminbank/transactions')) return 'TRANSACTIONS';
     if (path.includes('/adminbank/earnings')) return 'EARNINGS';
     if (path.includes('/adminbank/referrals')) return 'REFERRALS';
+    if (path.includes('/adminbank/missions') || path.includes('/adminbank/mission')) return 'MISSIONS';
     if (path.includes('/adminbank/gift-codes') || path.includes('/adminbank/giftcodes')) return 'GIFT_CODES';
     if (path.includes('/adminbank/notifications')) return 'NOTIFICATIONS';
     if (path.includes('/adminbank/platform-news') || path.includes('/adminbank/banners')) return 'BANNERS_NEWS';
+    if (path.includes('/adminbank/about-platform') || path.includes('/adminbank/about') || path.includes('/adminbank/platform-rules')) return 'ABOUT_PLATFORM';
     if (path.includes('/adminbank/settings')) return 'SETTINGS';
     if (path.includes('/adminbank/audit')) return 'AUDIT';
     return 'DASHBOARD';
@@ -96,14 +105,17 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
         DASHBOARD: '/adminbank/dashboard',
         USERS: '/adminbank/users',
         PLANS: '/adminbank/plans',
+        VIP_LEVELS: '/adminbank/vip-levels',
         RECHARGE: '/adminbank/recharge',
         WITHDRAWALS: '/adminbank/withdrawals',
         TRANSACTIONS: '/adminbank/transactions',
         EARNINGS: '/adminbank/earnings',
         REFERRALS: '/adminbank/referrals',
+        MISSIONS: '/adminbank/missions',
         GIFT_CODES: '/adminbank/gift-codes',
         NOTIFICATIONS: '/adminbank/notifications',
         BANNERS_NEWS: '/adminbank/platform-news',
+        ABOUT_PLATFORM: '/adminbank/about-platform',
         SETTINGS: '/adminbank/settings',
         AUDIT: '/adminbank/audit',
       };
@@ -146,6 +158,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     { id: 'DASHBOARD', label: 'Dashboard Overview', icon: LayoutDashboard, badge: null },
     { id: 'USERS', label: 'User Directory & Portfolios', icon: Users, badge: stats?.totalUsers },
     { id: 'PLANS', label: 'Investment Plans & Hardware', icon: ShoppingBasket, badge: null },
+    { id: 'VIP_LEVELS', label: 'VIP Membership Levels', icon: Crown, badge: null },
     {
       id: 'RECHARGE',
       label: 'Recharge Verifications',
@@ -163,9 +176,11 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     { id: 'TRANSACTIONS', label: 'Financial Ledger', icon: CreditCard, badge: null },
     { id: 'EARNINGS', label: 'Device Yields & Claims', icon: Zap, badge: null },
     { id: 'REFERRALS', label: 'Referrals & Affiliates', icon: Gift, badge: null },
+    { id: 'MISSIONS', label: 'Mission Bonus Manager', icon: Target, badge: null },
     { id: 'GIFT_CODES', label: 'Gift Code Vouchers', icon: Sparkles, badge: null },
     { id: 'NOTIFICATIONS', label: 'Broadcast Notifications', icon: Bell, badge: null },
     { id: 'BANNERS_NEWS', label: 'Banners & Announcements', icon: Newspaper, badge: null },
+    { id: 'ABOUT_PLATFORM', label: 'About Platform & Rules', icon: Info, badge: null },
     { id: 'SETTINGS', label: 'System Configuration', icon: Sliders, badge: null },
     { id: 'AUDIT', label: 'Security Audit Trail', icon: ShieldCheck, badge: null },
   ];
@@ -345,6 +360,13 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
             />
           )}
 
+          {activeTab === 'VIP_LEVELS' && (
+            <AdminVipLevelsTab
+              adminId={adminIdentifier}
+              onShowToast={showToast}
+            />
+          )}
+
           {activeTab === 'RECHARGE' && (
             <AdminRechargeTab
               adminId={adminIdentifier}
@@ -377,6 +399,13 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
             <AdminReferralsTab onShowToast={showToast} />
           )}
 
+          {activeTab === 'MISSIONS' && (
+            <AdminMissionsTab
+              adminId={adminIdentifier}
+              onShowToast={showToast}
+            />
+          )}
+
           {activeTab === 'GIFT_CODES' && (
             <AdminGiftCodesTab
               adminId={adminIdentifier}
@@ -393,6 +422,13 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
 
           {activeTab === 'BANNERS_NEWS' && (
             <AdminBannersNewsTab
+              adminId={adminIdentifier}
+              onShowToast={showToast}
+            />
+          )}
+
+          {activeTab === 'ABOUT_PLATFORM' && (
+            <AdminAboutPlatformTab
               adminId={adminIdentifier}
               onShowToast={showToast}
             />

@@ -211,32 +211,51 @@ export const ProductCabinetArtwork: React.FC<{ type: string; className?: string 
 };
 
 // Avatar graphic matching Screenshot 2 (clean cartoon boy with white shirt / orange outline)
-export const ProfileAvatar: React.FC<{ className?: string }> = ({ className = 'w-14 h-14' }) => {
+export const ProfileAvatar: React.FC<{
+  className?: string;
+  vipBadge?: string;
+  showVipBadge?: boolean;
+}> = ({
+  className = 'w-14 h-14',
+  vipBadge,
+  showVipBadge = false,
+}) => {
   return (
-    <div className={`relative rounded-full overflow-hidden border-2 border-white/80 bg-orange-100 shadow-md ${className}`}>
-      <svg viewBox="0 0 64 64" fill="none" className="w-full h-full">
-        {/* Background circle */}
-        <circle cx="32" cy="32" r="32" fill="#FFEDD5" />
-        {/* Hair back */}
-        <path d="M16 32C16 18 24 10 32 10C40 10 48 18 48 32H16Z" fill="#78350F" />
-        {/* Face */}
-        <ellipse cx="32" cy="34" rx="14" ry="15" fill="#FED7AA" />
-        {/* Hair bangs */}
-        <path d="M18 24C22 18 28 20 32 18C36 20 42 18 46 24C44 17 38 13 32 13C26 13 20 17 18 24Z" fill="#92400E" />
-        {/* Eyes */}
-        <ellipse cx="27" cy="33" rx="2" ry="2.5" fill="#1E293B" />
-        <ellipse cx="37" cy="33" rx="2" ry="2.5" fill="#1E293B" />
-        <circle cx="27.5" cy="32" r="0.7" fill="#FFFFFF" />
-        <circle cx="37.5" cy="32" r="0.7" fill="#FFFFFF" />
-        {/* Smile */}
-        <path d="M29 40C30.5 42 33.5 42 35 40" stroke="#C2410C" strokeWidth="1.5" strokeLinecap="round" />
-        {/* Cheeks */}
-        <circle cx="23" cy="37" r="2.5" fill="#FCA5A5" opacity="0.6" />
-        <circle cx="41" cy="37" r="2.5" fill="#FCA5A5" opacity="0.6" />
-        {/* Body / Shirt */}
-        <path d="M16 58C16 50 23 48 32 48C41 48 48 50 48 58V64H16V58Z" fill="#FFFFFF" />
-        <path d="M28 48L32 54L36 48" stroke="#FB923C" strokeWidth="1.5" fill="none" />
-      </svg>
+    <div className={`relative ${className}`}>
+      <div className="w-full h-full rounded-full overflow-hidden border-2 border-white/80 bg-orange-100 shadow-md">
+        <svg viewBox="0 0 64 64" fill="none" className="w-full h-full">
+          {/* Background circle */}
+          <circle cx="32" cy="32" r="32" fill="#FFEDD5" />
+          {/* Hair back */}
+          <path d="M16 32C16 18 24 10 32 10C40 10 48 18 48 32H16Z" fill="#78350F" />
+          {/* Face */}
+          <ellipse cx="32" cy="34" rx="14" ry="15" fill="#FED7AA" />
+          {/* Hair bangs */}
+          <path d="M18 24C22 18 28 20 32 18C36 20 42 18 46 24C44 17 38 13 32 13C26 13 20 17 18 24Z" fill="#92400E" />
+          {/* Eyes */}
+          <ellipse cx="27" cy="33" rx="2" ry="2.5" fill="#1E293B" />
+          <ellipse cx="37" cy="33" rx="2" ry="2.5" fill="#1E293B" />
+          <circle cx="27.5" cy="32" r="0.7" fill="#FFFFFF" />
+          <circle cx="37.5" cy="32" r="0.7" fill="#FFFFFF" />
+          {/* Smile */}
+          <path d="M29 40C30.5 42 33.5 42 35 40" stroke="#C2410C" strokeWidth="1.5" strokeLinecap="round" />
+          {/* Cheeks */}
+          <circle cx="23" cy="37" r="2.5" fill="#FCA5A5" opacity="0.6" />
+          <circle cx="41" cy="37" r="2.5" fill="#FCA5A5" opacity="0.6" />
+          {/* Body / Shirt */}
+          <path d="M16 58C16 50 23 48 32 48C41 48 48 50 48 58V64H16V58Z" fill="#FFFFFF" />
+          <path d="M28 48L32 54L36 48" stroke="#FB923C" strokeWidth="1.5" fill="none" />
+        </svg>
+      </div>
+
+      {(vipBadge || showVipBadge) && (
+        <div className="absolute -bottom-1 -right-1 px-1.5 py-0.5 rounded-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 text-gray-950 font-black text-[9px] shadow-sm flex items-center gap-0.5 border border-white tracking-tight z-10">
+          <svg className="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+            <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5m14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z" />
+          </svg>
+          <span>{vipBadge || 'VIP 0'}</span>
+        </div>
+      )}
     </div>
   );
 };

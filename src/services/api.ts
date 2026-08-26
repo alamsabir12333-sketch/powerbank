@@ -38,6 +38,15 @@ import {
   GiftCodeAnalytics,
   AdminBalanceType,
   AdminBalanceAdjustment,
+  VipLevel,
+  UserVipStatus,
+  AboutPlatformConfig,
+  Mission,
+  UserMissionItem,
+  UserMissionSummary,
+  MissionClaim,
+  AdminMissionStats,
+  CreateMissionPayload,
 } from '../types';
 import {
   productsData,
@@ -46,6 +55,9 @@ import {
   defaultProEligibilityConfig,
   defaultReferralSettings,
   initialGiftCodes,
+  defaultVipLevels,
+  defaultAboutPlatformConfig,
+  defaultMissions,
 } from '../data/mockData';
 
 // Local storage keys for resilient persistence / preview simulation
@@ -71,6 +83,11 @@ const STORAGE_KEYS = {
   GIFT_CODES: 'pb_gift_codes',
   GIFT_CODE_CLAIMS: 'pb_gift_code_claims',
   BALANCE_ADJUSTMENTS: 'pb_balance_adjustments',
+  VIP_LEVELS: 'pb_vip_levels',
+  DAILY_CHECKIN: 'pb_daily_checkin',
+  ABOUT_PLATFORM: 'pb_about_platform_config',
+  MISSIONS: 'pb_missions',
+  MISSION_CLAIMS: 'pb_mission_claims',
 };
 
 // Default initial state
@@ -628,6 +645,12 @@ export async function registerUserAccount(formData: RegisterFormData) {
 
     const effectiveUserId = authUser?.id || 'usr_' + Date.now();
 
+    // Fetch dynamic system settings for Sign-up Welcome Bonus
+    const sysSettings = await fetchSystemSettings();
+    const signUpBonus = (sysSettings.isSignUpBonusEnabled !== false && typeof sysSettings.signUpBonusAmount === 'number' && sysSettings.signUpBonusAmount > 0)
+      ? Number(sysSettings.signUpBonusAmount)
+      : 0;
+
     // 5. Create Profile Record in Supabase if table exists
     try {
       const { error: profileError } = await supabase.from('profiles').insert({
@@ -659,11 +682,31 @@ export async function registerUserAccount(formData: RegisterFormData) {
     try {
       await supabase.from('wallets').insert({
         user_id: effectiveUserId,
+        topup_balance: signUpBonus,
+        withdraw_balance: 0.00,
         available_balance: 0.00,
+        earned_balance: 0.00,
+        recharge_balance: signUpBonus,
         pending_balance: 0.00,
         total_earned: 0.00,
         total_withdrawn: 0.00,
       });
+
+      if (signUpBonus > 0) {
+        await supabase.from('wallet_transactions').insert({
+          id: 'tx_signup_' + Date.now(),
+          user_id: effectiveUserId,
+          type: 'SIGNUP_BONUS',
+          amount: signUpBonus,
+          balance_before: 0.00,
+          balance_after: signUpBonus,
+          balance_type: 'TOPUP_WALLET',
+          status: 'Completed',
+          reference_id: 'SIGNUP-BONUS',
+          description: `🎁 Welcome Sign-up Bonus: ₹${signUpBonus.toFixed(2)} (Topup Wallet)`,
+          created_at: new Date().toISOString(),
+        });
+      }
     } catch (err) {
       // ignore
     }
@@ -672,8 +715,10 @@ export async function registerUserAccount(formData: RegisterFormData) {
     try {
       await supabase.from('notifications').insert({
         user_id: effectiveUserId,
-        title: 'Welcome to Power Bank!',
-        message: 'Your account has been registered successfully. Explore the Purchase Hall to start generating daily yields.',
+        title: 'Welcome to Power Bank! 🎉',
+        message: signUpBonus > 0
+          ? `Welcome to Power Bank! A sign-up welcome bonus of ₹${signUpBonus.toFixed(2)} has been credited to your Topup Wallet (for purchasing power bank plans).`
+          : 'Your account has been registered successfully. Explore the Purchase Hall to start generating daily yields.',
         is_read: false,
       });
     } catch (err) {
@@ -706,13 +751,47 @@ export async function registerUserAccount(formData: RegisterFormData) {
     const newWallet: Wallet = {
       id: 'wal_' + effectiveUserId,
       userId: effectiveUserId,
+      topupBalance: signUpBonus,
+      withdrawBalance: 0.00,
       availableBalance: 0.00,
+      rechargeBalance: signUpBonus,
+      earnedBalance: 0.00,
       pendingBalance: 0.00,
       totalEarned: 0.00,
       totalWithdrawn: 0.00,
     };
     saveLocal(STORAGE_KEYS.WALLET, newWallet);
     saveLocal(STORAGE_KEYS.SESSION, { userId: effectiveUserId, email: cleanEmail, username: cleanUsername, mobile: cleanWhatsApp });
+
+    if (signUpBonus > 0) {
+      const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+      txs.unshift({
+        id: 'tx_signup_' + Date.now(),
+        userId: effectiveUserId,
+        type: 'SIGNUP_BONUS',
+        amount: signUpBonus,
+        balanceBefore: 0.00,
+        balanceAfter: signUpBonus,
+        balanceType: 'TOPUP_WALLET',
+        status: 'Completed',
+        referenceId: 'SIGNUP-BONUS',
+        description: `🎁 Welcome Sign-up Bonus: ₹${signUpBonus.toFixed(2)} (Topup Wallet)`,
+        createdAt: new Date().toISOString(),
+      });
+      saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
+
+      const notifs = getLocal<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []);
+      notifs.unshift({
+        id: 'notif_' + Date.now(),
+        userId: effectiveUserId,
+        title: 'Welcome to Power Bank! 🎉',
+        message: `Welcome to Power Bank! A sign-up welcome bonus of ₹${signUpBonus.toFixed(2)} has been credited to your Topup Wallet (for purchasing power bank plans).`,
+        type: 'SUCCESS',
+        read: false,
+        createdAt: new Date().toISOString(),
+      });
+      saveLocal(STORAGE_KEYS.NOTIFICATIONS, notifs);
+    }
 
     if (verifiedReferrerId) {
       processRegistrationReferralReward(effectiveUserId, verifiedReferrerId).catch(() => {});
@@ -722,6 +801,11 @@ export async function registerUserAccount(formData: RegisterFormData) {
   } else {
     // Local / Offline Simulation
     const userId = 'usr_' + Date.now();
+    const sysSettings = await fetchSystemSettings();
+    const signUpBonus = (sysSettings.isSignUpBonusEnabled !== false && typeof sysSettings.signUpBonusAmount === 'number' && sysSettings.signUpBonusAmount > 0)
+      ? Number(sysSettings.signUpBonusAmount)
+      : 0;
+
     const newProfile: UserProfile = {
       id: userId,
       userId,
@@ -750,13 +834,47 @@ export async function registerUserAccount(formData: RegisterFormData) {
     const newWallet: Wallet = {
       id: 'wal_' + userId,
       userId,
+      topupBalance: signUpBonus,
+      withdrawBalance: 0.00,
       availableBalance: 0.00,
+      rechargeBalance: signUpBonus,
+      earnedBalance: 0.00,
       pendingBalance: 0.00,
       totalEarned: 0.00,
       totalWithdrawn: 0.00,
     };
     saveLocal(STORAGE_KEYS.WALLET, newWallet);
     saveLocal(STORAGE_KEYS.SESSION, { userId, email: cleanEmail, username: cleanUsername, mobile: cleanWhatsApp });
+
+    if (signUpBonus > 0) {
+      const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+      txs.unshift({
+        id: 'tx_signup_' + Date.now(),
+        userId,
+        type: 'SIGNUP_BONUS',
+        amount: signUpBonus,
+        balanceBefore: 0.00,
+        balanceAfter: signUpBonus,
+        balanceType: 'TOPUP_WALLET',
+        status: 'Completed',
+        referenceId: 'SIGNUP-BONUS',
+        description: `🎁 Welcome Sign-up Bonus: ₹${signUpBonus.toFixed(2)} (Topup Wallet)`,
+        createdAt: new Date().toISOString(),
+      });
+      saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
+
+      const notifs = getLocal<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []);
+      notifs.unshift({
+        id: 'notif_' + Date.now(),
+        userId,
+        title: 'Welcome to Power Bank! 🎉',
+        message: `Welcome to Power Bank! A sign-up welcome bonus of ₹${signUpBonus.toFixed(2)} has been credited to your Topup Wallet (for purchasing power bank plans).`,
+        type: 'SUCCESS',
+        read: false,
+        createdAt: new Date().toISOString(),
+      });
+      saveLocal(STORAGE_KEYS.NOTIFICATIONS, notifs);
+    }
 
     if (verifiedReferrerId) {
       processRegistrationReferralReward(userId, verifiedReferrerId).catch(() => {});
@@ -978,6 +1096,8 @@ export async function fetchWallet(userId: string): Promise<Wallet> {
   const localWallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
     id: 'wal_' + userId,
     userId,
+    topupBalance: 0,
+    withdrawBalance: 0,
     availableBalance: 0,
     rechargeBalance: 0,
     earnedBalance: 0,
@@ -999,17 +1119,18 @@ export async function fetchWallet(userId: string): Promise<Wallet> {
       }
 
       if (data) {
-        const avail = Number(data.available_balance || 0);
+        const topup = Number(data.topup_balance ?? data.recharge_balance ?? 0);
+        const withdraw = Number(data.withdraw_balance ?? data.earned_balance ?? data.available_balance ?? 0);
         const totalEarned = Number(data.total_earned || 0);
-        const earned = Number(data.earned_balance ?? Math.min(avail, totalEarned));
-        const recharge = Number(data.recharge_balance ?? Math.max(0, +(avail - earned).toFixed(2)));
 
         return {
           id: data.id || localWallet.id,
           userId: data.user_id || userId,
-          availableBalance: avail,
-          rechargeBalance: recharge,
-          earnedBalance: earned,
+          topupBalance: topup,
+          withdrawBalance: withdraw,
+          availableBalance: withdraw, // backward compatibility
+          rechargeBalance: topup,
+          earnedBalance: withdraw,
           pendingBalance: Number(data.pending_balance || 0),
           totalEarned,
           totalWithdrawn: Number(data.total_withdrawn || 0),
@@ -1022,13 +1143,16 @@ export async function fetchWallet(userId: string): Promise<Wallet> {
     }
   }
 
-  const avail = localWallet.availableBalance || 0;
-  const earned = localWallet.earnedBalance !== undefined ? localWallet.earnedBalance : Math.min(avail, localWallet.totalEarned || 0);
-  const recharge = localWallet.rechargeBalance !== undefined ? localWallet.rechargeBalance : Math.max(0, +(avail - earned).toFixed(2));
+  const topup = localWallet.topupBalance !== undefined ? localWallet.topupBalance : (localWallet.rechargeBalance || 0);
+  const withdraw = localWallet.withdrawBalance !== undefined ? localWallet.withdrawBalance : (localWallet.earnedBalance !== undefined ? localWallet.earnedBalance : (localWallet.availableBalance || 0));
+
   return {
     ...localWallet,
-    rechargeBalance: recharge,
-    earnedBalance: earned,
+    topupBalance: topup,
+    withdrawBalance: withdraw,
+    availableBalance: withdraw,
+    rechargeBalance: topup,
+    earnedBalance: withdraw,
   };
 }
 
@@ -2259,6 +2383,7 @@ export async function fetchPurchases(userId: string): Promise<PurchaseItem[]> {
 export async function purchasePlanWithWallet(userId: string, plan: ProductItem) {
   const planPrice = plan.devicePrice || plan.price || 0;
   const isPro = (plan.category || '').toUpperCase() === 'PRO' || plan.name.toUpperCase().includes('PRO');
+  const isEvent = (plan.category || '').toUpperCase() === 'EVENT' || plan.name.toUpperCase().includes('EVENT');
 
   // Check Eligibility if PRO plan
   if (isPro) {
@@ -2268,9 +2393,30 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
     }
   }
 
+  // Check Event Plan active time window
+  if (isEvent || plan.startAt || plan.endAt || plan.startDate || plan.endDate) {
+    const now = Date.now();
+    const start = plan.startAt || plan.startDate;
+    const end = plan.endAt || plan.endDate;
+    if (start && now < new Date(start).getTime()) {
+      throw new Error('This Event Plan has not started yet. Please check back when the event opens.');
+    }
+    if (end && now > new Date(end).getTime()) {
+      throw new Error('This Event Plan has ended.');
+    }
+  }
+
+  // Check purchase limit per user
+  const userPurchases = await fetchPurchases(userId);
+  if (plan.limit && plan.limit > 0) {
+    const boughtCount = userPurchases.filter((p) => p.planId === plan.id && p.status === 'ACTIVE').length;
+    if (boughtCount >= plan.limit) {
+      throw new Error(`You have reached the maximum purchase limit (${plan.limit}) for this plan.`);
+    }
+  }
+
   // Check duplicate restriction if plan.allowDuplicate is false
   if (plan.allowDuplicate === false) {
-    const userPurchases = await fetchPurchases(userId);
     const existing = userPurchases.find((p) => p.planId === plan.id && p.status === 'ACTIVE');
     if (existing) {
       throw new Error('You already have an active instance of this plan. Duplicate purchases are not allowed.');
@@ -2296,26 +2442,30 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
     }
   }
 
-  // Local Atomic Simulation
-  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, { availableBalance: 0, rechargeBalance: 0, earnedBalance: 0 } as Wallet);
-  if (wallet.availableBalance < planPrice) {
-    throw new Error('Insufficient wallet balance. Please recharge your wallet.');
+  // Local Atomic Simulation - TOPUP WALLET STRICT DEDUCTION
+  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+    availableBalance: 0,
+    topupBalance: 0,
+    withdrawBalance: 0,
+    rechargeBalance: 0,
+    earnedBalance: 0,
+  } as Wallet);
+
+  const curTopup = wallet.topupBalance !== undefined ? wallet.topupBalance : (wallet.rechargeBalance || 0);
+
+  if (curTopup < planPrice) {
+    throw new Error(`Insufficient Topup Wallet balance. Plan purchase requires Topup Wallet balance. (Available Topup: ₹${curTopup.toFixed(2)}, Required: ₹${planPrice.toFixed(2)})`);
   }
 
-  const balanceBefore = wallet.availableBalance;
-  let remPrice = planPrice;
-  const curRecharge = wallet.rechargeBalance !== undefined ? wallet.rechargeBalance : Math.max(0, balanceBefore - (wallet.earnedBalance || 0));
-  const fromRecharge = Math.min(curRecharge, remPrice);
-  wallet.rechargeBalance = +(curRecharge - fromRecharge).toFixed(2);
-  remPrice = +(remPrice - fromRecharge).toFixed(2);
+  const balanceBefore = curTopup;
+  wallet.topupBalance = +(curTopup - planPrice).toFixed(2);
+  wallet.rechargeBalance = wallet.topupBalance;
+  const curWithdraw = wallet.withdrawBalance !== undefined ? wallet.withdrawBalance : (wallet.earnedBalance || 0);
+  wallet.withdrawBalance = curWithdraw;
+  wallet.earnedBalance = curWithdraw;
+  wallet.availableBalance = curWithdraw;
 
-  if (remPrice > 0) {
-    const curEarned = wallet.earnedBalance !== undefined ? wallet.earnedBalance : Math.max(0, balanceBefore - curRecharge);
-    wallet.earnedBalance = Math.max(0, +(curEarned - remPrice).toFixed(2));
-  }
-
-  const balanceAfterDeduction = +( (wallet.rechargeBalance || 0) + (wallet.earnedBalance || 0) ).toFixed(2);
-  wallet.availableBalance = balanceAfterDeduction;
+  const balanceAfterDeduction = wallet.topupBalance;
 
   const purchaseId = 'pur_' + Date.now();
   const durationDays = plan.durationDays || plan.duration || 365;
@@ -2364,7 +2514,7 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
     amount: -planPrice,
     balanceBefore,
     balanceAfter: balanceAfterDeduction,
-    balanceType: 'RECHARGE_BALANCE',
+    balanceType: 'TOPUP_WALLET',
     referenceId: purchaseId,
     description: `Purchase: ${plan.name} (${newPurchase.planCategory})`,
     createdAt: new Date().toISOString(),
@@ -2373,11 +2523,13 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
 
   let finalBalance = balanceAfterDeduction;
 
-  // 2. If PRO plan has Instant Bonus cashback, credit instantly!
+  // 2. If PRO plan has Instant Bonus cashback, credit into Withdraw Wallet!
   if (instantBonus > 0) {
-    const bonusBalBefore = finalBalance;
-    finalBalance = +(bonusBalBefore + instantBonus).toFixed(2);
-    wallet.availableBalance = finalBalance;
+    const bonusBalBefore = wallet.withdrawBalance || 0;
+    wallet.withdrawBalance = +(bonusBalBefore + instantBonus).toFixed(2);
+    wallet.earnedBalance = wallet.withdrawBalance;
+    wallet.availableBalance = wallet.withdrawBalance;
+    wallet.totalEarned = +((wallet.totalEarned || 0) + instantBonus).toFixed(2);
 
     const bonusTx: WalletTransaction = {
       id: 'tx_bonus_' + (Date.now() + 1),
@@ -2385,8 +2537,8 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
       type: 'PRO_INSTANT_BONUS',
       amount: instantBonus,
       balanceBefore: bonusBalBefore,
-      balanceAfter: finalBalance,
-      balanceType: 'DEVICE_EARNING_BALANCE',
+      balanceAfter: wallet.withdrawBalance,
+      balanceType: 'WITHDRAW_WALLET',
       referenceId: purchaseId,
       description: `PRO Instant Bonus Cashback: ${plan.name}`,
       createdAt: new Date(Date.now() + 50).toISOString(),
@@ -2935,19 +3087,19 @@ export async function claimUserEarnings(userId: string): Promise<{
   saveLocal(STORAGE_KEYS.EARNINGS, earnings);
   saveLocal(STORAGE_KEYS.PURCHASES, purchases);
 
-  // 3. Credit Wallet
+  // 3. Credit Withdraw Wallet
   const wallet = getLocal<Wallet>(
     STORAGE_KEYS.WALLET,
-    { availableBalance: 0, rechargeBalance: 0, earnedBalance: 0, totalEarned: 0 } as Wallet
+    { topupBalance: 0, withdrawBalance: 0, availableBalance: 0, rechargeBalance: 0, earnedBalance: 0, totalEarned: 0 } as Wallet
   );
-  const balBefore = wallet.availableBalance || 0;
-  wallet.earnedBalance = Number(((wallet.earnedBalance || 0) + totalClaimAmount).toFixed(2));
-  const balAfter = Number(((wallet.rechargeBalance || 0) + (wallet.earnedBalance || 0)).toFixed(2));
-  wallet.availableBalance = balAfter;
+  const balBefore = wallet.withdrawBalance !== undefined ? wallet.withdrawBalance : (wallet.earnedBalance || 0);
+  wallet.withdrawBalance = Number((balBefore + totalClaimAmount).toFixed(2));
+  wallet.earnedBalance = wallet.withdrawBalance;
+  wallet.availableBalance = wallet.withdrawBalance;
   wallet.totalEarned = Number(((wallet.totalEarned || 0) + totalClaimAmount).toFixed(2));
   saveLocal(STORAGE_KEYS.WALLET, wallet);
 
-  // 4. Record Wallet Transaction
+  // 4. Record Wallet Transaction (WITHDRAW_WALLET)
   const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
   const tx: WalletTransaction = {
     id: 'tx_claim_' + Date.now(),
@@ -2955,8 +3107,8 @@ export async function claimUserEarnings(userId: string): Promise<{
     type: 'EARNING_CLAIM',
     amount: totalClaimAmount,
     balanceBefore: balBefore,
-    balanceAfter: balAfter,
-    balanceType: 'DEVICE_EARNING_BALANCE',
+    balanceAfter: wallet.withdrawBalance,
+    balanceType: 'WITHDRAW_WALLET',
     referenceId: claimBatchId,
     description: `Device Hourly Yield Claim (${claimBatchId})`,
     createdAt: claimedTimestamp,
@@ -2999,7 +3151,7 @@ export async function claimUserEarnings(userId: string): Promise<{
     success: true,
     amount: totalClaimAmount,
     claimBatchId,
-    newBalance: balAfter,
+    newBalance: wallet.withdrawBalance,
     itemsCount: eligibleCyclesCount,
   };
 }
@@ -3121,7 +3273,7 @@ export async function fetchAdminEarningsAudit(): Promise<{
 }
 
 // ==============================================================================
-// BANK ACCOUNTS & WITHDRAWALS
+// BANK ACCOUNTS & WITHDRAWALS (BANK ACCOUNT ONLY — FULL CRUD SUPPORT)
 // ==============================================================================
 
 export async function fetchBankAccounts(userId: string): Promise<BankAccount[]> {
@@ -3134,17 +3286,25 @@ export async function fetchBankAccounts(userId: string): Promise<BankAccount[]> 
         .order('is_default', { ascending: false });
 
       if (!error && data && data.length > 0) {
-        return data.map((b) => ({
-          id: b.id,
-          userId: b.user_id,
-          accountHolderName: b.account_holder_name,
-          bankName: b.bank_name,
-          accountNumber: b.account_number,
-          ifsc: b.ifsc,
-          upiId: b.upi_id,
-          isDefault: b.is_default,
-          createdAt: b.created_at,
-        }));
+        return data
+          .filter((b) => !b.is_deleted && b.status !== 'deleted')
+          .map((b) => ({
+            id: b.id,
+            userId: b.user_id,
+            accountHolderName: b.account_holder_name || b.holder_name,
+            holderName: b.holder_name || b.account_holder_name,
+            bankName: b.bank_name,
+            accountNumber: b.account_number,
+            ifsc: b.ifsc || b.ifsc_code,
+            ifscCode: b.ifsc_code || b.ifsc,
+            mobileNumber: b.mobile_number,
+            email: b.email,
+            isDefault: Boolean(b.is_default),
+            isDeleted: Boolean(b.is_deleted),
+            status: b.status || 'active',
+            createdAt: b.created_at,
+            updatedAt: b.updated_at,
+          }));
       }
     } catch {
       // Fall through to local
@@ -3152,20 +3312,74 @@ export async function fetchBankAccounts(userId: string): Promise<BankAccount[]> 
   }
 
   const banks = getLocal<BankAccount[]>(STORAGE_KEYS.BANKS, []);
-  return banks.filter((b) => b.userId === userId);
+  const activeBanks = banks.filter((b) => b.userId === userId && !b.isDeleted && b.status !== 'deleted');
+  // Sort so default is first
+  return activeBanks.sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0));
 }
 
-export async function saveBankAccount(userId: string, data: Omit<BankAccount, 'id' | 'userId'>) {
+export async function saveBankAccount(
+  userId: string,
+  data: {
+    accountHolderName: string;
+    bankName: string;
+    accountNumber: string;
+    ifsc: string;
+    mobileNumber?: string;
+    email?: string;
+    isDefault?: boolean;
+  }
+): Promise<BankAccount> {
+  const banks = getLocal<BankAccount[]>(STORAGE_KEYS.BANKS, []);
+  const userActiveBanks = banks.filter((b) => b.userId === userId && !b.isDeleted && b.status !== 'deleted');
+  const isFirstCard = userActiveBanks.length === 0;
+  const willBeDefault = isFirstCard || Boolean(data.isDefault);
+
+  if (willBeDefault) {
+    banks.forEach((b) => {
+      if (b.userId === userId) {
+        b.isDefault = false;
+      }
+    });
+  }
+
+  const newBankId = 'bnk_' + Date.now();
+  const newBank: BankAccount = {
+    id: newBankId,
+    userId,
+    accountHolderName: data.accountHolderName.trim(),
+    holderName: data.accountHolderName.trim(),
+    bankName: data.bankName.trim(),
+    accountNumber: data.accountNumber.trim(),
+    ifsc: data.ifsc.trim().toUpperCase(),
+    ifscCode: data.ifsc.trim().toUpperCase(),
+    mobileNumber: data.mobileNumber?.trim() || undefined,
+    email: data.email?.trim() || undefined,
+    isDefault: willBeDefault,
+    isDeleted: false,
+    status: 'active',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
   if (isSupabaseConfigured && supabase) {
     try {
+      if (willBeDefault) {
+        await supabase
+          .from('bank_accounts')
+          .update({ is_default: false })
+          .eq('user_id', userId);
+      }
+
       const { error } = await supabase.from('bank_accounts').insert({
+        id: newBank.id,
         user_id: userId,
-        account_holder_name: data.accountHolderName,
-        bank_name: data.bankName,
-        account_number: data.accountNumber,
-        ifsc: data.ifsc,
-        upi_id: data.upiId || null,
-        is_default: data.isDefault,
+        account_holder_name: newBank.accountHolderName,
+        bank_name: newBank.bankName,
+        account_number: newBank.accountNumber,
+        ifsc: newBank.ifsc,
+        is_default: newBank.isDefault,
+        is_deleted: false,
+        status: 'active',
       });
       if (error && !isTableMissingError(error)) {
         console.warn('Supabase save bank error:', error.message);
@@ -3175,29 +3389,189 @@ export async function saveBankAccount(userId: string, data: Omit<BankAccount, 'i
     }
   }
 
-  const banks = getLocal<BankAccount[]>(STORAGE_KEYS.BANKS, []);
-  const newBank: BankAccount = {
-    id: 'bnk_' + Date.now(),
-    userId,
-    ...data,
-  };
   banks.unshift(newBank);
   saveLocal(STORAGE_KEYS.BANKS, banks);
+  return newBank;
+}
+
+export async function updateBankAccount(
+  userId: string,
+  bankId: string,
+  data: {
+    accountHolderName?: string;
+    bankName?: string;
+    accountNumber?: string;
+    ifsc?: string;
+    mobileNumber?: string;
+    email?: string;
+    isDefault?: boolean;
+  }
+): Promise<BankAccount> {
+  const banks = getLocal<BankAccount[]>(STORAGE_KEYS.BANKS, []);
+  const bankIndex = banks.findIndex((b) => b.id === bankId && b.userId === userId);
+  if (bankIndex === -1) {
+    throw new Error('Bank account not found.');
+  }
+
+  if (data.isDefault) {
+    banks.forEach((b) => {
+      if (b.userId === userId) {
+        b.isDefault = false;
+      }
+    });
+  }
+
+  const existing = banks[bankIndex];
+  const updatedBank: BankAccount = {
+    ...existing,
+    accountHolderName: data.accountHolderName ? data.accountHolderName.trim() : existing.accountHolderName,
+    holderName: data.accountHolderName ? data.accountHolderName.trim() : existing.accountHolderName,
+    bankName: data.bankName ? data.bankName.trim() : existing.bankName,
+    accountNumber: data.accountNumber ? data.accountNumber.trim() : existing.accountNumber,
+    ifsc: data.ifsc ? data.ifsc.trim().toUpperCase() : existing.ifsc,
+    ifscCode: data.ifsc ? data.ifsc.trim().toUpperCase() : existing.ifsc,
+    mobileNumber: data.mobileNumber !== undefined ? data.mobileNumber.trim() : existing.mobileNumber,
+    email: data.email !== undefined ? data.email.trim() : existing.email,
+    isDefault: data.isDefault !== undefined ? data.isDefault : existing.isDefault,
+    updatedAt: new Date().toISOString(),
+  };
+
+  banks[bankIndex] = updatedBank;
+  saveLocal(STORAGE_KEYS.BANKS, banks);
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      if (data.isDefault) {
+        await supabase
+          .from('bank_accounts')
+          .update({ is_default: false })
+          .eq('user_id', userId);
+      }
+
+      await supabase
+        .from('bank_accounts')
+        .update({
+          account_holder_name: updatedBank.accountHolderName,
+          bank_name: updatedBank.bankName,
+          account_number: updatedBank.accountNumber,
+          ifsc: updatedBank.ifsc,
+          is_default: updatedBank.isDefault,
+          updated_at: updatedBank.updatedAt,
+        })
+        .eq('id', bankId)
+        .eq('user_id', userId);
+    } catch {
+      // Fall through to local
+    }
+  }
+
+  return updatedBank;
+}
+
+export async function deleteBankAccount(userId: string, bankId: string): Promise<void> {
+  const banks = getLocal<BankAccount[]>(STORAGE_KEYS.BANKS, []);
+  const bank = banks.find((b) => b.id === bankId && b.userId === userId);
+  if (!bank) return;
+
+  // Soft delete to protect historical withdrawal records
+  bank.isDeleted = true;
+  bank.status = 'deleted';
+  bank.updatedAt = new Date().toISOString();
+
+  // If the deleted bank was default, promote another active card to default
+  if (bank.isDefault) {
+    bank.isDefault = false;
+    const remainingActive = banks.find((b) => b.userId === userId && !b.isDeleted && b.status !== 'deleted');
+    if (remainingActive) {
+      remainingActive.isDefault = true;
+    }
+  }
+
+  saveLocal(STORAGE_KEYS.BANKS, banks);
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase
+        .from('bank_accounts')
+        .update({
+          is_deleted: true,
+          status: 'deleted',
+          is_default: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', bankId)
+        .eq('user_id', userId);
+
+      // Re-assign default if needed
+      const remainingActive = banks.find((b) => b.userId === userId && !b.isDeleted && b.status !== 'deleted');
+      if (remainingActive) {
+        await supabase
+          .from('bank_accounts')
+          .update({ is_default: true })
+          .eq('id', remainingActive.id);
+      }
+    } catch {
+      // Fall through to local
+    }
+  }
+}
+
+export async function setDefaultBankAccount(userId: string, bankId: string): Promise<void> {
+  const banks = getLocal<BankAccount[]>(STORAGE_KEYS.BANKS, []);
+  banks.forEach((b) => {
+    if (b.userId === userId) {
+      b.isDefault = b.id === bankId;
+      if (b.id === bankId) {
+        b.updatedAt = new Date().toISOString();
+      }
+    }
+  });
+  saveLocal(STORAGE_KEYS.BANKS, banks);
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase
+        .from('bank_accounts')
+        .update({ is_default: false })
+        .eq('user_id', userId);
+
+      await supabase
+        .from('bank_accounts')
+        .update({ is_default: true, updated_at: new Date().toISOString() })
+        .eq('id', bankId)
+        .eq('user_id', userId);
+    } catch {
+      // Fall through to local
+    }
+  }
 }
 
 export async function submitWithdrawalRequest(
   userId: string,
   amount: number,
-  bankAccountId?: string,
-  upiId?: string
+  bankAccountId?: string
 ) {
+  // 1. Verify Bank Account (Bank Only - No UPI)
+  const activeBanks = await fetchBankAccounts(userId);
+  if (activeBanks.length === 0) {
+    throw new Error('Please bind your Bank Account first to request a withdrawal.');
+  }
+
+  let selectedBank = activeBanks.find((b) => b.id === bankAccountId);
+  if (!selectedBank) {
+    selectedBank = activeBanks.find((b) => b.isDefault) || activeBanks[0];
+  }
+
+  if (!selectedBank) {
+    throw new Error('Valid Bank Account is required for withdrawal.');
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase.rpc('request_withdrawal', {
         p_user_id: userId,
         p_amount: amount,
-        p_bank_account_id: bankAccountId || null,
-        p_upi_id: upiId || null,
+        p_bank_account_id: selectedBank.id,
       });
       if (!error && data?.success) {
         return data;
@@ -3210,14 +3584,23 @@ export async function submitWithdrawalRequest(
     }
   }
 
-  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, { availableBalance: 0, pendingBalance: 0, rechargeBalance: 0, earnedBalance: 0 } as Wallet);
-  const withdrawableEarned = wallet.earnedBalance !== undefined ? wallet.earnedBalance : wallet.availableBalance;
-  if (amount < 100) throw new Error('Minimum withdrawal amount is ₹100');
-  if (withdrawableEarned < amount) throw new Error('Insufficient withdrawable earnings. Recharge balance cannot be withdrawn.');
+  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+    topupBalance: 0,
+    withdrawBalance: 0,
+    availableBalance: 0,
+    pendingBalance: 0,
+    rechargeBalance: 0,
+    earnedBalance: 0,
+  } as Wallet);
 
-  const balBefore = wallet.availableBalance;
-  wallet.earnedBalance = +(withdrawableEarned - amount).toFixed(2);
-  wallet.availableBalance = +((wallet.rechargeBalance || 0) + wallet.earnedBalance).toFixed(2);
+  const withdrawableEarned = wallet.withdrawBalance !== undefined ? wallet.withdrawBalance : (wallet.earnedBalance || wallet.availableBalance || 0);
+  if (amount < 100) throw new Error('Minimum withdrawal amount is ₹100');
+  if (withdrawableEarned < amount) throw new Error(`Insufficient Withdraw Wallet balance. Available withdraw balance: ₹${withdrawableEarned.toFixed(2)}. (Topup Wallet balance cannot be withdrawn)`);
+
+  const balBefore = withdrawableEarned;
+  wallet.withdrawBalance = +(withdrawableEarned - amount).toFixed(2);
+  wallet.earnedBalance = wallet.withdrawBalance;
+  wallet.availableBalance = wallet.withdrawBalance;
   wallet.pendingBalance = +((wallet.pendingBalance || 0) + amount).toFixed(2);
   saveLocal(STORAGE_KEYS.WALLET, wallet);
 
@@ -3229,8 +3612,8 @@ export async function submitWithdrawalRequest(
     amount,
     fee: 0,
     netAmount: amount,
-    bankAccountId,
-    upiId,
+    bankAccountId: selectedBank.id,
+    bankDetails: selectedBank,
     status: 'PENDING',
     createdAt: new Date().toISOString(),
   };
@@ -3244,11 +3627,12 @@ export async function submitWithdrawalRequest(
     type: 'WITHDRAWAL',
     amount: -amount,
     balanceBefore: balBefore,
-    balanceAfter: wallet.availableBalance,
-    balanceType: 'DEVICE_EARNING_BALANCE',
+    balanceAfter: wallet.withdrawBalance,
+    balanceType: 'WITHDRAW_WALLET',
     referenceId: withdrawalId,
+    bankDetails: `${selectedBank.bankName} - A/C ${selectedBank.accountNumber} (${selectedBank.ifsc})`,
     status: 'Pending',
-    description: `Withdrawal request of ₹${amount.toFixed(2)} (Pending Admin Approval)`,
+    description: `Bank Withdrawal: ₹${amount.toFixed(2)} to ${selectedBank.bankName} (${selectedBank.accountNumber.slice(-4)})`,
     createdAt: new Date().toISOString(),
   };
   const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
@@ -3259,7 +3643,7 @@ export async function submitWithdrawalRequest(
   createNotificationForUser({
     userId,
     title: 'Withdrawal Pending',
-    description: `Your withdrawal request of ₹${amount.toFixed(2)} is pending Admin approval.`,
+    description: `Your bank withdrawal of ₹${amount.toFixed(2)} to ${selectedBank.bankName} is pending approval.`,
     type: 'WITHDRAWAL',
     isHomePopup: false,
   }).catch(() => {});
@@ -3366,11 +3750,18 @@ export async function approveRecharge(paymentId: string, adminId: string) {
   payment.processedAt = new Date().toISOString();
   saveLocal(STORAGE_KEYS.PAYMENTS, list);
 
-  // Credit user recharge balance exactly once
-  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, { availableBalance: 0, rechargeBalance: 0, earnedBalance: 0 } as Wallet);
-  const balBefore = wallet.availableBalance;
-  wallet.rechargeBalance = +((wallet.rechargeBalance || 0) + payment.amount).toFixed(2);
-  wallet.availableBalance = +(wallet.rechargeBalance + (wallet.earnedBalance || 0)).toFixed(2);
+  // Credit user Topup Wallet (topupBalance & rechargeBalance)
+  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+    topupBalance: 0,
+    withdrawBalance: 0,
+    availableBalance: 0,
+    rechargeBalance: 0,
+    earnedBalance: 0,
+  } as Wallet);
+  const curTopup = wallet.topupBalance !== undefined ? wallet.topupBalance : (wallet.rechargeBalance || 0);
+  const balBefore = curTopup;
+  wallet.topupBalance = +(curTopup + payment.amount).toFixed(2);
+  wallet.rechargeBalance = wallet.topupBalance;
   saveLocal(STORAGE_KEYS.WALLET, wallet);
 
   // Record or update wallet transaction
@@ -3378,8 +3769,8 @@ export async function approveRecharge(paymentId: string, adminId: string) {
   const pendingTx = txs.find((t) => t.referenceId === payment.orderId && t.type === 'RECHARGE');
   if (pendingTx) {
     pendingTx.balanceBefore = balBefore;
-    pendingTx.balanceAfter = wallet.availableBalance;
-    pendingTx.balanceType = 'RECHARGE_BALANCE';
+    pendingTx.balanceAfter = wallet.topupBalance;
+    pendingTx.balanceType = 'TOPUP_WALLET';
     pendingTx.description = `Recharge Approved (UTR: ${payment.utr})`;
     pendingTx.status = 'Completed';
   } else {
@@ -3389,8 +3780,8 @@ export async function approveRecharge(paymentId: string, adminId: string) {
       type: 'RECHARGE',
       amount: payment.amount,
       balanceBefore: balBefore,
-      balanceAfter: wallet.availableBalance,
-      balanceType: 'RECHARGE_BALANCE',
+      balanceAfter: wallet.topupBalance,
+      balanceType: 'TOPUP_WALLET',
       referenceId: payment.orderId,
       utr: payment.utr,
       status: 'Completed',
@@ -3643,12 +4034,21 @@ export async function rejectWithdrawal(withdrawalId: string, param2: string, par
   wd.processedAt = new Date().toISOString();
   saveLocal(STORAGE_KEYS.WITHDRAWALS, list);
 
-  // Refund wallet held balance back into earned balance
-  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, { availableBalance: 0, pendingBalance: 0, rechargeBalance: 0, earnedBalance: 0 } as Wallet);
-  const balBefore = wallet.availableBalance;
+  // Refund wallet held balance back into Withdraw Wallet (withdrawBalance)
+  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+    topupBalance: 0,
+    withdrawBalance: 0,
+    availableBalance: 0,
+    pendingBalance: 0,
+    rechargeBalance: 0,
+    earnedBalance: 0,
+  } as Wallet);
+  const curWithdraw = wallet.withdrawBalance !== undefined ? wallet.withdrawBalance : (wallet.earnedBalance || 0);
+  const balBefore = curWithdraw;
   wallet.pendingBalance = Math.max(0, +((wallet.pendingBalance || 0) - wd.amount).toFixed(2));
-  wallet.earnedBalance = +((wallet.earnedBalance || 0) + wd.amount).toFixed(2);
-  wallet.availableBalance = +((wallet.rechargeBalance || 0) + wallet.earnedBalance).toFixed(2);
+  wallet.withdrawBalance = +(curWithdraw + wd.amount).toFixed(2);
+  wallet.earnedBalance = wallet.withdrawBalance;
+  wallet.availableBalance = wallet.withdrawBalance;
   saveLocal(STORAGE_KEYS.WALLET, wallet);
 
   // Record reversal transaction
@@ -3658,8 +4058,8 @@ export async function rejectWithdrawal(withdrawalId: string, param2: string, par
     type: 'WITHDRAWAL_REVERSAL',
     amount: wd.amount,
     balanceBefore: balBefore,
-    balanceAfter: wallet.availableBalance,
-    balanceType: 'DEVICE_EARNING_BALANCE',
+    balanceAfter: wallet.withdrawBalance,
+    balanceType: 'WITHDRAW_WALLET',
     referenceId: wd.id,
     status: 'Completed',
     description: `Withdrawal Reversal: ${reason}`,
@@ -3815,6 +4215,11 @@ const defaultSystemSettings: import('../types').SystemSettings = {
   upiId: 'powerbank.pay@upi',
   qrImageUrl: '',
   instructions: '1. Scan the QR code or transfer to UPI ID.\n2. Enter the exact recharge amount.\n3. Input the 12-digit UTR and submit for verification.',
+  isSignUpBonusEnabled: true,
+  signUpBonusAmount: 50.00,
+  isDailyCheckInEnabled: true,
+  dailyCheckInAmount: 5.00,
+  dailyCheckInDay7Bonus: 100.00,
 };
 
 /**
@@ -5724,6 +6129,7 @@ export async function submitUniVePayUtrSupplement(
 export async function requestWithdrawalGateway(params: {
   userId: string;
   amount: number;
+  bankAccountId?: string;
   method?: 'MANUAL' | 'UNIVEPAY_AUTO';
   bankName?: string;
   bankCode?: string;
@@ -5762,7 +6168,7 @@ export async function requestWithdrawalGateway(params: {
     return data;
   } catch (err: any) {
     console.warn('Backend create-withdrawal error, falling back to database RPC:', err.message);
-    await submitWithdrawalRequest(params.userId, params.amount, undefined, params.upiId);
+    await submitWithdrawalRequest(params.userId, params.amount, params.bankAccountId);
     return {
       success: true,
       method: 'MANUAL',
@@ -6522,6 +6928,8 @@ export async function claimGiftCode(
   const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
     id: 'w_' + userId,
     userId,
+    topupBalance: 0,
+    withdrawBalance: 0,
     availableBalance: userProfile.walletBalance || 0,
     rechargeBalance: 0,
     earnedBalance: userProfile.deviceEarnings || 0,
@@ -6530,23 +6938,29 @@ export async function claimGiftCode(
     totalWithdrawn: 0,
   } as any);
 
-  const balBefore = wallet.availableBalance || 0;
-  const destination = giftCode.walletDestination || 'EARNING_BALANCE';
+  const destination = giftCode.walletDestination || 'TOPUP_WALLET';
+  const isTopupDest = destination === 'TOPUP_WALLET' || destination === 'RECHARGE_BALANCE' || (destination !== 'WITHDRAW_WALLET' && destination !== 'EARNING_BALANCE');
+  const curTopup = wallet.topupBalance !== undefined ? wallet.topupBalance : (wallet.rechargeBalance || 0);
+  const curWithdraw = wallet.withdrawBalance !== undefined ? wallet.withdrawBalance : (wallet.earnedBalance || wallet.availableBalance || 0);
 
-  if (destination === 'RECHARGE_BALANCE') {
-    wallet.rechargeBalance = +((wallet.rechargeBalance || 0) + calculatedReward).toFixed(2);
+  const balBefore = isTopupDest ? curTopup : curWithdraw;
+
+  if (isTopupDest) {
+    wallet.topupBalance = +(curTopup + calculatedReward).toFixed(2);
+    wallet.rechargeBalance = wallet.topupBalance;
   } else {
-    wallet.availableBalance = +((wallet.availableBalance || 0) + calculatedReward).toFixed(2);
-    wallet.earnedBalance = +((wallet.earnedBalance || 0) + calculatedReward).toFixed(2);
+    wallet.withdrawBalance = +(curWithdraw + calculatedReward).toFixed(2);
+    wallet.earnedBalance = wallet.withdrawBalance;
+    wallet.availableBalance = wallet.withdrawBalance;
     wallet.totalEarned = +((wallet.totalEarned || 0) + calculatedReward).toFixed(2);
-    userProfile.walletBalance = wallet.availableBalance;
+    userProfile.walletBalance = wallet.withdrawBalance;
     userProfile.deviceEarnings = +((userProfile.deviceEarnings || 0) + calculatedReward).toFixed(2);
   }
 
   saveLocal(STORAGE_KEYS.WALLET, wallet);
   saveLocal(STORAGE_KEYS.PROFILE, userProfile);
 
-  const balAfter = wallet.availableBalance;
+  const balAfter = isTopupDest ? wallet.topupBalance : wallet.withdrawBalance;
   const txId = 'tx_gift_' + Date.now();
 
   // 9. Create Wallet Transaction
@@ -6558,8 +6972,9 @@ export async function claimGiftCode(
     amount: calculatedReward,
     balanceBefore: balBefore,
     balanceAfter: balAfter,
+    balanceType: isTopupDest ? 'TOPUP_WALLET' : 'WITHDRAW_WALLET',
     referenceId: 'GIFT-' + giftCode.code,
-    description: `Gift code reward — ${giftCode.code}`,
+    description: `Gift code reward — ${giftCode.code} (${isTopupDest ? 'Topup Wallet' : 'Withdraw Wallet'})`,
     createdAt: new Date().toISOString(),
   });
   saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
@@ -6626,6 +7041,8 @@ export async function adminAdjustUserBalance(
   const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
     id: 'w_' + userId,
     userId,
+    topupBalance: 0,
+    withdrawBalance: 0,
     availableBalance: 0,
     rechargeBalance: 0,
     earnedBalance: 0,
@@ -6641,10 +7058,10 @@ export async function adminAdjustUserBalance(
   } as any);
 
   let currentBalance = 0;
-  if (balanceType === 'MY_WALLET') {
-    currentBalance = wallet.availableBalance || profile.walletBalance || 0;
-  } else if (balanceType === 'RECHARGE_BALANCE') {
-    currentBalance = wallet.rechargeBalance || 0;
+  if (balanceType === 'TOPUP_WALLET' || balanceType === 'RECHARGE_BALANCE') {
+    currentBalance = wallet.topupBalance !== undefined ? wallet.topupBalance : (wallet.rechargeBalance || 0);
+  } else if (balanceType === 'WITHDRAW_WALLET' || balanceType === 'MY_WALLET') {
+    currentBalance = wallet.withdrawBalance !== undefined ? wallet.withdrawBalance : (wallet.earnedBalance || wallet.availableBalance || profile.walletBalance || 0);
   } else if (balanceType === 'REFERRAL_BALANCE') {
     currentBalance = profile.teamEarnings || 0;
   }
@@ -6661,11 +7078,14 @@ export async function adminAdjustUserBalance(
   const afterBalance = +(Math.max(0, currentBalance + delta).toFixed(2));
 
   // Update specific balance
-  if (balanceType === 'MY_WALLET') {
+  if (balanceType === 'TOPUP_WALLET' || balanceType === 'RECHARGE_BALANCE') {
+    wallet.topupBalance = afterBalance;
+    wallet.rechargeBalance = afterBalance;
+  } else if (balanceType === 'WITHDRAW_WALLET' || balanceType === 'MY_WALLET') {
+    wallet.withdrawBalance = afterBalance;
+    wallet.earnedBalance = afterBalance;
     wallet.availableBalance = afterBalance;
     profile.walletBalance = afterBalance;
-  } else if (balanceType === 'RECHARGE_BALANCE') {
-    wallet.rechargeBalance = afterBalance;
   } else if (balanceType === 'REFERRAL_BALANCE') {
     profile.teamEarnings = afterBalance;
   }
@@ -6683,6 +7103,7 @@ export async function adminAdjustUserBalance(
     amount: delta,
     balanceBefore: beforeBalance,
     balanceAfter: afterBalance,
+    balanceType: (balanceType === 'TOPUP_WALLET' || balanceType === 'RECHARGE_BALANCE') ? 'TOPUP_WALLET' : 'WITHDRAW_WALLET',
     referenceId: 'ADJ-' + Date.now(),
     description: `Admin ${action === 'ADMIN_CREDIT' ? 'Credit' : 'Deduction'} (${balanceType}): ${reason}`,
     createdAt: new Date().toISOString(),
@@ -6724,6 +7145,1391 @@ export async function adminAdjustUserBalance(
     action,
   };
 }
+
+// ==============================================================================
+// DYNAMIC VIP LEVEL SYSTEM SERVICES & CALCULATION ENGINE
+// ==============================================================================
+
+/**
+ * Fetch all VIP levels from Supabase or LocalStorage fallback
+ */
+export async function fetchVipLevels(includeInactive: boolean = false): Promise<VipLevel[]> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      let query = supabase
+        .from('vip_levels')
+        .select('*')
+        .order('display_order', { ascending: true })
+        .order('level_number', { ascending: true });
+
+      if (!includeInactive) {
+        query = query.eq('is_active', true);
+      }
+
+      const { data, error } = await query;
+      if (!error && data && data.length > 0) {
+        return data.map((row: any) => ({
+          id: row.id,
+          levelNumber: Number(row.level_number),
+          name: row.name,
+          minInvestment: Number(row.min_investment || 0),
+          maxInvestment: row.max_investment !== null && row.max_investment !== undefined ? Number(row.max_investment) : null,
+          icon: row.icon || 'crown',
+          badgeText: row.badge_text || `VIP ${row.level_number}`,
+          description: row.description || '',
+          benefits: Array.isArray(row.benefits) ? row.benefits : [],
+          dailyBonusRate: Number(row.daily_bonus_rate || 0),
+          withdrawalFeeDiscount: Number(row.withdrawal_fee_discount || 0),
+          displayOrder: Number(row.display_order || 0),
+          isActive: row.is_active ?? true,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        }));
+      }
+      if (error && !isTableMissingError(error)) {
+        console.warn('Supabase fetch VIP levels warning:', error.message);
+      }
+    } catch (e) {
+      console.warn('Supabase VIP levels error, fallback to local storage:', e);
+    }
+  }
+
+  const stored = getLocal<VipLevel[]>(STORAGE_KEYS.VIP_LEVELS, defaultVipLevels);
+  if (!stored || stored.length === 0) {
+    saveLocal(STORAGE_KEYS.VIP_LEVELS, defaultVipLevels);
+    return includeInactive ? defaultVipLevels : defaultVipLevels.filter((l) => l.isActive);
+  }
+  return includeInactive ? stored : stored.filter((l) => l.isActive);
+}
+
+/**
+ * Fetch Comprehensive User VIP Status calculated dynamically from investments
+ */
+export async function fetchUserVipStatus(userId: string): Promise<UserVipStatus> {
+  const allLevels = await fetchVipLevels(false);
+  // Sort ascending by minInvestment
+  const sorted = [...allLevels].sort((a, b) => a.minInvestment - b.minInvestment);
+
+  // Fetch all user purchases to get total qualifying investment
+  const purchases = await fetchPurchases(userId);
+  // Sum up all active or total qualifying investments
+  const totalInvested = purchases.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
+  // Find the highest level where user meets minInvestment
+  let currentLevel = sorted[0] || defaultVipLevels[0];
+  for (const level of sorted) {
+    if (totalInvested >= level.minInvestment) {
+      currentLevel = level;
+    }
+  }
+
+  // Find next tier if any
+  const nextLevel = sorted.find((l) => l.minInvestment > totalInvested) || null;
+
+  let remainingForNextLevel = 0;
+  let progressPercentage = 100;
+
+  if (nextLevel) {
+    remainingForNextLevel = Math.max(0, +(nextLevel.minInvestment - totalInvested).toFixed(2));
+    const range = nextLevel.minInvestment - currentLevel.minInvestment;
+    const progressSoFar = totalInvested - currentLevel.minInvestment;
+    progressPercentage = Math.min(100, Math.max(0, Math.round((progressSoFar / (range > 0 ? range : 1)) * 100)));
+  }
+
+  return {
+    currentLevel,
+    nextLevel,
+    totalInvested: +totalInvested.toFixed(2),
+    remainingForNextLevel,
+    progressPercentage,
+    allLevels: sorted,
+  };
+}
+
+/**
+ * Create a new VIP Level (Admin)
+ */
+export async function createVipLevel(
+  levelData: Partial<VipLevel>,
+  adminId: string = 'adm_master_01'
+): Promise<VipLevel> {
+  const newLevel: VipLevel = {
+    id: 'vip_' + Date.now(),
+    levelNumber: levelData.levelNumber !== undefined ? levelData.levelNumber : 1,
+    name: levelData.name || `VIP ${levelData.levelNumber || 1}`,
+    minInvestment: Number(levelData.minInvestment || 0),
+    maxInvestment: levelData.maxInvestment ? Number(levelData.maxInvestment) : null,
+    icon: levelData.icon || 'crown',
+    badgeText: levelData.badgeText || `VIP ${levelData.levelNumber || 1}`,
+    description: levelData.description || '',
+    benefits: levelData.benefits || [],
+    dailyBonusRate: Number(levelData.dailyBonusRate || 0),
+    withdrawalFeeDiscount: Number(levelData.withdrawalFeeDiscount || 0),
+    displayOrder: levelData.displayOrder !== undefined ? levelData.displayOrder : 0,
+    isActive: levelData.isActive ?? true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('vip_levels')
+        .insert({
+          level_number: newLevel.levelNumber,
+          name: newLevel.name,
+          min_investment: newLevel.minInvestment,
+          max_investment: newLevel.maxInvestment,
+          icon: newLevel.icon,
+          badge_text: newLevel.badgeText,
+          description: newLevel.description,
+          benefits: newLevel.benefits,
+          daily_bonus_rate: newLevel.dailyBonusRate,
+          withdrawal_fee_discount: newLevel.withdrawalFeeDiscount,
+          display_order: newLevel.displayOrder,
+          is_active: newLevel.isActive,
+        })
+        .select()
+        .single();
+
+      if (!error && data) {
+        newLevel.id = data.id;
+      } else if (error && !isTableMissingError(error)) {
+        console.warn('Supabase insert VIP level error:', error.message);
+      }
+    } catch (e) {
+      console.warn('Supabase create VIP level error:', e);
+    }
+  }
+
+  // Update local
+  const current = getLocal<VipLevel[]>(STORAGE_KEYS.VIP_LEVELS, defaultVipLevels);
+  const updated = [...current, newLevel].sort((a, b) => a.minInvestment - b.minInvestment);
+  saveLocal(STORAGE_KEYS.VIP_LEVELS, updated);
+
+  await recordAuditLog(
+    adminId,
+    'CREATE_VIP_LEVEL',
+    'vip_levels',
+    newLevel.id,
+    `Created VIP level: ${newLevel.name} (Min: ₹${newLevel.minInvestment})`
+  );
+
+  return newLevel;
+}
+
+/**
+ * Update an existing VIP Level (Admin)
+ */
+export async function updateVipLevel(
+  id: string,
+  updates: Partial<VipLevel>,
+  adminId: string = 'adm_master_01'
+): Promise<VipLevel> {
+  const currentList = getLocal<VipLevel[]>(STORAGE_KEYS.VIP_LEVELS, defaultVipLevels);
+  const index = currentList.findIndex((l) => l.id === id || String(l.levelNumber) === id);
+
+  if (index === -1) {
+    throw new Error('VIP Level not found.');
+  }
+
+  const updatedItem: VipLevel = {
+    ...currentList[index],
+    ...updates,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase
+        .from('vip_levels')
+        .update({
+          level_number: updatedItem.levelNumber,
+          name: updatedItem.name,
+          min_investment: updatedItem.minInvestment,
+          max_investment: updatedItem.maxInvestment,
+          icon: updatedItem.icon,
+          badge_text: updatedItem.badgeText,
+          description: updatedItem.description,
+          benefits: updatedItem.benefits,
+          daily_bonus_rate: updatedItem.dailyBonusRate,
+          withdrawal_fee_discount: updatedItem.withdrawalFeeDiscount,
+          display_order: updatedItem.displayOrder,
+          is_active: updatedItem.isActive,
+          updated_at: updatedItem.updatedAt,
+        })
+        .match(id.startsWith('vip_') ? { id } : { level_number: updatedItem.levelNumber });
+
+      if (error && !isTableMissingError(error)) {
+        console.warn('Supabase update VIP level error:', error.message);
+      }
+    } catch (e) {
+      console.warn('Supabase update VIP level error:', e);
+    }
+  }
+
+  currentList[index] = updatedItem;
+  currentList.sort((a, b) => a.minInvestment - b.minInvestment);
+  saveLocal(STORAGE_KEYS.VIP_LEVELS, currentList);
+
+  await recordAuditLog(
+    adminId,
+    'UPDATE_VIP_LEVEL',
+    'vip_levels',
+    id,
+    `Updated VIP level: ${updatedItem.name}`
+  );
+
+  return updatedItem;
+}
+
+/**
+ * Delete a VIP Level (Admin)
+ */
+export async function deleteVipLevel(id: string, adminId: string = 'adm_master_01'): Promise<boolean> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase
+        .from('vip_levels')
+        .delete()
+        .eq('id', id);
+
+      if (error && !isTableMissingError(error)) {
+        console.warn('Supabase delete VIP level error:', error.message);
+      }
+    } catch (e) {
+      console.warn('Supabase delete VIP level error:', e);
+    }
+  }
+
+  const currentList = getLocal<VipLevel[]>(STORAGE_KEYS.VIP_LEVELS, defaultVipLevels);
+  const filtered = currentList.filter((l) => l.id !== id);
+  saveLocal(STORAGE_KEYS.VIP_LEVELS, filtered);
+
+  await recordAuditLog(
+    adminId,
+    'DELETE_VIP_LEVEL',
+    'vip_levels',
+    id,
+    `Deleted VIP level with ID: ${id}`
+  );
+
+  return true;
+}
+
+/**
+ * Reset / Seed Default VIP Levels
+ */
+export async function seedDefaultVipLevels(adminId: string = 'adm_master_01'): Promise<VipLevel[]> {
+  saveLocal(STORAGE_KEYS.VIP_LEVELS, defaultVipLevels);
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      for (const level of defaultVipLevels) {
+        await supabase.from('vip_levels').upsert({
+          level_number: level.levelNumber,
+          name: level.name,
+          min_investment: level.minInvestment,
+          max_investment: level.maxInvestment,
+          icon: level.icon,
+          badge_text: level.badgeText,
+          description: level.description,
+          benefits: level.benefits,
+          daily_bonus_rate: level.dailyBonusRate,
+          withdrawal_fee_discount: level.withdrawalFeeDiscount,
+          display_order: level.displayOrder,
+          is_active: level.isActive,
+        }, { onConflict: 'level_number' });
+      }
+    } catch (e) {
+      console.warn('Supabase seed VIP levels warning:', e);
+    }
+  }
+
+  await recordAuditLog(
+    adminId,
+    'SEED_VIP_LEVELS',
+    'vip_levels',
+    'default',
+    'Reset and seeded default VIP Level tiers (VIP 0 to VIP 6)'
+  );
+
+  return defaultVipLevels;
+}
+
+// ==============================================================================
+// DYNAMIC DAILY CHECK-IN REWARD ENGINE
+// ==============================================================================
+
+/**
+ * Fetch User Daily Check-in Status
+ */
+export async function fetchDailyCheckInStatus(userId: string): Promise<import('../types').DailyCheckInStatus> {
+  const sysSettings = await fetchSystemSettings();
+  const isEnabled = sysSettings.isDailyCheckInEnabled !== false;
+  const baseReward = typeof sysSettings.dailyCheckInAmount === 'number' ? sysSettings.dailyCheckInAmount : 5.00;
+  const day7Bonus = typeof sysSettings.dailyCheckInDay7Bonus === 'number' ? sysSettings.dailyCheckInDay7Bonus : 100.00;
+
+  const storageKey = `${STORAGE_KEYS.DAILY_CHECKIN}_${userId}`;
+  const checkInData = getLocal<{
+    lastCheckInDate?: string;
+    currentStreak: number;
+    totalClaimed: number;
+    history: import('../types').DailyCheckInHistoryItem[];
+  }>(storageKey, {
+    lastCheckInDate: undefined,
+    currentStreak: 0,
+    totalClaimed: 0,
+    history: [],
+  });
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const hasCheckedInToday = checkInData.lastCheckInDate === todayStr;
+
+  let streak = checkInData.currentStreak || 0;
+  // If not checked in today, verify if streak was broken (missed yesterday)
+  if (!hasCheckedInToday && checkInData.lastCheckInDate) {
+    const lastDate = new Date(checkInData.lastCheckInDate);
+    const today = new Date(todayStr);
+    const diffTime = Math.abs(today.getTime() - lastDate.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    if (diffDays > 1) {
+      // Streak broken, user missed at least 1 whole day
+      streak = 0;
+    }
+  }
+
+  // Calculate today's day number (1 to 7)
+  let todayDayNumber = 1;
+  if (hasCheckedInToday) {
+    todayDayNumber = streak > 0 ? ((streak - 1) % 7) + 1 : 1;
+  } else {
+    todayDayNumber = (streak % 7) + 1;
+  }
+
+  const todayReward = todayDayNumber === 7 ? day7Bonus : baseReward;
+
+  return {
+    lastCheckInDate: checkInData.lastCheckInDate,
+    currentStreak: streak,
+    hasCheckedInToday,
+    todayDayNumber,
+    todayReward,
+    day7Bonus,
+    dailyReward: baseReward,
+    isDailyCheckInEnabled: isEnabled,
+    totalClaimed: checkInData.totalClaimed || 0,
+    history: checkInData.history || [],
+  };
+}
+
+/**
+ * Perform Daily Check-in & Credit Reward to Wallet
+ */
+export async function performDailyCheckIn(userId: string): Promise<{
+  success: boolean;
+  reward: number;
+  streak: number;
+  message: string;
+  newBalance: number;
+}> {
+  const sysSettings = await fetchSystemSettings();
+  if (sysSettings.isDailyCheckInEnabled === false) {
+    throw new Error('Daily check-in is currently disabled by platform administrator.');
+  }
+
+  const baseReward = typeof sysSettings.dailyCheckInAmount === 'number' ? sysSettings.dailyCheckInAmount : 5.00;
+  const day7Bonus = typeof sysSettings.dailyCheckInDay7Bonus === 'number' ? sysSettings.dailyCheckInDay7Bonus : 100.00;
+
+  const storageKey = `${STORAGE_KEYS.DAILY_CHECKIN}_${userId}`;
+  const checkInData = getLocal<{
+    lastCheckInDate?: string;
+    currentStreak: number;
+    totalClaimed: number;
+    history: import('../types').DailyCheckInHistoryItem[];
+  }>(storageKey, {
+    lastCheckInDate: undefined,
+    currentStreak: 0,
+    totalClaimed: 0,
+    history: [],
+  });
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  if (checkInData.lastCheckInDate === todayStr) {
+    throw new Error('You have already checked in today! Please return tomorrow.');
+  }
+
+  // Compute new streak
+  let newStreak = 1;
+  if (checkInData.lastCheckInDate) {
+    const lastDate = new Date(checkInData.lastCheckInDate);
+    const today = new Date(todayStr);
+    const diffTime = Math.abs(today.getTime() - lastDate.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    if (diffDays === 1) {
+      newStreak = (checkInData.currentStreak % 7) + 1;
+    } else {
+      newStreak = 1;
+    }
+  }
+
+  const reward = newStreak === 7 ? day7Bonus : baseReward;
+  const txId = 'tx_checkin_' + Date.now();
+
+  // Credit user wallet in Supabase if active
+  let finalBalance = 0;
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: walData } = await supabase.from('wallets').select('*').eq('user_id', userId).maybeSingle();
+      if (walData) {
+        const curTopup = Number(walData.topup_balance !== undefined ? walData.topup_balance : (walData.recharge_balance || 0));
+        const newTopup = +(curTopup + reward).toFixed(2);
+        await supabase.from('wallets').update({
+          topup_balance: newTopup,
+          recharge_balance: newTopup,
+          updated_at: new Date().toISOString(),
+        }).eq('user_id', userId);
+        finalBalance = newTopup;
+
+        await supabase.from('wallet_transactions').insert({
+          id: txId,
+          user_id: userId,
+          type: 'DAILY_CHECKIN',
+          amount: reward,
+          balance_before: curTopup,
+          balance_after: newTopup,
+          balance_type: 'TOPUP_WALLET',
+          status: 'Completed',
+          reference_id: 'CHECKIN-DAY-' + newStreak,
+          description: `📅 Daily Check-in (Day ${newStreak}) Reward: ₹${reward.toFixed(2)} (Topup Wallet)`,
+          created_at: new Date().toISOString(),
+        });
+      }
+    } catch (sbErr) {
+      console.warn('Supabase checkin wallet credit error:', sbErr);
+    }
+  }
+
+  // Credit local wallet storage strictly into Topup Wallet
+  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+    id: 'wal_' + userId,
+    userId,
+    topupBalance: 0,
+    withdrawBalance: 0,
+    availableBalance: 0,
+    rechargeBalance: 0,
+    earnedBalance: 0,
+    pendingBalance: 0,
+    totalEarned: 0,
+    totalWithdrawn: 0,
+  });
+
+  const curTopup = wallet.topupBalance !== undefined ? wallet.topupBalance : (wallet.rechargeBalance || 0);
+  const balBefore = curTopup;
+  const balAfter = +(curTopup + reward).toFixed(2);
+  wallet.topupBalance = balAfter;
+  wallet.rechargeBalance = balAfter;
+  saveLocal(STORAGE_KEYS.WALLET, wallet);
+  if (!finalBalance) finalBalance = balAfter;
+
+  // Record Transaction with balanceType TOPUP_WALLET
+  const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+  txs.unshift({
+    id: txId,
+    userId,
+    type: 'DAILY_CHECKIN',
+    amount: reward,
+    balanceBefore: balBefore,
+    balanceAfter: balAfter,
+    balanceType: 'TOPUP_WALLET',
+    status: 'Completed',
+    referenceId: 'CHECKIN-DAY-' + newStreak,
+    description: `📅 Daily Check-in (Day ${newStreak}) Reward: ₹${reward.toFixed(2)} (Topup Wallet)`,
+    createdAt: new Date().toISOString(),
+  });
+  saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
+
+  // Notification
+  const notifs = getLocal<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []);
+  notifs.unshift({
+    id: 'notif_' + Date.now(),
+    userId,
+    title: 'Daily Check-in Claimed! 🎉',
+    message: `Congratulations! Day ${newStreak} check-in reward of ₹${reward.toFixed(2)} has been credited to your Topup Wallet (for plan purchases).`,
+    type: 'SUCCESS',
+    read: false,
+    createdAt: new Date().toISOString(),
+  });
+  saveLocal(STORAGE_KEYS.NOTIFICATIONS, notifs);
+
+  // Update check-in record
+  const historyItem: import('../types').DailyCheckInHistoryItem = {
+    date: todayStr,
+    dayNumber: newStreak,
+    amount: reward,
+    claimedAt: new Date().toISOString(),
+    txId,
+  };
+  checkInData.lastCheckInDate = todayStr;
+  checkInData.currentStreak = newStreak;
+  checkInData.totalClaimed = +((checkInData.totalClaimed || 0) + reward).toFixed(2);
+  checkInData.history = [historyItem, ...(checkInData.history || [])];
+  saveLocal(storageKey, checkInData);
+
+  return {
+    success: true,
+    reward,
+    streak: newStreak,
+    message: `Day ${newStreak} check-in completed! ₹${reward.toFixed(2)} credited.`,
+    newBalance: finalBalance,
+  };
+}
+
+// ==============================================================================
+// ABOUT PLATFORM DYNAMIC CONFIGURATION SERVICES
+// ==============================================================================
+
+/**
+ * Fetch dynamic About Platform rules and section settings.
+ * Loads from Supabase 'about_platform_config' or local cache.
+ */
+export async function fetchAboutPlatformConfig(): Promise<AboutPlatformConfig> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('about_platform_config')
+        .select('*')
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!error && data) {
+        return {
+          id: data.id,
+          pageTitle: data.page_title || defaultAboutPlatformConfig.pageTitle,
+          pageSubtitle: data.page_subtitle || defaultAboutPlatformConfig.pageSubtitle,
+          heroBadge: data.hero_badge || defaultAboutPlatformConfig.heroBadge,
+          companyName: data.company_name || defaultAboutPlatformConfig.companyName,
+          appVersion: data.app_version || defaultAboutPlatformConfig.appVersion,
+          supportEmail: data.support_email || defaultAboutPlatformConfig.supportEmail,
+          supportTelegram: data.support_telegram || defaultAboutPlatformConfig.supportTelegram,
+          supportWhatsapp: data.support_whatsapp || defaultAboutPlatformConfig.supportWhatsapp,
+          supportHours: data.support_hours || defaultAboutPlatformConfig.supportHours,
+          investingSteps: data.investing_steps || defaultAboutPlatformConfig.investingSteps,
+          customRules: data.custom_rules || defaultAboutPlatformConfig.customRules,
+          sections: data.sections || defaultAboutPlatformConfig.sections,
+          topupWalletNotes: data.topup_wallet_notes || defaultAboutPlatformConfig.topupWalletNotes,
+          withdrawWalletNotes: data.withdraw_wallet_notes || defaultAboutPlatformConfig.withdrawWalletNotes,
+          giftCodeNotes: data.gift_code_notes || defaultAboutPlatformConfig.giftCodeNotes,
+          updatedAt: data.updated_at,
+          updatedBy: data.updated_by,
+        };
+      }
+    } catch (e) {
+      console.warn('Supabase fetchAboutPlatformConfig fallback:', e);
+    }
+  }
+
+  return getLocal<AboutPlatformConfig>(
+    STORAGE_KEYS.ABOUT_PLATFORM,
+    defaultAboutPlatformConfig
+  );
+}
+
+/**
+ * Update dynamic About Platform configuration (Admin only).
+ * Saves to Supabase and persists across users.
+ */
+export async function updateAboutPlatformConfig(
+  config: AboutPlatformConfig,
+  adminId: string
+): Promise<AboutPlatformConfig> {
+  const updated: AboutPlatformConfig = {
+    ...config,
+    updatedAt: new Date().toISOString(),
+    updatedBy: adminId,
+  };
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const payload = {
+        id: updated.id || 'cfg_about_platform_01',
+        page_title: updated.pageTitle,
+        page_subtitle: updated.pageSubtitle,
+        hero_badge: updated.heroBadge,
+        company_name: updated.companyName,
+        app_version: updated.appVersion,
+        support_email: updated.supportEmail,
+        support_telegram: updated.supportTelegram,
+        support_whatsapp: updated.supportWhatsapp,
+        support_hours: updated.supportHours,
+        investing_steps: updated.investingSteps,
+        custom_rules: updated.customRules,
+        sections: updated.sections,
+        topup_wallet_notes: updated.topupWalletNotes,
+        withdraw_wallet_notes: updated.withdrawWalletNotes,
+        gift_code_notes: updated.giftCodeNotes,
+        updated_at: updated.updatedAt,
+        updated_by: adminId,
+      };
+
+      const { error } = await supabase
+        .from('about_platform_config')
+        .upsert(payload, { onConflict: 'id' });
+
+      if (error) {
+        console.warn('Supabase upsert about_platform_config notice:', error.message);
+      }
+    } catch (e) {
+      console.warn('Supabase updateAboutPlatformConfig fallback:', e);
+    }
+  }
+
+  saveLocal(STORAGE_KEYS.ABOUT_PLATFORM, updated);
+
+  try {
+    await recordAuditLog(
+      adminId,
+      'UPDATE_ABOUT_PLATFORM_CONFIG',
+      'about_platform_config',
+      updated.id || 'cfg_about_platform_01',
+      `Updated About Platform dynamic rules, sections, and investing guide`
+    );
+  } catch (err) {}
+
+  return updated;
+}
+
+// ==============================================================================
+// DYNAMIC MISSION BONUS SYSTEM API & ENGINE
+// ==============================================================================
+
+/**
+ * Fetch all missions (from Supabase or LocalStorage)
+ */
+export async function fetchMissions(includeDisabled: boolean = false): Promise<Mission[]> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      let query = supabase
+        .from('missions')
+        .select('*')
+        .order('display_order', { ascending: true });
+
+      if (!includeDisabled) {
+        query = query.eq('status', 'ACTIVE');
+      }
+
+      const { data, error } = await query;
+
+      if (!error && data && data.length > 0) {
+        return data.map((m: any) => ({
+          id: m.id,
+          title: m.title,
+          description: m.description,
+          requiredReferrals: Number(m.required_referrals ?? m.requiredReferrals ?? 1),
+          rewardAmount: Number(m.reward_amount ?? m.rewardAmount ?? 50),
+          walletType: 'WITHDRAW_WALLET' as const,
+          icon: m.icon || 'Target',
+          status: (m.status || 'ACTIVE') as 'ACTIVE' | 'DISABLED',
+          displayOrder: Number(m.display_order ?? m.displayOrder ?? 1),
+          createdAt: m.created_at || m.createdAt,
+          updatedAt: m.updated_at || m.updatedAt,
+        }));
+      }
+    } catch (e) {
+      console.warn('Supabase fetchMissions notice, using storage fallback:', e);
+    }
+  }
+
+  const list = getLocal<Mission[]>(STORAGE_KEYS.MISSIONS, defaultMissions);
+  const sorted = [...list].sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+  return includeDisabled ? sorted : sorted.filter((m) => m.status === 'ACTIVE');
+}
+
+/**
+ * Create a new Mission (Admin)
+ */
+export async function createMission(
+  payload: CreateMissionPayload,
+  adminId: string = 'adm_root_700'
+): Promise<Mission> {
+  const allMissions = getLocal<Mission[]>(STORAGE_KEYS.MISSIONS, defaultMissions);
+  const nextOrder = payload.displayOrder !== undefined ? payload.displayOrder : allMissions.length + 1;
+
+  const newMission: Mission = {
+    id: 'msn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+    title: payload.title.trim(),
+    description: payload.description?.trim() || `Invite ${payload.requiredReferrals} active friends with first plan purchase.`,
+    requiredReferrals: Math.max(1, Number(payload.requiredReferrals)),
+    rewardAmount: Math.max(1, Number(payload.rewardAmount)),
+    walletType: 'WITHDRAW_WALLET',
+    icon: payload.icon || 'Target',
+    status: payload.status || 'ACTIVE',
+    displayOrder: nextOrder,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase.from('missions').insert({
+        id: newMission.id,
+        title: newMission.title,
+        description: newMission.description,
+        required_referrals: newMission.requiredReferrals,
+        reward_amount: newMission.rewardAmount,
+        wallet_type: newMission.walletType,
+        icon: newMission.icon,
+        status: newMission.status,
+        display_order: newMission.displayOrder,
+        created_at: newMission.createdAt,
+        updated_at: newMission.updatedAt,
+      });
+
+      if (error && !isTableMissingError(error)) {
+        console.warn('Supabase createMission error:', error.message);
+      }
+    } catch (e) {
+      console.warn('Supabase createMission fallback:', e);
+    }
+  }
+
+  allMissions.push(newMission);
+  allMissions.sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+  saveLocal(STORAGE_KEYS.MISSIONS, allMissions);
+
+  try {
+    await recordAuditLog(
+      adminId,
+      'CREATE_MISSION',
+      'missions',
+      newMission.id,
+      `Created new mission: "${newMission.title}" (Requires ${newMission.requiredReferrals} Active Referrals, Reward: ₹${newMission.rewardAmount})`,
+      newMission
+    );
+  } catch (err) {}
+
+  return newMission;
+}
+
+/**
+ * Update a Mission (Admin)
+ */
+export async function updateMission(
+  id: string,
+  payload: Partial<Mission>,
+  adminId: string = 'adm_root_700'
+): Promise<Mission> {
+  const allMissions = getLocal<Mission[]>(STORAGE_KEYS.MISSIONS, defaultMissions);
+  const idx = allMissions.findIndex((m) => m.id === id);
+  if (idx === -1) {
+    throw new Error('Mission not found');
+  }
+
+  const updated: Mission = {
+    ...allMissions[idx],
+    ...payload,
+    walletType: 'WITHDRAW_WALLET', // enforce Withdraw Wallet
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase
+        .from('missions')
+        .update({
+          title: updated.title,
+          description: updated.description,
+          required_referrals: updated.requiredReferrals,
+          reward_amount: updated.rewardAmount,
+          wallet_type: updated.walletType,
+          icon: updated.icon,
+          status: updated.status,
+          display_order: updated.displayOrder,
+          updated_at: updated.updatedAt,
+        })
+        .eq('id', id);
+
+      if (error && !isTableMissingError(error)) {
+        console.warn('Supabase updateMission error:', error.message);
+      }
+    } catch (e) {
+      console.warn('Supabase updateMission fallback:', e);
+    }
+  }
+
+  allMissions[idx] = updated;
+  allMissions.sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+  saveLocal(STORAGE_KEYS.MISSIONS, allMissions);
+
+  try {
+    await recordAuditLog(
+      adminId,
+      'UPDATE_MISSION',
+      'missions',
+      id,
+      `Updated mission: "${updated.title}"`,
+      payload
+    );
+  } catch (err) {}
+
+  return updated;
+}
+
+/**
+ * Delete a Mission (Admin)
+ * Already claimed rewards remain securely preserved in transactions history.
+ */
+export async function deleteMission(id: string, adminId: string = 'adm_root_700'): Promise<void> {
+  const allMissions = getLocal<Mission[]>(STORAGE_KEYS.MISSIONS, defaultMissions);
+  const existing = allMissions.find((m) => m.id === id);
+  const filtered = allMissions.filter((m) => m.id !== id);
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase.from('missions').delete().eq('id', id);
+      if (error && !isTableMissingError(error)) {
+        console.warn('Supabase deleteMission notice:', error.message);
+      }
+    } catch (e) {
+      console.warn('Supabase deleteMission fallback:', e);
+    }
+  }
+
+  saveLocal(STORAGE_KEYS.MISSIONS, filtered);
+
+  try {
+    await recordAuditLog(
+      adminId,
+      'DELETE_MISSION',
+      'missions',
+      id,
+      `Deleted mission "${existing?.title || id}"`
+    );
+  } catch (err) {}
+}
+
+/**
+ * Toggle Mission Status (ACTIVE <-> DISABLED)
+ */
+export async function toggleMissionStatus(
+  id: string,
+  status: 'ACTIVE' | 'DISABLED',
+  adminId: string = 'adm_root_700'
+): Promise<void> {
+  await updateMission(id, { status }, adminId);
+}
+
+/**
+ * Reorder Missions (Admin)
+ */
+export async function reorderMissions(orderedIds: string[], adminId: string = 'adm_root_700'): Promise<void> {
+  const allMissions = getLocal<Mission[]>(STORAGE_KEYS.MISSIONS, defaultMissions);
+  const map = new Map(allMissions.map((m) => [m.id, m]));
+
+  orderedIds.forEach((id, index) => {
+    const item = map.get(id);
+    if (item) {
+      item.displayOrder = index + 1;
+      item.updatedAt = new Date().toISOString();
+    }
+  });
+
+  const updatedList = Array.from(map.values()).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+  saveLocal(STORAGE_KEYS.MISSIONS, updatedList);
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      for (let i = 0; i < orderedIds.length; i++) {
+        await supabase
+          .from('missions')
+          .update({ display_order: i + 1, updated_at: new Date().toISOString() })
+          .eq('id', orderedIds[i]);
+      }
+    } catch (e) {
+      console.warn('Supabase reorderMissions fallback:', e);
+    }
+  }
+
+  try {
+    await recordAuditLog(
+      adminId,
+      'REORDER_MISSIONS',
+      'missions',
+      'bulk',
+      `Reordered ${orderedIds.length} missions`
+    );
+  } catch (err) {}
+}
+
+/**
+ * Helper: Calculate Active Direct Referrals (L1 who purchased FIRST plan)
+ */
+export async function calculateActiveDirectReferrals(userId: string): Promise<{
+  activeCount: number;
+  activeReferrals: { userId: string; username?: string; mobile?: string; firstPurchaseDate?: string; planName?: string }[];
+}> {
+  const profile = (await findUserByIdentifier(userId)) || {
+    id: userId,
+    userId,
+    referralCode: '2829906',
+    membershipNumber: '2829906',
+  };
+
+  const myCodes = new Set([
+    profile.referralCode,
+    profile.membershipNumber,
+    profile.userId,
+    profile.id,
+    userId,
+  ].filter(Boolean));
+
+  // Get all users
+  let allUsers: UserProfile[] = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase.from('profiles').select('*');
+      if (!error && data && data.length > 0) {
+        allUsers = data.map((d: any) => ({
+          id: d.id,
+          userId: d.id,
+          username: d.username,
+          whatsappNo: d.whatsapp_no,
+          mobile: d.whatsapp_no || d.mobile,
+          membershipNumber: d.membership_number,
+          referralCode: d.referral_code,
+          referredBy: d.referred_by,
+          deviceEarnings: Number(d.device_earnings || 0),
+          teamEarnings: Number(d.team_earnings || 0),
+          walletBalance: Number(d.wallet_balance || 0),
+          createdAt: d.created_at,
+        }));
+      }
+    } catch {
+      // fallback
+    }
+  }
+
+  // Filter ONLY Direct Referrals (L1)
+  const directReferrals = allUsers.filter(
+    (u) =>
+      u.userId !== userId &&
+      u.id !== userId &&
+      u.referredBy &&
+      myCodes.has(u.referredBy)
+  );
+
+  if (directReferrals.length === 0) {
+    return { activeCount: 0, activeReferrals: [] };
+  }
+
+  // Get all purchases
+  let allPurchases: PurchaseItem[] = getLocal<PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase.from('purchases').select('*');
+      if (!error && data && data.length > 0) {
+        allPurchases = data.map((p: any) => ({
+          id: p.id,
+          userId: p.user_id,
+          planId: p.plan_id,
+          planName: p.plan_name,
+          amount: Number(p.amount || p.price || 0),
+          status: p.status || 'ACTIVE',
+          startedAt: p.started_at || p.created_at,
+          createdAt: p.created_at,
+        }));
+      }
+    } catch {
+      // fallback
+    }
+  }
+
+  const activeReferralsList: {
+    userId: string;
+    username?: string;
+    mobile?: string;
+    firstPurchaseDate?: string;
+    planName?: string;
+  }[] = [];
+
+  const countedRefereeIds = new Set<string>();
+
+  for (const referee of directReferrals) {
+    const refereeId = referee.userId || referee.id;
+    if (!refereeId || countedRefereeIds.has(refereeId)) continue;
+
+    // Check if referee has at least 1 plan purchase
+    const userPurchases = allPurchases.filter(
+      (p) => (p.userId === refereeId || p.userId === referee.id) && p.status !== 'CANCELLED'
+    );
+
+    if (userPurchases.length > 0) {
+      // Sort to find first purchase
+      userPurchases.sort((a, b) => new Date(a.startedAt || 0).getTime() - new Date(b.startedAt || 0).getTime());
+      const firstPurchase = userPurchases[0];
+
+      countedRefereeIds.add(refereeId);
+      activeReferralsList.push({
+        userId: refereeId,
+        username: referee.username || 'Member',
+        mobile: referee.whatsappNo || referee.mobile || '9800000000',
+        firstPurchaseDate: firstPurchase.startedAt || new Date().toISOString(),
+        planName: firstPurchase.planName || 'Device Plan',
+      });
+    }
+  }
+
+  return {
+    activeCount: activeReferralsList.length,
+    activeReferrals: activeReferralsList,
+  };
+}
+
+/**
+ * Fetch Comprehensive User Mission Summary
+ */
+export async function fetchUserMissionSummary(userId: string): Promise<UserMissionSummary> {
+  const [missions, { activeCount }] = await Promise.all([
+    fetchMissions(false),
+    calculateActiveDirectReferrals(userId),
+  ]);
+
+  // Load claims
+  let allClaims = getLocal<MissionClaim[]>(STORAGE_KEYS.MISSION_CLAIMS, []);
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('mission_claims')
+        .select('*')
+        .eq('user_id', userId)
+        .order('claimed_at', { ascending: false });
+
+      if (!error && data && data.length > 0) {
+        allClaims = data.map((c: any) => ({
+          id: c.id,
+          userId: c.user_id,
+          missionId: c.mission_id,
+          missionTitle: c.mission_title || 'Mission Bonus',
+          rewardAmount: Number(c.reward_amount || 0),
+          walletType: 'WITHDRAW_WALLET' as const,
+          transactionId: c.transaction_id,
+          claimedAt: c.claimed_at,
+          status: 'COMPLETED' as const,
+        }));
+      }
+    } catch {
+      // fallback
+    }
+  }
+
+  const userClaims = allClaims.filter((c) => c.userId === userId);
+  const claimedMissionIds = new Map(userClaims.map((c) => [c.missionId, c.claimedAt]));
+
+  const userMissions: UserMissionItem[] = missions.map((m) => {
+    const isClaimed = claimedMissionIds.has(m.id);
+    const claimedAt = claimedMissionIds.get(m.id);
+    const currentProgress = Math.min(activeCount, m.requiredReferrals);
+    const isCompleted = activeCount >= m.requiredReferrals;
+
+    return {
+      ...m,
+      currentProgress,
+      isCompleted,
+      isClaimed,
+      claimedAt,
+    };
+  });
+
+  const completedMissionsCount = userMissions.filter((m) => m.isCompleted).length;
+  const pendingMissionsCount = userMissions.filter((m) => !m.isCompleted).length;
+  const totalBonusEarned = userClaims.reduce((sum, c) => sum + (c.rewardAmount || 0), 0);
+
+  return {
+    totalActiveReferrals: activeCount,
+    completedMissionsCount,
+    pendingMissionsCount,
+    totalBonusEarned: +totalBonusEarned.toFixed(2),
+    missions: userMissions,
+    history: userClaims,
+  };
+}
+
+/**
+ * Claim Mission Reward
+ * - One-time claim per mission
+ * - Strictly credits into WITHDRAW WALLET
+ * - Creates WalletTransaction and Notification
+ */
+export async function claimMissionReward(
+  userId: string,
+  missionId: string
+): Promise<{ success: boolean; reward: number; message: string; transactionId?: string }> {
+  if (!userId || !missionId) {
+    throw new Error('User ID and Mission ID are required.');
+  }
+
+  // 1. Fetch missions and verify requirement
+  const allMissions = await fetchMissions(true);
+  const mission = allMissions.find((m) => m.id === missionId);
+  if (!mission) {
+    throw new Error('Mission not found or no longer available.');
+  }
+
+  if (mission.status === 'DISABLED') {
+    throw new Error('This mission is currently unavailable.');
+  }
+
+  // 2. Check if already claimed
+  let claims = getLocal<MissionClaim[]>(STORAGE_KEYS.MISSION_CLAIMS, []);
+  if (claims.some((c) => c.userId === userId && c.missionId === missionId)) {
+    throw new Error('You have already claimed this mission bonus!');
+  }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: existingClaim } = await supabase
+        .from('mission_claims')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('mission_id', missionId)
+        .maybeSingle();
+
+      if (existingClaim) {
+        throw new Error('You have already claimed this mission bonus!');
+      }
+    } catch (e: any) {
+      if (e.message && e.message.includes('already claimed')) throw e;
+    }
+  }
+
+  // 3. Server-side verification of active referrals
+  const { activeCount } = await calculateActiveDirectReferrals(userId);
+  if (activeCount < mission.requiredReferrals) {
+    throw new Error(
+      `Mission not completed yet! You have ${activeCount} / ${mission.requiredReferrals} active referrals.`
+    );
+  }
+
+  const reward = Number(mission.rewardAmount);
+  if (reward <= 0) {
+    throw new Error('Invalid reward amount.');
+  }
+
+  const txId = 'tx_msn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+  const claimId = 'mclm_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+  const nowStr = new Date().toISOString();
+
+  // 4. Fetch User Profile
+  const profile = await findUserByIdentifier(userId);
+
+  // 5. Credit WITHDRAW WALLET
+  let curWithdraw = 0;
+  let newWithdraw = 0;
+
+  // Supabase Atomic Credit
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: walletData } = await supabase
+        .from('wallets')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (walletData) {
+        curWithdraw = Number(walletData.earned_balance ?? walletData.available_balance ?? 0);
+        newWithdraw = +(curWithdraw + reward).toFixed(2);
+        const newTotalEarned = +((Number(walletData.total_earned || 0)) + reward).toFixed(2);
+
+        await supabase
+          .from('wallets')
+          .update({
+            earned_balance: newWithdraw,
+            available_balance: newWithdraw,
+            total_earned: newTotalEarned,
+            updated_at: nowStr,
+          })
+          .eq('user_id', userId);
+
+        await supabase.from('wallet_transactions').insert({
+          id: txId,
+          user_id: userId,
+          type: 'MISSION_BONUS',
+          amount: reward,
+          balance_before: curWithdraw,
+          balance_after: newWithdraw,
+          balance_type: 'WITHDRAW_WALLET',
+          status: 'Completed',
+          reference_id: mission.id,
+          description: `Mission completed: ${mission.title}`,
+          created_at: nowStr,
+        });
+
+        await supabase.from('mission_claims').insert({
+          id: claimId,
+          user_id: userId,
+          mission_id: mission.id,
+          mission_title: mission.title,
+          reward_amount: reward,
+          wallet_type: 'WITHDRAW_WALLET',
+          transaction_id: txId,
+          claimed_at: nowStr,
+        });
+      }
+    } catch (err) {
+      console.warn('Supabase claimMissionReward warning, proceeding with local persistence:', err);
+    }
+  }
+
+  // Local Wallet Update
+  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+    availableBalance: 0,
+    topupBalance: 0,
+    withdrawBalance: 0,
+    rechargeBalance: 0,
+    earnedBalance: 0,
+    totalEarned: 0,
+  } as Wallet);
+
+  curWithdraw = wallet.withdrawBalance !== undefined ? wallet.withdrawBalance : (wallet.earnedBalance || wallet.availableBalance || 0);
+  newWithdraw = +(curWithdraw + reward).toFixed(2);
+
+  wallet.withdrawBalance = newWithdraw;
+  wallet.earnedBalance = newWithdraw;
+  wallet.availableBalance = newWithdraw;
+  wallet.totalEarned = +((wallet.totalEarned || 0) + reward).toFixed(2);
+  // Topup balance is strictly UNCHANGED
+  saveLocal(STORAGE_KEYS.WALLET, wallet);
+
+  // Record Transaction
+  const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+  const newTx: WalletTransaction = {
+    id: txId,
+    userId,
+    type: 'MISSION_BONUS',
+    amount: reward,
+    balanceBefore: curWithdraw,
+    balanceAfter: newWithdraw,
+    balanceType: 'WITHDRAW_WALLET',
+    status: 'Completed',
+    referenceId: mission.id,
+    description: `Mission completed: ${mission.title}`,
+    createdAt: nowStr,
+  };
+  txs.unshift(newTx);
+  saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
+
+  // Save Claim Record
+  const newClaim: MissionClaim = {
+    id: claimId,
+    userId,
+    userMobile: profile?.whatsappNo || profile?.mobile,
+    username: profile?.username || 'Member',
+    missionId: mission.id,
+    missionTitle: mission.title,
+    rewardAmount: reward,
+    walletType: 'WITHDRAW_WALLET',
+    transactionId: txId,
+    claimedAt: nowStr,
+    status: 'COMPLETED',
+  };
+  claims.unshift(newClaim);
+  saveLocal(STORAGE_KEYS.MISSION_CLAIMS, claims);
+
+  // Create Notification
+  try {
+    await createNotificationForUser({
+      userId,
+      title: 'Mission Bonus Received',
+      description: `Congratulations! You received ₹${reward.toFixed(2)} Mission Bonus.`,
+      type: 'EARNING',
+      isHomePopup: false,
+      actionUrl: '/transactions',
+      actionText: 'View Wallet Ledger',
+    });
+  } catch {}
+
+  return {
+    success: true,
+    reward,
+    message: `Congratulations! You received ₹${reward.toFixed(2)} Mission Bonus in your Withdraw Wallet.`,
+    transactionId: txId,
+  };
+}
+
+/**
+ * Fetch Admin Mission Stats
+ */
+export async function fetchAdminMissionStats(): Promise<AdminMissionStats> {
+  const missions = await fetchMissions(true);
+  let claims = getLocal<MissionClaim[]>(STORAGE_KEYS.MISSION_CLAIMS, []);
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase.from('mission_claims').select('*');
+      if (!error && data && data.length > 0) {
+        claims = data.map((c: any) => ({
+          id: c.id,
+          userId: c.user_id,
+          missionId: c.mission_id,
+          missionTitle: c.mission_title || 'Mission Bonus',
+          rewardAmount: Number(c.reward_amount || 0),
+          walletType: 'WITHDRAW_WALLET',
+          transactionId: c.transaction_id,
+          claimedAt: c.claimed_at,
+          status: 'COMPLETED',
+        }));
+      }
+    } catch {}
+  }
+
+  const totalBonusDistributed = claims.reduce((sum, c) => sum + (c.rewardAmount || 0), 0);
+
+  return {
+    totalMissions: missions.length,
+    activeMissions: missions.filter((m) => m.status === 'ACTIVE').length,
+    completedClaims: claims.length,
+    pendingClaims: 0,
+    totalBonusDistributed: +totalBonusDistributed.toFixed(2),
+  };
+}
+
+/**
+ * Fetch Admin Mission Claims Log
+ */
+export async function fetchAdminMissionClaims(): Promise<MissionClaim[]> {
+  let claims = getLocal<MissionClaim[]>(STORAGE_KEYS.MISSION_CLAIMS, []);
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('mission_claims')
+        .select('*, profiles(username, whatsapp_no)')
+        .order('claimed_at', { ascending: false });
+
+      if (!error && data && data.length > 0) {
+        return data.map((c: any) => ({
+          id: c.id,
+          userId: c.user_id,
+          userMobile: c.profiles?.whatsapp_no || c.user_mobile || '9800000000',
+          username: c.profiles?.username || c.username || 'Member',
+          missionId: c.mission_id,
+          missionTitle: c.mission_title || 'Mission Bonus',
+          rewardAmount: Number(c.reward_amount || 0),
+          walletType: 'WITHDRAW_WALLET' as const,
+          transactionId: c.transaction_id,
+          claimedAt: c.claimed_at,
+          status: 'COMPLETED' as const,
+        }));
+      }
+    } catch {}
+  }
+
+  return claims;
+}
+
+
+
 
 
 

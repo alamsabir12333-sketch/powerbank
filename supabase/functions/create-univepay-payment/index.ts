@@ -113,9 +113,9 @@ serve(async (req) => {
     const merchantNo = Deno.env.get("UNIVEPAY_MERCHANT_NO") || "";
     const secretKey = Deno.env.get("UNIVEPAY_SECRET") || "";
     const depositUrl = Deno.env.get("UNIVEPAY_CREATE_DEPOSIT_URL") || "https://ydpay.univepay.com/Payment/GlobalPay";
-    const appUrl = Deno.env.get("APP_URL") || "https://powerbank.app";
-    const notifyUrl = `${appUrl}/api/univepay/payment-callback`;
-    const callbackUrl = `${appUrl}/`;
+    const appUrl = Deno.env.get("APP_URL") || "https://gainpower-top-1.com";
+    const notifyUrl = `${supabaseUrl}/functions/v1/univepay-payment-callback`;
+    const callbackUrl = appUrl.endsWith("/") ? appUrl : `${appUrl}/`;
 
     if (!merchantNo || !secretKey) {
       console.error("[UNIVEPAY][CREATE] Missing UNIVEPAY_MERCHANT_NO or UNIVEPAY_SECRET");

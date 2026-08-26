@@ -16,6 +16,8 @@ import {
   DollarSign,
   Clock,
   Calendar,
+  Flame,
+  Gift,
 } from 'lucide-react';
 import { fetchProducts, saveAdminPlan, deleteAdminPlan } from '../../services/api';
 import { ProductItem } from '../../types';
@@ -33,7 +35,7 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
 }) => {
   const [plans, setPlans] = useState<ProductItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeCategory, setActiveCategory] = useState<'ALL' | 'HOURLY' | 'PRO'>('ALL');
+  const [activeCategory, setActiveCategory] = useState<'ALL' | 'HOURLY' | 'PRO' | 'EVENT'>('ALL');
 
   // Edit / Create Modal
   const [editingPlan, setEditingPlan] = useState<Partial<ProductItem> | null>(null);
@@ -56,22 +58,36 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
     loadPlans();
   }, []);
 
-  const handleOpenCreate = (category: 'HOURLY' | 'PRO' = 'HOURLY') => {
-    const daily = category === 'PRO' ? 850 : 84;
+  const handleOpenCreate = (category: 'HOURLY' | 'PRO' | 'EVENT' = 'HOURLY') => {
+    const daily = category === 'PRO' ? 850 : category === 'EVENT' ? 520 : 84;
     const hourly = Number((daily / 24).toFixed(2));
     setIsNewPlan(true);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const inThirtyDays = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+
     setEditingPlan({
-      name: category === 'PRO' ? 'PRO-Cabinet ' + Math.floor(Math.random() * 900 + 100) : 'Cabinet-H' + Math.floor(Math.random() * 900 + 100),
+      name: category === 'PRO'
+        ? 'PRO-Cabinet ' + Math.floor(Math.random() * 900 + 100)
+        : category === 'EVENT'
+        ? 'Festival-Cabinet ' + Math.floor(Math.random() * 900 + 100)
+        : 'Cabinet-H' + Math.floor(Math.random() * 900 + 100),
       category,
-      devicePrice: category === 'PRO' ? 10000 : 1500,
+      devicePrice: category === 'PRO' ? 10000 : category === 'EVENT' ? 5000 : 1500,
       hourlyEarnings: hourly,
       dailyEarnings: daily,
-      limit: 5,
-      durationDays: category === 'PRO' ? 45 : 30,
-      instantBonus: category === 'PRO' ? 500 : 0,
+      limit: category === 'EVENT' ? 2 : 5,
+      durationDays: category === 'PRO' ? 45 : category === 'EVENT' ? 15 : 30,
+      instantBonus: category === 'PRO' ? 500 : category === 'EVENT' ? 300 : 0,
       requiresActiveHourlyPlan: category === 'PRO',
-      tags: category === 'PRO' ? ['Maturity Yield', 'High Return'] : ['Hourly Yield', 'Auto Settle'],
-      imageType: category === 'PRO' ? 'cabinet-pro' : 'cabinet-green',
+      startDate: category === 'EVENT' ? today : undefined,
+      endDate: category === 'EVENT' ? inThirtyDays : undefined,
+      tags: category === 'PRO'
+        ? ['Maturity Yield', 'High Return']
+        : category === 'EVENT'
+        ? ['Limited Event', 'High Yield', 'Instant Bonus']
+        : ['Hourly Yield', 'Auto Settle'],
+      imageType: category === 'PRO' ? 'cabinet-pro' : category === 'EVENT' ? 'cabinet-gold' : 'cabinet-green',
       status: 'active',
     });
   };
@@ -140,7 +156,7 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
               Sharing Hardware & Investment Plans
             </h2>
             <p className="text-xs text-gray-400 mt-0.5">
-              Manage Hourly Yield Devices and High-Yield PRO Investment Packages.
+              Manage Hourly Yield Devices, PRO Investment Packages, and Festival Event Plans.
             </p>
           </div>
 
@@ -162,6 +178,14 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
             </button>
 
             <button
+              onClick={() => handleOpenCreate('EVENT')}
+              className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-rose-500 to-red-600 hover:from-rose-600 hover:to-red-700 active:scale-95 text-white text-xs font-black flex items-center gap-1.5 shadow-md cursor-pointer"
+            >
+              <Flame className="w-4 h-4" />
+              <span>Add Event Plan</span>
+            </button>
+
+            <button
               onClick={loadPlans}
               disabled={loading}
               className="p-2 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-200 cursor-pointer"
@@ -172,11 +196,12 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
         </div>
 
         {/* Filter Tabs */}
-        <div className="mt-4 flex items-center gap-2">
+        <div className="mt-4 flex items-center gap-2 flex-wrap">
           {[
             { id: 'ALL', label: 'All Plans' },
             { id: 'HOURLY', label: 'Hourly Yield Devices' },
             { id: 'PRO', label: 'High-Yield PRO Plans' },
+            { id: 'EVENT', label: 'Festival & Event Plans' },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -203,11 +228,16 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredPlans.map((plan) => {
             const isPro = (plan.category || '').toUpperCase() === 'PRO';
+            const isEvent = (plan.category || '').toUpperCase() === 'EVENT';
             return (
               <div
                 key={plan.id}
                 className={`bg-[#161b22] border rounded-2xl p-5 flex flex-col justify-between transition-all ${
-                  isPro ? 'border-amber-500/40 shadow-lg shadow-amber-950/20' : 'border-gray-800 hover:border-gray-700'
+                  isPro
+                    ? 'border-amber-500/40 shadow-lg shadow-amber-950/20'
+                    : isEvent
+                    ? 'border-rose-500/40 shadow-lg shadow-rose-950/20'
+                    : 'border-gray-800 hover:border-gray-700'
                 }`}
               >
                 <div>
@@ -215,7 +245,11 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
                   <div className="flex items-center justify-between mb-3">
                     <span
                       className={`text-[10px] font-black uppercase px-2 py-0.5 rounded ${
-                        isPro ? 'bg-amber-500 text-black font-extrabold' : 'bg-[#FF6000]/20 text-[#FF6000] border border-[#FF6000]/30'
+                        isPro
+                          ? 'bg-amber-500 text-black font-extrabold'
+                          : isEvent
+                          ? 'bg-rose-600 text-white font-extrabold'
+                          : 'bg-[#FF6000]/20 text-[#FF6000] border border-[#FF6000]/30'
                       }`}
                     >
                       {plan.category || 'HOURLY'}
@@ -249,12 +283,18 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
                       <span className="text-gray-400">Total Yield:</span>
                       <span className="text-[#FF6000]">₹{((plan.dailyEarnings || 0) * (plan.durationDays || 30)).toLocaleString()}</span>
                     </div>
-                    {isPro && plan.instantBonus ? (
+                    {plan.instantBonus && plan.instantBonus > 0 ? (
                       <div className="flex justify-between text-amber-400 font-bold">
-                        <span>Instant Sign Bonus:</span>
+                        <span>Instant Bonus:</span>
                         <span>₹{plan.instantBonus}</span>
                       </div>
                     ) : null}
+                    {(plan.startDate || plan.endDate) && (
+                      <div className="flex justify-between text-rose-400 font-medium text-[11px] pt-1 border-t border-gray-800/60">
+                        <span>Event Dates:</span>
+                        <span>{plan.startDate || 'Now'} ~ {plan.endDate || 'Ongoing'}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -326,6 +366,7 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
                   >
                     <option value="HOURLY">HOURLY (Hourly Yield Device)</option>
                     <option value="PRO">PRO (High-Yield Maturity Contract)</option>
+                    <option value="EVENT">EVENT (Festival & Limited Event Plan)</option>
                   </select>
                 </div>
               </div>
@@ -418,6 +459,30 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
                 </div>
               </div>
 
+              {/* Event Date Range (for EVENT category) */}
+              {editingPlan.category === 'EVENT' && (
+                <div className="grid grid-cols-2 gap-3 p-3 bg-rose-950/20 border border-rose-900/40 rounded-xl">
+                  <div>
+                    <label className="block text-rose-300 font-semibold mb-1">Event Start Date</label>
+                    <input
+                      type="date"
+                      value={editingPlan.startDate || ''}
+                      onChange={(e) => setEditingPlan({ ...editingPlan, startDate: e.target.value })}
+                      className="w-full bg-[#0d1117] border border-rose-800 rounded-xl p-2 text-white outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-rose-300 font-semibold mb-1">Event End Date</label>
+                    <input
+                      type="date"
+                      value={editingPlan.endDate || ''}
+                      onChange={(e) => setEditingPlan({ ...editingPlan, endDate: e.target.value })}
+                      className="w-full bg-[#0d1117] border border-rose-800 rounded-xl p-2 text-white outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-gray-300 font-semibold mb-1">Visual Image Style</label>
@@ -430,6 +495,7 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
                     <option value="cabinet-orange">High-Power Orange Cabinet</option>
                     <option value="cabinet-blue">Enterprise Blue Station</option>
                     <option value="cabinet-pro">Exclusive PRO Gold Station</option>
+                    <option value="cabinet-gold">Festival Special Station</option>
                   </select>
                 </div>
 
@@ -457,7 +523,7 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
                     className="accent-[#FF6000]"
                   />
                   <span className="text-gray-300 font-semibold">
-                    Requires User to hold at least 1 Active Hourly Device (PRO Gatekeeper)
+                    Requires User to hold at least 1 Active Hourly Device (Gatekeeper)
                   </span>
                 </label>
               </div>

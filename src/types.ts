@@ -10,7 +10,10 @@ export type TabType =
   | 'withdrawal'
   | 'recharge'
   | 'bank_card'
-  | 'add_bank_card';
+  | 'add_bank_card'
+  | 'vip_levels'
+  | 'mission_bonus'
+  | 'about_platform';
 
 export type UserRole = 'user' | 'admin';
 
@@ -52,9 +55,13 @@ export interface LoginFormData {
 export interface Wallet {
   id: string;
   userId: string;
-  availableBalance: number;
-  rechargeBalance?: number;
-  earnedBalance?: number;
+  // Two distinct wallets
+  topupBalance?: number; // TOPUP WALLET (Plan Purchase Balance, non-withdrawable)
+  withdrawBalance?: number; // WITHDRAW WALLET (Earning + Team + Referral + Bonuses, withdrawable)
+  // Backward compatible properties:
+  availableBalance: number; // mapped to withdrawBalance (withdrawable) or total
+  rechargeBalance?: number; // alias for topupBalance
+  earnedBalance?: number; // alias for withdrawBalance
   pendingBalance: number;
   totalEarned: number;
   totalWithdrawn: number;
@@ -66,13 +73,18 @@ export type TransactionType =
   | 'RECHARGE'
   | 'PLAN_PURCHASE'
   | 'PRO_PLAN_PURCHASE'
+  | 'EVENT_PLAN_PURCHASE'
   | 'HOURLY_EARNING'
   | 'PRO_EARNING'
+  | 'EVENT_EARNING'
   | 'EARNING_CLAIM'
   | 'PRO_INSTANT_BONUS'
   | 'REFERRAL_BONUS'
   | 'REFERRAL_REWARD'
+  | 'MISSION_BONUS'
   | 'GIFT_CODE_REWARD'
+  | 'SIGNUP_BONUS'
+  | 'DAILY_CHECKIN'
   | 'ADMIN_CREDIT'
   | 'ADMIN_DEDUCT'
   | 'TEAM_BONUS'
@@ -121,7 +133,7 @@ export interface BannerItem {
   artworkType?: 'commission' | 'bonus' | 'powerbank';
 }
 
-export type PlanCategory = 'HOURLY' | 'PRO' | string;
+export type PlanCategory = 'HOURLY' | 'PRO' | 'EVENT' | 'VIP' | string;
 export type EarningType = 'HOURLY' | 'DAILY' | 'FIXED' | 'CUSTOM';
 export type EligibilityType = 'ANY_ACTIVE_HOURLY' | 'SPECIFIC_HOURLY' | 'MINIMUM_INVESTMENT' | 'NONE';
 
@@ -152,6 +164,12 @@ export interface ProductItem {
   minimumHourlyInvestment?: number;
   allowedHourlyPlanIds?: string[];
   sortOrder?: number;
+
+  // EVENT plan active window
+  startAt?: string;
+  endAt?: string;
+  startDate?: string;
+  endDate?: string;
 }
 
 export interface PurchaseItem {
@@ -295,7 +313,10 @@ export interface BankAccount {
   ifscCode?: string;
   upiId?: string;
   isDefault: boolean;
+  isDeleted?: boolean;
+  status?: 'active' | 'deleted' | 'inactive';
   createdAt?: string;
+  updatedAt?: string;
 }
 
 export type WithdrawalStatus =
@@ -509,6 +530,34 @@ export interface SystemSettings {
   isManualWithdrawalEnabled?: boolean;
   isUniVePayAutoWithdrawalEnabled?: boolean;
   gatewayFeePercent?: number;
+  // Dynamic Sign-up Bonus Settings
+  isSignUpBonusEnabled?: boolean;
+  signUpBonusAmount?: number;
+  // Dynamic Daily Check-in Settings
+  isDailyCheckInEnabled?: boolean;
+  dailyCheckInAmount?: number;
+  dailyCheckInDay7Bonus?: number;
+}
+
+export interface DailyCheckInHistoryItem {
+  date: string;
+  dayNumber: number;
+  amount: number;
+  claimedAt: string;
+  txId?: string;
+}
+
+export interface DailyCheckInStatus {
+  lastCheckInDate?: string;
+  currentStreak: number;
+  hasCheckedInToday: boolean;
+  todayDayNumber: number; // 1 to 7
+  todayReward: number;
+  day7Bonus: number;
+  dailyReward: number;
+  isDailyCheckInEnabled: boolean;
+  totalClaimed: number;
+  history?: DailyCheckInHistoryItem[];
 }
 
 export type DepositStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'EXPIRED';
@@ -732,7 +781,7 @@ export interface UserTeamSummary {
 
 export type GiftCodeAmountType = 'FIXED' | 'RANDOM';
 export type GiftCodeStatus = 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'EXPIRED' | 'EXHAUSTED' | 'DISABLED';
-export type GiftCodeDestination = 'EARNING_BALANCE' | 'RECHARGE_BALANCE';
+export type GiftCodeDestination = 'EARNING_BALANCE' | 'RECHARGE_BALANCE' | 'TOPUP_WALLET' | 'WITHDRAW_WALLET';
 
 export interface GiftCode {
   id: string;
@@ -782,7 +831,12 @@ export interface GiftCodeAnalytics {
   topGiftCode?: string;
 }
 
-export type AdminBalanceType = 'MY_WALLET' | 'RECHARGE_BALANCE' | 'REFERRAL_BALANCE';
+export type AdminBalanceType =
+  | 'TOPUP_WALLET'
+  | 'WITHDRAW_WALLET'
+  | 'MY_WALLET'
+  | 'RECHARGE_BALANCE'
+  | 'REFERRAL_BALANCE';
 
 export interface AdminBalanceAdjustment {
   id: string;
@@ -799,5 +853,175 @@ export interface AdminBalanceAdjustment {
   reference?: string;
   createdAt: string;
 }
+
+// ==============================================================================
+// DYNAMIC VIP LEVEL SYSTEM TYPES
+// ==============================================================================
+
+export interface VipLevel {
+  id: string;
+  levelNumber: number;
+  name: string;
+  minInvestment: number;
+  maxInvestment?: number | null;
+  icon?: string;
+  badgeText: string;
+  description?: string;
+  benefits: string[];
+  dailyBonusRate?: number; // e.g. 2 for 2% daily bonus
+  withdrawalFeeDiscount?: number; // e.g. 1 for 1% fee discount
+  displayOrder: number;
+  isActive: boolean;
+  colorGradient?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface UserVipStatus {
+  currentLevel: VipLevel;
+  nextLevel: VipLevel | null;
+  totalInvested: number;
+  remainingForNextLevel: number;
+  progressPercentage: number;
+  allLevels: VipLevel[];
+}
+
+// ==============================================================================
+// ABOUT PLATFORM DYNAMIC CONFIGURATION TYPES
+// ==============================================================================
+
+export interface InvestingStep {
+  id: string;
+  stepNumber: number;
+  title: string;
+  description: string;
+  icon?: string;
+  badge?: string;
+  enabled: boolean;
+}
+
+export interface CustomPlatformRule {
+  id: string;
+  title: string;
+  description: string;
+  icon?: string;
+  displayOrder: number;
+  enabled: boolean;
+  category?: string;
+  badge?: string;
+}
+
+export interface AboutPlatformSectionConfig {
+  id: string;
+  title: string;
+  description?: string;
+  enabled: boolean;
+  displayOrder: number;
+  icon?: string;
+  customNotes?: string;
+}
+
+export interface AboutPlatformConfig {
+  id?: string;
+  pageTitle: string;
+  pageSubtitle?: string;
+  heroBadge?: string;
+  companyName: string;
+  appVersion: string;
+  supportEmail?: string;
+  supportTelegram?: string;
+  supportWhatsapp?: string;
+  supportHours?: string;
+  investingSteps: InvestingStep[];
+  customRules: CustomPlatformRule[];
+  sections: {
+    investingSteps: AboutPlatformSectionConfig;
+    planRules: AboutPlatformSectionConfig;
+    vipUnlock: AboutPlatformSectionConfig;
+    topupWallet: AboutPlatformSectionConfig;
+    withdrawWallet: AboutPlatformSectionConfig;
+    withdrawRules: AboutPlatformSectionConfig;
+    teamCommission: AboutPlatformSectionConfig;
+    bonuses: AboutPlatformSectionConfig;
+    giftCode: AboutPlatformSectionConfig;
+    customRules: AboutPlatformSectionConfig;
+  };
+  topupWalletNotes?: string[];
+  withdrawWalletNotes?: string[];
+  giftCodeNotes?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
+// ==============================================================================
+// DYNAMIC MISSION BONUS SYSTEM TYPES
+// ==============================================================================
+
+export type MissionWalletType = 'WITHDRAW_WALLET';
+
+export interface Mission {
+  id: string;
+  title: string;
+  description?: string;
+  requiredReferrals: number; // Required direct active referrals (L1 with first plan purchase)
+  rewardAmount: number; // Reward amount in INR
+  walletType: MissionWalletType; // Always WITHDRAW_WALLET
+  icon?: string; // Icon name e.g. 'Target', 'Users', 'Trophy', 'Zap', 'Gift', 'Crown'
+  status: 'ACTIVE' | 'DISABLED';
+  displayOrder: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface UserMissionItem extends Mission {
+  currentProgress: number; // Number of direct referrals who made first purchase (capped or uncapped)
+  isCompleted: boolean; // currentProgress >= requiredReferrals
+  isClaimed: boolean; // whether already claimed
+  claimedAt?: string;
+}
+
+export interface MissionClaim {
+  id: string;
+  userId: string;
+  userMobile?: string;
+  username?: string;
+  missionId: string;
+  missionTitle: string;
+  rewardAmount: number;
+  walletType: MissionWalletType;
+  transactionId?: string;
+  claimedAt: string;
+  status: 'COMPLETED';
+}
+
+export interface UserMissionSummary {
+  totalActiveReferrals: number; // Count of L1 who purchased first plan
+  completedMissionsCount: number;
+  pendingMissionsCount: number;
+  totalBonusEarned: number;
+  missions: UserMissionItem[];
+  history: MissionClaim[];
+}
+
+export interface AdminMissionStats {
+  totalMissions: number;
+  activeMissions: number;
+  completedClaims: number;
+  pendingClaims: number;
+  totalBonusDistributed: number;
+}
+
+export interface CreateMissionPayload {
+  title: string;
+  description?: string;
+  requiredReferrals: number;
+  rewardAmount: number;
+  walletType?: MissionWalletType;
+  icon?: string;
+  status?: 'ACTIVE' | 'DISABLED';
+  displayOrder?: number;
+}
+
+
 
 

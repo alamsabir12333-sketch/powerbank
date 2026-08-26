@@ -1388,3 +1388,56 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- ==============================================================================
+-- 19. DYNAMIC VIP LEVELS TABLE & DEFAULT TIERS
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS public.vip_levels (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    level_number INT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    min_investment NUMERIC(12, 2) NOT NULL DEFAULT 0.00 CHECK (min_investment >= 0),
+    max_investment NUMERIC(12, 2),
+    icon TEXT DEFAULT 'crown',
+    badge_text TEXT NOT NULL,
+    description TEXT,
+    benefits TEXT[] DEFAULT ARRAY[]::TEXT[],
+    daily_bonus_rate NUMERIC(5, 2) DEFAULT 0.00,
+    withdrawal_fee_discount NUMERIC(5, 2) DEFAULT 0.00,
+    display_order INT DEFAULT 0,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Seed Initial Default VIP Levels (VIP 0 to VIP 6)
+INSERT INTO public.vip_levels (level_number, name, min_investment, max_investment, icon, badge_text, description, benefits, daily_bonus_rate, withdrawal_fee_discount, display_order, is_active)
+VALUES
+(0, 'VIP 0 - Starter Member', 0, 499, 'user', 'VIP 0', 'Default starter tier for all registered members.', ARRAY['Standard Device Yields', 'Standard Daily Withdrawals', '24/7 Standard Support'], 0.00, 0.00, 0, true),
+(1, 'VIP 1 - Bronze Member', 500, 1999, 'award', 'VIP 1', 'Unlocked with ₹500 qualifying investment.', ARRAY['+2% Daily Device Earnings Boost', 'Priority Recharge Confirmation', 'Standard Daily Withdrawals'], 2.00, 0.00, 1, true),
+(2, 'VIP 2 - Silver Member', 2000, 4999, 'shield', 'VIP 2', 'Unlocked with ₹2,000 qualifying investment.', ARRAY['+4% Daily Device Earnings Boost', '1% Withdrawal Fee Discount', 'Fast-track Withdrawal Queue'], 4.00, 1.00, 2, true),
+(3, 'VIP 3 - Gold Member', 5000, 14999, 'zap', 'VIP 3', 'Unlocked with ₹5,000 qualifying investment.', ARRAY['+6% Daily Device Earnings Boost', '2% Withdrawal Fee Discount', 'Higher Daily Withdrawal Limits'], 6.00, 2.00, 3, true),
+(4, 'VIP 4 - Platinum Member', 15000, 39999, 'gem', 'VIP 4', 'Unlocked with ₹15,000 qualifying investment.', ARRAY['+8% Daily Device Earnings Boost', '3% Withdrawal Fee Discount', 'Dedicated VIP Customer Line'], 8.00, 3.00, 4, true),
+(5, 'VIP 5 - Diamond Member', 40000, 99999, 'star', 'VIP 5', 'Unlocked with ₹40,000 qualifying investment.', ARRAY['+10% Daily Device Earnings Boost', '5% Withdrawal Fee Discount', '1-on-1 Personal Account Manager'], 10.00, 5.00, 5, true),
+(6, 'VIP 6 - Crown Elite', 100000, NULL, 'crown', 'VIP 6', 'Exclusive highest tier for premier platform leaders.', ARRAY['+15% Daily Device Earnings Boost', 'Zero Withdrawal Fees (100% Free)', 'Instant Green-Channel Priority Payouts', 'Exclusive Elite Partner Bonuses'], 15.00, 10.00, 6, true)
+ON CONFLICT (level_number) DO NOTHING;
+
+-- Enable RLS
+ALTER TABLE public.vip_levels ENABLE ROW LEVEL SECURITY;
+
+-- Allow public read of active VIP levels
+DROP POLICY IF EXISTS "Public can view active VIP levels" ON public.vip_levels;
+CREATE POLICY "Public can view active VIP levels" ON public.vip_levels
+    FOR SELECT USING (true);
+
+-- Allow admins to insert/update/delete VIP levels
+DROP POLICY IF EXISTS "Admins can manage VIP levels" ON public.vip_levels;
+CREATE POLICY "Admins can manage VIP levels" ON public.vip_levels
+    FOR ALL USING (
+        EXISTS (
+            SELECT 1 FROM public.profiles
+            WHERE profiles.user_id = auth.uid() AND profiles.role = 'admin'
+        )
+    );
+
+

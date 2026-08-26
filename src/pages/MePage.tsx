@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ProfileAvatar } from '../components/Artworks';
 import { FloatingContact } from '../components/FloatingContact';
 import { PlaceholderModal } from '../components/PlaceholderModal';
@@ -6,23 +6,26 @@ import { CustomerSupportModal } from '../components/CustomerSupportModal';
 import {
   PersonalInfoModal,
   BindBankCardModal,
-  ResaleModal,
   InviteFriendsModal,
 } from '../components/FunctionModals';
 import { ClaimGiftCodeModal } from '../components/ClaimGiftCodeModal';
-import { TabType, UserProfile, Wallet, PurchaseItem } from '../types';
+import { TabType, UserProfile, Wallet, PurchaseItem, UserVipStatus } from '../types';
+import { fetchUserVipStatus } from '../services/api';
 import {
   ShieldCheck,
   Smartphone,
   FileText,
   CreditCard,
-  RefreshCw,
   Gift,
   Zap,
   Receipt,
   Info,
   LogOut,
   Sliders,
+  Crown,
+  Sparkles,
+  ChevronRight,
+  Target,
 } from 'lucide-react';
 
 interface MePageProps {
@@ -65,9 +68,30 @@ export const MePage: React.FC<MePageProps> = ({
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [isPersonalInfoOpen, setIsPersonalInfoOpen] = useState(false);
   const [isBankCardOpen, setIsBankCardOpen] = useState(false);
-  const [isResaleOpen, setIsResaleOpen] = useState(false);
   const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [isGiftCodeOpen, setIsGiftCodeOpen] = useState(false);
+  const [vipStatus, setVipStatus] = useState<UserVipStatus | null>(null);
+
+  const mobile = userProfile?.mobile || '9876543210';
+  const membershipNumber = userProfile?.membershipNumber || 'PB888999';
+  const referralCode = userProfile?.referralCode || membershipNumber;
+  const deviceEarnings = userProfile?.deviceEarnings || wallet?.totalEarned || 0;
+  const teamEarnings = userProfile?.teamEarnings || 0;
+  const topupBalance = wallet?.topupBalance ?? wallet?.rechargeBalance ?? 0;
+  const withdrawBalance = wallet?.withdrawBalance ?? wallet?.earnedBalance ?? wallet?.availableBalance ?? 0;
+  const userId = userProfile?.userId || userProfile?.id || 'usr_demo_01';
+
+  useEffect(() => {
+    let isMounted = true;
+    fetchUserVipStatus(userId)
+      .then((status) => {
+        if (isMounted) setVipStatus(status);
+      })
+      .catch((err) => console.warn('Failed to load VIP status in MePage:', err));
+    return () => {
+      isMounted = false;
+    };
+  }, [userId, purchases]);
 
   const showPlaceholder = (title: string, message: string) => {
     setModalState({
@@ -77,15 +101,27 @@ export const MePage: React.FC<MePageProps> = ({
     });
   };
 
-  const mobile = userProfile?.mobile || '9876543210';
-  const membershipNumber = userProfile?.membershipNumber || 'PB888999';
-  const referralCode = userProfile?.referralCode || membershipNumber;
-  const deviceEarnings = userProfile?.deviceEarnings || wallet?.totalEarned || 0;
-  const teamEarnings = userProfile?.teamEarnings || 0;
-  const walletBalance = wallet?.availableBalance || 0;
-  const userId = userProfile?.userId || userProfile?.id || 'usr_demo_01';
-
   const commonFunctions = [
+    {
+      id: 'mission_bonus',
+      label: 'Mission Bonus',
+      icon: Target,
+      bgColor: 'bg-[#FFF2E8]',
+      iconColor: 'text-[#FF6000]',
+      badge: '🎯 Bonus',
+      highlightBadge: true,
+      onClick: () => onNavigateTab('mission_bonus'),
+    },
+    {
+      id: 'vip_levels',
+      label: 'VIP Levels',
+      icon: Crown,
+      bgColor: 'bg-[#FFF7E6]',
+      iconColor: 'text-[#FF6000]',
+      badge: vipStatus?.currentLevel.badgeText || 'VIP 0',
+      highlightBadge: true,
+      onClick: () => onNavigateTab('vip_levels'),
+    },
     {
       id: 'personal_info',
       label: 'Personal Information',
@@ -101,14 +137,6 @@ export const MePage: React.FC<MePageProps> = ({
       bgColor: 'bg-[#E6F4FF]',
       iconColor: 'text-[#1890FF]',
       onClick: () => onNavigateTab('bank_card'),
-    },
-    {
-      id: 'resale',
-      label: 'Resale',
-      icon: RefreshCw,
-      bgColor: 'bg-[#E6FFFB]',
-      iconColor: 'text-[#13C2C2]',
-      onClick: () => setIsResaleOpen(true),
     },
     {
       id: 'invite_friends',
@@ -146,11 +174,7 @@ export const MePage: React.FC<MePageProps> = ({
       icon: Info,
       bgColor: 'bg-[#F0F5FF]',
       iconColor: 'text-[#2F54EB]',
-      onClick: () =>
-        showPlaceholder(
-          'About Power Bank',
-          'Power Bank Platform v2.4.0 — Cloud-synchronized sharing economy infrastructure with instant automated earnings settlement.'
-        ),
+      onClick: () => onNavigateTab('about_platform'),
     },
   ];
 
@@ -161,12 +185,29 @@ export const MePage: React.FC<MePageProps> = ({
         {/* User Info Row */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3.5">
-            <ProfileAvatar className="w-15 h-15 shadow-md shrink-0" />
+            <div
+              onClick={() => onNavigateTab('vip_levels')}
+              className="cursor-pointer transition-transform active:scale-95"
+              title="View VIP Levels"
+            >
+              <ProfileAvatar
+                className="w-15 h-15 shadow-md shrink-0"
+                vipBadge={vipStatus?.currentLevel.badgeText || 'VIP 0'}
+                showVipBadge={true}
+              />
+            </div>
             <div className="flex flex-col">
               <div className="flex items-center gap-2">
                 <h2 className="text-white font-extrabold text-[20px] tracking-tight leading-tight">
                   {userProfile?.username || userProfile?.name || mobile}
                 </h2>
+                <button
+                  onClick={() => onNavigateTab('vip_levels')}
+                  className="px-2 py-0.5 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-md border border-white/30 text-white font-extrabold text-[10px] flex items-center gap-1 cursor-pointer transition-all active:scale-95 shadow-xs"
+                >
+                  <Crown className="w-3 h-3 text-amber-200" />
+                  <span>{vipStatus?.currentLevel.badgeText || 'VIP 0'}</span>
+                </button>
               </div>
               <div className="flex items-center gap-2 text-white/85 text-[11px] font-medium mt-0.5">
                 <span>+91 {userProfile?.whatsappNo || mobile}</span>
@@ -178,18 +219,38 @@ export const MePage: React.FC<MePageProps> = ({
 
           <button
             onClick={onLogout}
-            className="p-2 rounded-xl bg-white/15 hover:bg-white/25 text-white transition-colors"
+            className="p-2 rounded-xl bg-white/15 hover:bg-white/25 text-white transition-colors cursor-pointer"
             title="Sign Out"
           >
             <LogOut className="w-4 h-4" />
           </button>
         </div>
 
-        {/* 3 Financial Statistics horizontally with dividers */}
-        <div className="grid grid-cols-3 text-center border-t border-white/20 pt-4">
-          {/* Device Earnings */}
+        {/* 4 Financial Statistics horizontally with dividers */}
+        <div className="grid grid-cols-4 text-center border-t border-white/20 pt-4 gap-1">
+          {/* Topup Wallet */}
           <div className="flex flex-col items-center">
-            <span className="text-white font-extrabold text-[17px] tracking-tight">
+            <span className="text-white font-extrabold text-[15px] tracking-tight">
+              {topupBalance.toFixed(2)}₹
+            </span>
+            <span className="text-white/75 text-[10px] font-medium mt-0.5 whitespace-nowrap">
+              Topup Wallet
+            </span>
+          </div>
+
+          {/* Withdraw Wallet */}
+          <div className="flex flex-col items-center border-l border-white/20">
+            <span className="text-white font-extrabold text-[15px] tracking-tight">
+              {withdrawBalance.toFixed(2)}₹
+            </span>
+            <span className="text-white/75 text-[10px] font-medium mt-0.5 whitespace-nowrap">
+              Withdraw
+            </span>
+          </div>
+
+          {/* Device Earnings */}
+          <div className="flex flex-col items-center border-l border-white/20">
+            <span className="text-white font-extrabold text-[15px] tracking-tight">
               {deviceEarnings.toFixed(2)}₹
             </span>
             <span className="text-white/75 text-[10px] font-medium mt-0.5 whitespace-nowrap">
@@ -198,22 +259,12 @@ export const MePage: React.FC<MePageProps> = ({
           </div>
 
           {/* Team Earnings */}
-          <div className="flex flex-col items-center border-x border-white/20 px-1">
-            <span className="text-white font-extrabold text-[17px] tracking-tight">
+          <div className="flex flex-col items-center border-l border-white/20">
+            <span className="text-white font-extrabold text-[15px] tracking-tight">
               {teamEarnings}₹
             </span>
             <span className="text-white/75 text-[10px] font-medium mt-0.5 whitespace-nowrap">
               Team Earn
-            </span>
-          </div>
-
-          {/* My Wallet */}
-          <div className="flex flex-col items-center">
-            <span className="text-white font-extrabold text-[17px] tracking-tight">
-              {walletBalance.toFixed(2)}₹
-            </span>
-            <span className="text-white/75 text-[10px] font-medium mt-0.5 whitespace-nowrap">
-              My Wallet
             </span>
           </div>
         </div>
@@ -324,7 +375,15 @@ export const MePage: React.FC<MePageProps> = ({
                       {item.label}
                     </span>
                   </div>
-                  <span className="text-gray-400 text-lg leading-none font-light">›</span>
+                  <div className="flex items-center gap-2">
+                    {(item as any).badge && (
+                      <span className="px-2 py-0.5 rounded-full bg-orange-50 text-[#FF6000] border border-orange-200 text-[10px] font-extrabold flex items-center gap-1">
+                        <Crown className="w-2.5 h-2.5" />
+                        <span>{(item as any).badge}</span>
+                      </span>
+                    )}
+                    <span className="text-gray-400 text-lg leading-none font-light">›</span>
+                  </div>
                 </div>
               );
             })}
@@ -367,11 +426,6 @@ export const MePage: React.FC<MePageProps> = ({
           onShowToast('Bank card bound successfully');
           onRefreshData?.();
         }}
-      />
-
-      <ResaleModal
-        isOpen={isResaleOpen}
-        onClose={() => setIsResaleOpen(false)}
       />
 
       <InviteFriendsModal

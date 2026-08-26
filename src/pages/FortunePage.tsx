@@ -1,22 +1,27 @@
 import React, { useState, useEffect } from 'react';
 import { FloatingContact } from '../components/FloatingContact';
 import { CustomerSupportModal } from '../components/CustomerSupportModal';
-import { TabType, UserProfile, Wallet as WalletType, PurchaseItem, WalletTransaction } from '../types';
+import { TabType, UserProfile, Wallet as WalletType, PurchaseItem, DailyCheckInStatus } from '../types';
 import {
-  fetchWalletTransactions,
   settleAndCalculateEarnings,
+  fetchDailyCheckInStatus,
+  performDailyCheckIn,
 } from '../services/api';
 import {
   Wallet,
-  TrendingUp,
   ArrowDownLeft,
   ArrowUpRight,
-  Clock,
-  CheckCircle2,
   Zap,
   RefreshCw,
   Gift,
-  Coins,
+  CalendarCheck,
+  Check,
+  Sparkles,
+  Flame,
+  Loader2,
+  HelpCircle,
+  Clock,
+  History,
 } from 'lucide-react';
 
 interface FortunePageProps {
@@ -41,9 +46,10 @@ export const FortunePage: React.FC<FortunePageProps> = ({
   onRefreshData,
 }) => {
   const [isSupportOpen, setIsSupportOpen] = useState(false);
-  const [activeFilter, setActiveFilter] = useState<'all' | 'claims' | 'recharge' | 'withdraw'>('all');
-  const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
-  const [loadingTx, setLoadingTx] = useState(false);
+  const [checkInStatus, setCheckInStatus] = useState<DailyCheckInStatus | null>(null);
+  const [loadingCheckIn, setLoadingCheckIn] = useState(true);
+  const [claiming, setClaiming] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   const userId = userProfile?.userId || userProfile?.id || 'usr_demo_01';
 
@@ -52,10 +58,13 @@ export const FortunePage: React.FC<FortunePageProps> = ({
       // Settle any pending yield calculation in background so stats are up to date
       await settleAndCalculateEarnings(userId);
 
-      const txs = await fetchWalletTransactions(userId);
-      setTransactions(txs);
+      // Load dynamic Daily Check-in status
+      const status = await fetchDailyCheckInStatus(userId);
+      setCheckInStatus(status);
     } catch (e) {
       console.error('Error loading fortune data:', e);
+    } finally {
+      setLoadingCheckIn(false);
     }
   };
 
@@ -66,14 +75,34 @@ export const FortunePage: React.FC<FortunePageProps> = ({
   const handleManualRefresh = async () => {
     await loadPageData();
     if (onRefreshData) onRefreshData();
-    onShowToast('Financial statistics and ledger refreshed.');
+    onShowToast('Financial statistics and check-in status refreshed.');
+  };
+
+  const handleDailyCheckIn = async () => {
+    if (claiming) return;
+    if (checkInStatus?.hasCheckedInToday) {
+      onShowToast('You have already checked in today! Please return tomorrow.');
+      return;
+    }
+
+    setClaiming(true);
+    try {
+      const res = await performDailyCheckIn(userId);
+      onShowToast(`🎉 Daily Check-in Successful! Credited ₹${res.reward.toFixed(2)} to your Topup Wallet.`);
+      // Reload check-in data and trigger parent wallet refresh
+      await loadPageData();
+      if (onRefreshData) onRefreshData();
+    } catch (err: any) {
+      onShowToast(err.message || 'Failed to complete daily check-in');
+    } finally {
+      setClaiming(false);
+    }
   };
 
   const activePurchases = purchases.filter((p) => p.status === 'ACTIVE');
   const activeDeviceInvestments = activePurchases.reduce((acc, p) => acc + p.amount, 0);
   const availableBalance = wallet?.availableBalance || 0;
   const earnedBalance = wallet?.earnedBalance !== undefined ? wallet.earnedBalance : availableBalance;
-  const rechargeBalance = wallet?.rechargeBalance || 0;
   const withdrawableEarnings = earnedBalance;
   const totalAssets = +(activeDeviceInvestments + availableBalance).toFixed(2);
   const todayEstimatedEarnings = activePurchases.reduce((acc, p) => {
@@ -82,13 +111,19 @@ export const FortunePage: React.FC<FortunePageProps> = ({
   }, 0);
   const totalEarned = wallet?.totalEarned || 0;
 
-  const filteredTransactions = transactions.filter((tx) => {
-    if (activeFilter === 'all') return true;
-    if (activeFilter === 'claims') return tx.type === 'EARNING_CLAIM' || tx.type === 'PRO_INSTANT_BONUS' || tx.type === 'EARNING' || tx.type === 'REFERRAL_BONUS';
-    if (activeFilter === 'recharge') return tx.type === 'RECHARGE';
-    if (activeFilter === 'withdraw') return tx.type === 'WITHDRAWAL' || tx.type === 'WITHDRAWAL_REVERSAL';
-    return true;
-  });
+  // Daily check-in calculations
+  const streak = checkInStatus?.currentStreak || 0;
+  const hasCheckedInToday = !!checkInStatus?.hasCheckedInToday;
+  const dailyReward = checkInStatus?.dailyReward || 5.00;
+  const day7Bonus = checkInStatus?.day7Bonus || 100.00;
+
+  // Compute checked-in status for days 1 to 7
+  // If user checked in today, days 1..streak (mod 7) are completed
+  // If not checked in today, days 1..(streak % 7) are completed, and next day is ((streak % 7) + 1)
+  const completedDaysCount = hasCheckedInToday
+    ? (streak % 7 === 0 && streak > 0 ? 7 : streak % 7)
+    : (streak % 7);
+  const nextTargetDay = hasCheckedInToday ? 0 : completedDaysCount + 1;
 
   return (
     <div className="w-full min-h-screen bg-[#F8F9FA] text-gray-900 flex flex-col pb-28">
@@ -137,7 +172,7 @@ export const FortunePage: React.FC<FortunePageProps> = ({
       <div className="px-4 -mt-4 flex gap-3">
         <button
           onClick={onOpenRecharge}
-          className="flex-1 py-3 px-4 bg-white rounded-2xl shadow-xs border border-gray-100 flex items-center justify-center gap-2 text-[#FF6200] font-bold text-sm hover:shadow-md transition-all active:scale-98"
+          className="flex-1 py-3 px-4 bg-white rounded-2xl shadow-xs border border-gray-100 flex items-center justify-center gap-2 text-[#FF6200] font-bold text-sm hover:shadow-md transition-all active:scale-98 cursor-pointer"
         >
           <ArrowDownLeft className="w-4 h-4" />
           <span>Recharge</span>
@@ -145,14 +180,181 @@ export const FortunePage: React.FC<FortunePageProps> = ({
 
         <button
           onClick={onOpenWithdrawal}
-          className="flex-1 py-3 px-4 bg-white rounded-2xl shadow-xs border border-gray-100 flex items-center justify-center gap-2 text-gray-800 font-bold text-sm hover:shadow-md transition-all active:scale-98"
+          className="flex-1 py-3 px-4 bg-white rounded-2xl shadow-xs border border-gray-100 flex items-center justify-center gap-2 text-gray-800 font-bold text-sm hover:shadow-md transition-all active:scale-98 cursor-pointer"
         >
           <ArrowUpRight className="w-4 h-4 text-blue-600" />
           <span>Withdraw</span>
         </button>
       </div>
 
-      {/* Active Device Overview */}
+      {/* ========================================================================= */}
+      {/* DYNAMIC DAILY CHECK-IN SECTION (Orange UI Themed) */}
+      {/* ========================================================================= */}
+      <div className="px-4 pt-4">
+        <div className="w-full bg-gradient-to-r from-[#FF6B00] via-[#FF7D00] to-[#FFA000] rounded-3xl p-4 sm:p-5 text-white shadow-md shadow-orange-500/15 relative overflow-hidden">
+          {/* Subtle background glow effect */}
+          <div className="absolute -right-8 -top-8 w-32 h-32 bg-white/10 rounded-full blur-2xl pointer-events-none" />
+          <div className="absolute -left-8 -bottom-8 w-32 h-32 bg-amber-400/20 rounded-full blur-2xl pointer-events-none" />
+
+          {/* Header Row */}
+          <div className="flex items-center justify-between mb-4 relative z-10">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <h3 className="font-extrabold text-base sm:text-lg tracking-tight text-white flex items-center gap-1.5">
+                  <Flame className="w-5 h-5 text-amber-200 fill-amber-200" />
+                  Daily Check-in
+                </h3>
+                {hasCheckedInToday && (
+                  <span className="bg-white/20 text-white text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-xs">
+                    Claimed Today
+                  </span>
+                )}
+              </div>
+              <p className="text-white/85 text-xs mt-0.5">
+                Check in daily to earn continuous cash rewards
+              </p>
+            </div>
+
+            <div className="w-10 h-10 rounded-2xl bg-white/20 border border-white/30 backdrop-blur-xs flex items-center justify-center text-white shadow-xs shrink-0">
+              <CalendarCheck className="w-5 h-5" />
+            </div>
+          </div>
+
+          {/* 7-Day Cycle Grid */}
+          <div className="grid grid-cols-7 gap-1.5 sm:gap-2 mb-4 relative z-10">
+            {[1, 2, 3, 4, 5, 6, 7].map((dayNum) => {
+              const isChecked = dayNum <= completedDaysCount;
+              const isTargetToday = !hasCheckedInToday && dayNum === nextTargetDay;
+              const isDay7 = dayNum === 7;
+              const amount = isDay7 ? day7Bonus : dailyReward;
+
+              return (
+                <div
+                  key={dayNum}
+                  className={`flex flex-col items-center justify-center text-center transition-all ${
+                    isTargetToday ? 'scale-105' : ''
+                  }`}
+                >
+                  {/* Day Circle */}
+                  <div
+                    className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold text-xs sm:text-sm transition-all relative ${
+                      isChecked
+                        ? 'bg-white text-[#FF6B00] shadow-sm ring-2 ring-white/60'
+                        : isTargetToday
+                        ? 'bg-white text-[#FF6B00] shadow-lg ring-3 ring-amber-300 animate-pulse font-extrabold'
+                        : 'bg-white/20 border border-white/30 text-white'
+                    }`}
+                  >
+                    {isChecked ? (
+                      <Check className="w-4 h-4 sm:w-5 sm:h-5 stroke-[3] text-[#FF6B00]" />
+                    ) : isDay7 ? (
+                      <Gift className="w-4 h-4 sm:w-5 sm:h-5 text-amber-200" />
+                    ) : (
+                      <span>{dayNum}</span>
+                    )}
+
+                    {isDay7 && (
+                      <span className="absolute -top-1.5 -right-1 bg-amber-300 text-amber-950 text-[8px] font-black px-1 py-0.2 rounded-full uppercase leading-none shadow-xs">
+                        MAX
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Reward Text */}
+                  <span
+                    className={`text-[10px] sm:text-[11px] font-bold mt-1.5 whitespace-nowrap leading-tight ${
+                      isChecked
+                        ? 'text-white font-extrabold'
+                        : isTargetToday
+                        ? 'text-amber-200 font-extrabold'
+                        : 'text-white/80'
+                    }`}
+                  >
+                    Rs {amount.toFixed(0)}
+                  </span>
+                  <span className="text-[9px] text-white/60 font-medium">
+                    Day {dayNum}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Card Bottom Bar (Streak Info & Action Button) */}
+          <div className="bg-black/15 backdrop-blur-xs rounded-2xl p-3 flex items-center justify-between gap-3 relative z-10 border border-white/10">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-white">
+                <Sparkles className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                <span className="truncate">
+                  Current Streak: <strong className="text-amber-200 font-extrabold">{streak}</strong> day{streak === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="text-[11px] text-white/80 mt-0.5 truncate">
+                Day 7 mega bonus: <strong className="text-white font-bold">Rs {day7Bonus.toFixed(2)}</strong>
+              </div>
+            </div>
+
+            <div className="shrink-0 flex items-center gap-2">
+              <button
+                onClick={handleDailyCheckIn}
+                disabled={hasCheckedInToday || claiming || loadingCheckIn}
+                className={`px-4 sm:px-5 py-2.5 rounded-xl font-black text-xs transition-all shadow-md flex items-center gap-1.5 cursor-pointer ${
+                  hasCheckedInToday
+                    ? 'bg-white/25 text-white/90 cursor-not-allowed border border-white/20'
+                    : 'bg-white text-[#FF6B00] hover:bg-orange-50 active:scale-95 hover:shadow-lg'
+                }`}
+              >
+                {claiming ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Claiming...</span>
+                  </>
+                ) : hasCheckedInToday ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 stroke-[3]" />
+                    <span>Checked In</span>
+                  </>
+                ) : (
+                  <>
+                    <Gift className="w-3.5 h-3.5" />
+                    <span>Check In</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Quick History Toggle */}
+          {checkInStatus?.history && checkInStatus.history.length > 0 && (
+            <div className="mt-3 text-center">
+              <button
+                onClick={() => setShowHistory(!showHistory)}
+                className="text-[11px] text-white/80 hover:text-white font-semibold flex items-center justify-center gap-1 mx-auto transition-colors cursor-pointer"
+              >
+                <History className="w-3 h-3" />
+                <span>{showHistory ? 'Hide Check-in Logs' : 'View Check-in History'}</span>
+              </button>
+
+              {showHistory && (
+                <div className="mt-2.5 bg-black/20 rounded-2xl p-3 text-left max-h-44 overflow-y-auto space-y-1.5 border border-white/10 text-xs">
+                  {checkInStatus.history.map((h, i) => (
+                    <div key={i} className="flex items-center justify-between text-[11px] py-1 border-b border-white/10 last:border-0">
+                      <div className="flex items-center gap-1.5 text-white/90">
+                        <Check className="w-3 h-3 text-amber-300" />
+                        <span>Day {h.dayNumber} Check-in</span>
+                        <span className="text-white/60 text-[10px]">({h.date})</span>
+                      </div>
+                      <span className="font-bold text-amber-200">+₹{h.amount.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Active Operating Device Overview */}
       <div className="px-4 pt-4">
         <div className="w-full bg-white rounded-2xl p-4 border border-gray-100 shadow-xs space-y-3">
           <div className="flex items-center justify-between">
@@ -164,7 +366,7 @@ export const FortunePage: React.FC<FortunePageProps> = ({
             </div>
             <button
               onClick={() => onNavigateTab('purchase')}
-              className="text-[11px] text-[#FF6200] font-bold hover:underline"
+              className="text-[11px] text-[#FF6200] font-bold hover:underline cursor-pointer"
             >
               + Acquire Devices
             </button>
@@ -175,7 +377,7 @@ export const FortunePage: React.FC<FortunePageProps> = ({
               <p className="text-xs text-gray-500">No active cabinets operating right now.</p>
               <button
                 onClick={() => onNavigateTab('purchase')}
-                className="px-4 py-1.5 rounded-lg bg-[#FF6200] text-white text-xs font-bold shadow-xs"
+                className="px-4 py-1.5 rounded-lg bg-[#FF6200] text-white text-xs font-bold shadow-xs cursor-pointer"
               >
                 Go to Purchase Hall
               </button>
@@ -226,92 +428,6 @@ export const FortunePage: React.FC<FortunePageProps> = ({
         </div>
       </div>
 
-      {/* Transaction Records */}
-      <div className="px-4 pt-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-extrabold text-[16px] text-gray-900">
-            Financial Ledger
-          </h3>
-          <div className="flex gap-1 bg-gray-100 p-1 rounded-xl text-xs">
-            {(['all', 'claims', 'recharge', 'withdraw'] as const).map((filter) => (
-              <button
-                key={filter}
-                onClick={() => setActiveFilter(filter)}
-                className={`px-2.5 py-1 rounded-lg font-medium capitalize text-[11px] transition-colors ${
-                  activeFilter === filter
-                    ? 'bg-white text-[#FF6200] shadow-xs font-bold'
-                    : 'text-gray-500 hover:text-gray-800'
-                }`}
-              >
-                {filter === 'claims' ? 'Claims & Yield' : filter}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-xs border border-gray-100 divide-y divide-gray-100 overflow-hidden">
-          {filteredTransactions.length > 0 ? (
-            filteredTransactions.map((item) => (
-              <div key={item.id} className="p-3.5 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div
-                    className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                      item.type === 'PRO_INSTANT_BONUS'
-                        ? 'bg-amber-100 text-amber-700'
-                        : item.type === 'EARNING_CLAIM'
-                        ? 'bg-green-50 text-green-600'
-                        : item.amount >= 0
-                        ? 'bg-orange-50 text-[#FF6200]'
-                        : 'bg-blue-50 text-blue-600'
-                    }`}
-                  >
-                    {item.type === 'PRO_INSTANT_BONUS' ? (
-                      <Gift className="w-4 h-4" />
-                    ) : item.type === 'EARNING_CLAIM' ? (
-                      <Coins className="w-4 h-4" />
-                    ) : item.amount >= 0 ? (
-                      <TrendingUp className="w-4 h-4" />
-                    ) : (
-                      <ArrowUpRight className="w-4 h-4" />
-                    )}
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-gray-900 leading-snug">
-                      {item.description || item.type}
-                    </h4>
-                    <div className="flex items-center gap-1.5 text-[10px] text-gray-400 mt-0.5">
-                      <Clock className="w-3 h-3" />
-                      <span>{new Date(item.createdAt).toLocaleString()}</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="text-right shrink-0">
-                  <span
-                    className={`font-extrabold text-sm ${
-                      item.type === 'PRO_INSTANT_BONUS'
-                        ? 'text-amber-600'
-                        : item.amount >= 0
-                        ? 'text-[#FF6200]'
-                        : 'text-gray-800'
-                    }`}
-                  >
-                    {item.amount >= 0 ? `+₹${item.amount.toFixed(2)}` : `-₹${Math.abs(item.amount).toFixed(2)}`}
-                  </span>
-                  <div className="flex items-center justify-end gap-1 text-[10px] text-green-600 mt-0.5">
-                    <CheckCircle2 className="w-3 h-3" />
-                    <span>Settled</span>
-                  </div>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="py-8 text-center text-gray-400 text-xs">
-              No transactions recorded in this filter.
-            </div>
-          )}
-        </div>
-      </div>
-
       {/* Floating Contact */}
       <FloatingContact
         isDark={false}
@@ -325,3 +441,4 @@ export const FortunePage: React.FC<FortunePageProps> = ({
     </div>
   );
 };
+

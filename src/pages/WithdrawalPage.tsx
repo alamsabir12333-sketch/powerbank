@@ -4,11 +4,13 @@ import {
   FileText,
   AlertCircle,
   RefreshCw,
-  CheckCircle2,
-  Building,
+  Building2,
   ShieldCheck,
+  CreditCard,
+  Plus,
+  ChevronDown,
 } from 'lucide-react';
-import { BankAccount, Wallet, WithdrawalItem } from '../types';
+import { BankAccount, Wallet } from '../types';
 import {
   fetchBankAccounts,
   submitWithdrawalRequest,
@@ -39,13 +41,15 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
   const [amount, setAmount] = useState<number>(300);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [selectedBankId, setSelectedBankId] = useState<string>('');
+  const [showBankPicker, setShowBankPicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [minWithdrawal, setMinWithdrawal] = useState<number>(300);
   const [withdrawalFeePercent, setWithdrawalFeePercent] = useState<number>(10);
 
-  const withdrawableBalance = wallet?.earnedBalance ?? wallet?.availableBalance ?? 7.78;
+  const withdrawableBalance = wallet?.withdrawBalance ?? wallet?.earnedBalance ?? wallet?.availableBalance ?? 0;
+  const topupBalance = wallet?.topupBalance ?? wallet?.rechargeBalance ?? 0;
 
   const loadData = async () => {
     if (!userId) return;
@@ -57,7 +61,8 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
       ]);
       setBankAccounts(banks);
       if (banks.length > 0) {
-        setSelectedBankId(banks[0].id);
+        const defaultCard = banks.find((b) => b.isDefault) || banks[0];
+        setSelectedBankId(defaultCard.id);
       }
       if (settings?.minWithdrawal) {
         setMinWithdrawal(settings.minWithdrawal);
@@ -97,7 +102,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
 
     if (amount > withdrawableBalance) {
       setError(
-        `Insufficient available balance. You have ₹${withdrawableBalance.toFixed(2)} in balance.`
+        `Insufficient Withdraw Wallet balance. You have ₹${withdrawableBalance.toFixed(2)} in your withdraw balance.`
       );
       return;
     }
@@ -109,11 +114,10 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
       await submitWithdrawalRequest(
         userId,
         amount,
-        activeBank.id,
-        activeBank.upiId || undefined
+        activeBank.id
       );
 
-      onShowToast(`Withdrawal request for ₹${amount} submitted successfully!`);
+      onShowToast(`Withdrawal request of ₹${amount} submitted successfully!`);
       if (onRefreshData) onRefreshData();
       await loadData();
       setTimeout(() => {
@@ -148,11 +152,12 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
             <ChevronLeft className="w-5 h-5 -ml-0.5" />
           </button>
 
-          <h1 className="text-lg font-bold text-white tracking-wide">Withdraw</h1>
+          <h1 className="text-lg font-bold text-white tracking-wide">Bank Withdrawal</h1>
 
           <button
             onClick={() => onNavigateTab('transactions')}
             className="w-9 h-9 rounded-full bg-white flex items-center justify-center text-gray-800 shadow-sm hover:bg-gray-100 transition-colors cursor-pointer"
+            title="Withdrawal Records"
           >
             <FileText className="w-4 h-4" />
           </button>
@@ -168,8 +173,13 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
               ₹{amount.toLocaleString('en-IN')}
             </div>
             <p className="text-xs sm:text-sm text-gray-500 font-medium">
-              Available balance: ₹{withdrawableBalance.toFixed(2)}
+              Withdraw Wallet balance: <span className="font-bold text-gray-800">₹{withdrawableBalance.toFixed(2)}</span>
             </p>
+            {topupBalance > 0 && (
+              <p className="text-[11px] text-gray-400 font-medium">
+                (Topup Wallet: ₹{topupBalance.toFixed(2)} — dedicated for plan activations)
+              </p>
+            )}
           </div>
 
           {error && (
@@ -179,40 +189,88 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
             </div>
           )}
 
-          {/* Bank Card Selector Box */}
-          <div
-            onClick={() => {
-              if (onOpenBindCard) onOpenBindCard();
-              else onNavigateTab('bank_card');
-            }}
-            className="p-4 rounded-2xl border border-gray-200 hover:border-gray-300 bg-white flex items-center justify-between cursor-pointer transition-all shadow-xs"
-          >
-            <div className="flex items-center gap-3">
-              {/* UPI Logo Icon */}
-              <div className="w-11 h-11 rounded-xl bg-orange-50 border border-orange-100 flex items-center justify-center">
-                <div className="flex items-center gap-0.5">
-                  <span className="text-xs font-black italic tracking-tighter text-[#FF6000]">UPI</span>
-                  <span className="text-orange-500 text-[10px] font-black">▶</span>
+          {/* Bank Card Selector Box (Bank Account Only) */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between px-1">
+              <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">
+                Payout Bank Account
+              </label>
+              {bankAccounts.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => setShowBankPicker(!showBankPicker)}
+                  className="text-xs text-[#FF6000] font-semibold flex items-center gap-1 hover:underline"
+                >
+                  <span>Switch Card</span>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <div
+              onClick={() => {
+                if (!activeBank) {
+                  if (onOpenBindCard) onOpenBindCard();
+                  else onNavigateTab('bank_card');
+                } else if (bankAccounts.length > 1) {
+                  setShowBankPicker(!showBankPicker);
+                } else {
+                  onNavigateTab('bank_card');
+                }
+              }}
+              className="p-4 rounded-2xl border border-gray-200 hover:border-gray-300 bg-[#FAFAFA] flex items-center justify-between cursor-pointer transition-all shadow-xs"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-xl bg-orange-100 text-[#FF6000] flex items-center justify-center font-bold">
+                  <Building2 className="w-5 h-5" />
+                </div>
+
+                <div>
+                  <span className="text-sm font-bold text-gray-900 flex items-center gap-1">
+                    {activeBank
+                      ? `${activeBank.bankName} - ${activeBank.accountHolderName || activeBank.holderName}`
+                      : 'Add Bank Card'}
+                    <span className="text-gray-400 font-normal">›</span>
+                  </span>
+                  <span className="text-xs font-mono text-gray-500 block mt-0.5">
+                    {activeBank
+                      ? `A/C: •••• ${activeBank.accountNumber.slice(-4)} (${activeBank.ifsc || activeBank.ifscCode})`
+                      : 'Link bank account to withdraw'}
+                  </span>
                 </div>
               </div>
 
-              <div>
-                <span className="text-sm font-bold text-gray-900 flex items-center gap-1">
-                  {activeBank ? `${activeBank.bankName} - ${activeBank.accountHolderName}` : 'Add Bank Card'}
-                  <span className="text-gray-400 font-normal">›</span>
-                </span>
-                <span className="text-xs font-mono text-gray-400 block mt-0.5">
-                  {activeBank
-                    ? `**** **** ${activeBank.accountNumber.slice(-4)}`
-                    : '**** ****'}
-                </span>
-              </div>
+              {activeBank ? (
+                <ShieldCheck className="w-5 h-5 text-[#FF6000] shrink-0" />
+              ) : (
+                <span className="text-xs font-bold text-[#FF6000] hover:underline">Link</span>
+              )}
             </div>
 
-            {activeBank ? (
-              <ShieldCheck className="w-5 h-5 text-orange-500 shrink-0" />
-            ) : (
-              <span className="text-xs font-bold text-[#FF6000] hover:underline">Link</span>
+            {/* Dropdown for selecting alternative bank accounts */}
+            {showBankPicker && bankAccounts.length > 1 && (
+              <div className="p-2 bg-gray-50 rounded-2xl border border-gray-200 space-y-1.5 animate-in fade-in">
+                <p className="text-[11px] font-bold text-gray-500 px-2 pt-1">Select Bank Card:</p>
+                {bankAccounts.map((b) => (
+                  <div
+                    key={b.id}
+                    onClick={() => {
+                      setSelectedBankId(b.id);
+                      setShowBankPicker(false);
+                    }}
+                    className={`p-2.5 rounded-xl text-xs flex items-center justify-between cursor-pointer ${
+                      b.id === activeBank?.id
+                        ? 'bg-orange-100 text-[#FF6000] font-bold'
+                        : 'bg-white hover:bg-gray-100 text-gray-700 font-medium'
+                    }`}
+                  >
+                    <span>
+                      {b.bankName} — A/C •••• {b.accountNumber.slice(-4)}
+                    </span>
+                    {b.isDefault && <span className="text-[10px] bg-orange-200/60 px-2 py-0.5 rounded-full">Default</span>}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
 
@@ -240,7 +298,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
           {/* Calculation Details Section */}
           <div className="pt-2 space-y-2">
             <div>
-              <span className="text-xs font-semibold text-gray-400 block">Total</span>
+              <span className="text-xs font-semibold text-gray-400 block">Total Withdrawal</span>
               <span className="text-2xl sm:text-3xl font-extrabold text-[#FF6000] tracking-tight">
                 ₹{amount}
               </span>
@@ -249,24 +307,27 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
             <div className="flex items-center justify-between text-xs pt-1">
               <div className="space-y-0.5">
                 <div className="font-semibold text-gray-700">
-                  Amount Received: ₹{receivedAmount.toFixed(2)}
+                  Bank Settlement Amount: ₹{receivedAmount.toFixed(2)}
                 </div>
                 <div className="text-gray-400">
-                  Withdrawal Fee: ₹{feeAmount.toFixed(2)}
+                  Processing Fee ({withdrawalFeePercent}%): ₹{feeAmount.toFixed(2)}
                 </div>
               </div>
 
               <div className="text-right">
                 <span className="text-xs font-bold text-[#FF6000]">
-                  Withdrawal Fee: {withdrawalFeePercent}%
+                  Payout Mode: Bank Card
                 </span>
               </div>
             </div>
           </div>
 
           {/* Notice Box */}
-          <div className="p-4 bg-[#f8f9fa] rounded-2xl border border-gray-100 text-xs text-gray-400 leading-relaxed">
-            1. Once your withdrawal request is submitted, it will be reviewed within 48 hours. If there is a public holiday, the review will be processed on the next working day.
+          <div className="p-4 bg-[#f8f9fa] rounded-2xl border border-gray-100 text-xs text-gray-500 leading-relaxed space-y-1">
+            <p className="font-semibold text-gray-700">Withdrawal Rules:</p>
+            <p>1. Withdrawals are processed directly to your bound bank account (IMPS / NEFT transfer).</p>
+            <p>2. Review and transfer takes 24–48 hours on standard business banking days.</p>
+            <p>3. Ensure bank account details and IFSC are accurate to avoid payout delays.</p>
           </div>
         </div>
 
@@ -281,7 +342,8 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
               }}
               className="w-full py-4 rounded-2xl bg-[#FF6000] hover:bg-[#E05300] active:scale-[0.99] text-white font-bold text-base shadow-lg shadow-orange-600/20 transition-all cursor-pointer flex items-center justify-center gap-2"
             >
-              <span>Add Bank Card</span>
+              <Plus className="w-5 h-5" />
+              <span>Bind Bank Card to Withdraw</span>
             </button>
           ) : (
             <button
@@ -296,7 +358,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
                   <span>Submitting Withdrawal...</span>
                 </>
               ) : (
-                <span>Withdraw (₹{amount})</span>
+                <span>Confirm Bank Withdrawal (₹{amount})</span>
               )}
             </button>
           )}

@@ -153,8 +153,11 @@ app.post('/api/univepay/create-payment', async (req, res) => {
   const randomSuffix = Math.floor(100000 + Math.random() * 900000);
   const traceno = `${timestamp}${randomSuffix}`;
   const formattedAmount = numAmount.toFixed(2);
-  const appUrl = getAppUrl(req);
-  const notifyUrl = `${appUrl}/api/univepay/payment-callback`;
+  const appUrl = process.env.APP_URL || getAppUrl(req) || 'https://gainpower-top-1.com';
+  const supabaseBaseUrl = process.env.SUPABASE_URL || '';
+  const notifyUrl = supabaseBaseUrl
+    ? `${supabaseBaseUrl}/functions/v1/univepay-payment-callback`
+    : `${appUrl}/api/univepay/payment-callback`;
   const callbackUrl = `${appUrl}/`;
 
   // Initialize canonical deposit transaction record via RPC create_univepay_deposit_order

@@ -296,15 +296,15 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
         {/* Balance Overview Cards */}
         <div className="grid grid-cols-3 gap-2 text-center bg-white/10 backdrop-blur-xs p-3 rounded-2xl border border-white/20">
           <div>
-            <span className="text-[11px] text-white/80 font-medium block">Available</span>
+            <span className="text-[11px] text-white/80 font-medium block">Topup Wallet</span>
             <span className="text-base font-black text-white block mt-0.5">
-              ₹{(wallet?.availableBalance || 0).toFixed(2)}
+              ₹{(wallet?.topupBalance ?? wallet?.rechargeBalance ?? 0).toFixed(2)}
             </span>
           </div>
           <div className="border-x border-white/20 px-1">
-            <span className="text-[11px] text-white/80 font-medium block">Total Yield</span>
+            <span className="text-[11px] text-white/80 font-medium block">Withdraw Wallet</span>
             <span className="text-base font-black text-white block mt-0.5">
-              ₹{(wallet?.totalEarned || 0).toFixed(2)}
+              ₹{(wallet?.withdrawBalance ?? wallet?.earnedBalance ?? wallet?.availableBalance ?? 0).toFixed(2)}
             </span>
           </div>
           <div>
@@ -400,6 +400,7 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
               const { icon, bg } = getTransactionIcon(tx.type);
               const isCredit = tx.amount > 0;
               const formattedAmt = `${isCredit ? '+' : ''}₹${Math.abs(tx.amount).toFixed(2)}`;
+              const isTopupWallet = tx.balanceType === 'TOPUP_WALLET' || tx.balanceType === 'RECHARGE_BALANCE' || tx.type === 'RECHARGE' || tx.type === 'PLAN_PURCHASE' || tx.type === 'PRO_PLAN_PURCHASE';
 
               return (
                 <motion.div
@@ -418,10 +419,19 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
                       {icon}
                     </div>
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <h4 className="text-xs font-bold text-gray-900 truncate">
                           {getTransactionTitle(tx)}
                         </h4>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold whitespace-nowrap ${
+                            isTopupWallet
+                              ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                              : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                          }`}
+                        >
+                          {isTopupWallet ? 'Topup Wallet' : 'Withdraw Wallet'}
+                        </span>
                       </div>
                       <div className="flex items-center gap-2 text-[11px] text-gray-400 mt-0.5">
                         <span>{formatDateTime(tx.createdAt)}</span>
@@ -566,12 +576,12 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
 
                 {selectedTx.balanceType && (
                   <div className="flex justify-between items-center p-2 bg-gray-50 rounded-xl">
-                    <span className="text-gray-500">Ledger Balance Source</span>
+                    <span className="text-gray-500">Wallet Target</span>
                     <span className="font-bold text-xs text-gray-800">
-                      {selectedTx.balanceType === 'RECHARGE_BALANCE'
-                        ? 'Recharge Balance'
-                        : selectedTx.balanceType === 'DEVICE_EARNING_BALANCE'
-                        ? 'Device Earning Balance'
+                      {selectedTx.balanceType === 'TOPUP_WALLET' || selectedTx.balanceType === 'RECHARGE_BALANCE'
+                        ? 'Topup Wallet (Plan Purchase)'
+                        : selectedTx.balanceType === 'WITHDRAW_WALLET' || selectedTx.balanceType === 'DEVICE_EARNING_BALANCE'
+                        ? 'Withdraw Wallet (Withdrawable)'
                         : selectedTx.balanceType}
                     </span>
                   </div>

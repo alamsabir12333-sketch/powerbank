@@ -11,6 +11,9 @@ import { WithdrawalPage } from './pages/WithdrawalPage';
 import { TopUpPage } from './pages/TopUpPage';
 import { BankCardPage } from './pages/BankCardPage';
 import { AddBankCardPage } from './pages/AddBankCardPage';
+import { VIPLevelsPage } from './pages/VIPLevelsPage';
+import { AboutPlatformPage } from './pages/AboutPlatformPage';
+import { MissionBonusPage } from './pages/MissionBonusPage';
 import { AuthPage } from './pages/AuthPage';
 import { AdminLoginPage } from './pages/admin/AdminLoginPage';
 import { PaymentCheckoutPage } from './pages/PaymentCheckoutPage';
@@ -131,6 +134,8 @@ export default function App() {
         setAuthMode('register');
       } else if (path === '/notifications') {
         setActiveTab('notifications');
+      } else if (path === '/vip' || path === '/vip-levels') {
+        setActiveTab('vip_levels');
       } else {
         const savedInvite = sessionStorage.getItem('pb_pending_invite_code') || localStorage.getItem('pb_pending_invite_code');
         if (savedInvite) {
@@ -568,6 +573,56 @@ export default function App() {
               onShowToast={showToast}
             />
           )}
+
+          {activeTab === 'vip_levels' && (
+            <VIPLevelsPage
+              userId={activeUserId}
+              userProfile={userProfile}
+              onBack={() => {
+                setActiveTab('me');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onNavigateTab={(tab) => {
+                setActiveTab(tab as TabType);
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onShowToast={showToast}
+              onOpenRecharge={() => {
+                setActiveTab('recharge');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+            />
+          )}
+
+          {activeTab === 'about_platform' && (
+            <AboutPlatformPage
+              onBack={() => {
+                setActiveTab('me');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onNavigateTab={(tab) => {
+                setActiveTab(tab as TabType);
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onShowToast={showToast}
+            />
+          )}
+
+          {activeTab === 'mission_bonus' && (
+            <MissionBonusPage
+              userId={activeUserId}
+              userProfile={userProfile}
+              onBack={() => {
+                setActiveTab('me');
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onNavigateTab={(tab) => {
+                setActiveTab(tab as TabType);
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }}
+              onShowToast={showToast}
+            />
+          )}
         </main>
 
         {/* Global Bottom Navigation (Visible on main tabs) */}
@@ -576,7 +631,10 @@ export default function App() {
           activeTab !== 'withdrawal' &&
           activeTab !== 'recharge' &&
           activeTab !== 'bank_card' &&
-          activeTab !== 'add_bank_card' && (
+          activeTab !== 'add_bank_card' &&
+          activeTab !== 'vip_levels' &&
+          activeTab !== 'about_platform' &&
+          activeTab !== 'mission_bonus' && (
           <BottomNav
             activeTab={activeTab}
             onTabChange={(tab) => {
