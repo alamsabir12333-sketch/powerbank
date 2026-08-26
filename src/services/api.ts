@@ -1,4 +1,4 @@
-import { supabase, isSupabaseConfigured, isTableMissingError } from '../lib/supabase';
+import { supabase, isSupabaseConfigured, isTableMissingError, supabaseUrl, supabaseAnonKey } from '../lib/supabase';
 import {
   UserProfile,
   Wallet,
@@ -6017,45 +6017,78 @@ export async function createUniVePayDeposit(params: {
 
   // 1. Obtain the CURRENT authenticated session
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+
+  // 2. Safe diagnostic logging before the payment invocation (NEVER log the actual access_token)
+  console.log('[UNIVEPAY AUTH DEBUG]', {
+    hasSession: !!sessionData?.session,
+    hasAccessToken: !!sessionData?.session?.access_token,
+    userId: sessionData?.session?.user?.id || null,
+    tokenParts: sessionData?.session?.access_token
+      ? sessionData.session.access_token.split('.').length
+      : 0,
+    supabaseUrl: supabaseUrl,
+  });
+
   if (sessionError || !sessionData?.session || !sessionData.session.access_token) {
     throw new Error('Please login again');
   }
 
-  // 2. Safe diagnostic logging before the payment invocation (NEVER log the actual access_token)
-  console.log('[UNIVEPAY AUTH]', {
-    hasSession: !!sessionData.session,
-    hasAccessToken: !!sessionData.session?.access_token,
-    userId: sessionData.session?.user?.id || null,
-    supabaseUrl: 'https://evhwqlnymvoduclmzshz.supabase.co',
-  });
+  const accessToken = sessionData.session.access_token;
 
-  // 3. Invoke Supabase Edge Function create-univepay-payment with the REAL session access token
-  const { data, error } = await supabase.functions.invoke('create-univepay-payment', {
-    body: {
-      amount: numAmount,
-      payCode: params.payCode || '印度UPI-银台',
-    },
-    headers: {
-      Authorization: `Bearer ${sessionData.session.access_token}`,
-    },
-  });
-
-  if (error) {
-    console.error('[UNIVEPAY][FRONTEND] Edge Function invocation error:', error);
-    const msg = error.message || 'Payment gateway temporarily unavailable. Please try again.';
+  let response: Response;
+  try {
+    // 3. Invoke Supabase Edge Function create-univepay-payment with the REAL session access token
+    response = await fetch(`${supabaseUrl}/functions/v1/create-univepay-payment`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': supabaseAnonKey,
+        'Authorization': `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        amount: numAmount,
+        payCode: params.payCode || '印度UPI-银台',
+      }),
+    });
+  } catch (networkErr: any) {
+    console.error('[UNIVEPAY][FRONTEND] Network error invoking create-univepay-payment:', networkErr);
     return {
       success: false,
       traceno: '',
       amount: numAmount,
-      error: msg.includes('401') || msg.includes('Unauthorized')
-        ? 'Please login again'
-        : msg.includes('100')
-        ? 'Minimum top up amount is ₹100'
-        : 'Payment gateway temporarily unavailable. Please try again.',
+      error: 'Network connection failed. Please check your internet connection and try again.',
     };
   }
 
-  if (!data || !data.success || data.status !== '00' || !data.payUrl) {
+  // 4. Safe HTTP diagnostics (NEVER log Authorization header or secrets)
+  console.log('[UNIVEPAY HTTP DEBUG]', {
+    status: response.status,
+    ok: response.ok,
+  });
+
+  let data: any = null;
+  try {
+    data = await response.json();
+  } catch (parseErr) {
+    console.error('[UNIVEPAY][FRONTEND] JSON parse error:', parseErr);
+  }
+
+  if (!response.ok || !data) {
+    const errorMsg = data?.error || data?.message || `HTTP ${response.status} error`;
+    console.error('[UNIVEPAY][FRONTEND] Edge Function error:', errorMsg);
+    return {
+      success: false,
+      traceno: '',
+      amount: numAmount,
+      error: response.status === 401 || errorMsg.includes('401') || errorMsg.includes('Unauthorized')
+        ? 'Please login again'
+        : errorMsg.includes('100')
+        ? 'Minimum top up amount is ₹100'
+        : (data?.error || 'Payment gateway temporarily unavailable. Please try again.'),
+    };
+  }
+
+  if (!data.success || data.status !== '00' || !data.payUrl) {
     return {
       success: false,
       traceno: data?.traceno || '',
@@ -6088,22 +6121,29 @@ export async function checkUniVePayDepositStatus(traceno: string, amount?: numbe
   if (isSupabaseConfigured && supabase) {
     try {
       const { data: sessionData } = await supabase.auth.getSession();
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'apikey': supabaseAnonKey,
+      };
       if (sessionData?.session?.access_token) {
-        headers.Authorization = `Bearer ${sessionData.session.access_token}`;
+        headers['Authorization'] = `Bearer ${sessionData.session.access_token}`;
       }
-      const { data, error } = await supabase.functions.invoke('univepay-order-query', {
-        body: { traceno },
+      const response = await fetch(`${supabaseUrl}/functions/v1/univepay-order-query`, {
+        method: 'POST',
         headers,
+        body: JSON.stringify({ traceno }),
       });
 
-      if (!error && data) {
-        return {
-          success: data.success ?? true,
-          status: data.status || 'PENDING',
-          data: data.data || data,
-          amount: data.amount ? Number(data.amount) : amount,
-        };
+      if (response.ok) {
+        const data = await response.json();
+        if (data) {
+          return {
+            success: data.success ?? true,
+            status: data.status || 'PENDING',
+            data: data.data || data,
+            amount: data.amount ? Number(data.amount) : amount,
+          };
+        }
       }
     } catch (fnErr) {
       console.warn('[UNIVEPAY][QUERY] univepay-order-query error:', fnErr);

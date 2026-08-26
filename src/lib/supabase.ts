@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const metaEnv = (import.meta as any).env || {};
 const rawUrl = metaEnv.VITE_SUPABASE_URL || 'https://evhwqlnymvoduclmzshz.supabase.co';
-const supabaseAnonKey = metaEnv.VITE_SUPABASE_ANON_KEY || '';
+export const supabaseAnonKey = metaEnv.VITE_SUPABASE_ANON_KEY || metaEnv.VITE_SUPABASE_PUBLISHABLE_KEY || '';
 
 export const formatSupabaseUrl = (url: string): string => {
   if (!url) return 'https://evhwqlnymvoduclmzshz.supabase.co';
@@ -17,7 +17,7 @@ export const formatSupabaseUrl = (url: string): string => {
   return 'https://evhwqlnymvoduclmzshz.supabase.co';
 };
 
-const supabaseUrl = formatSupabaseUrl(rawUrl);
+export const supabaseUrl = formatSupabaseUrl(rawUrl);
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl && 
