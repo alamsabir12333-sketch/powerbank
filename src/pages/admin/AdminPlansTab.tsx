@@ -35,7 +35,7 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
 }) => {
   const [plans, setPlans] = useState<ProductItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeCategory, setActiveCategory] = useState<'ALL' | 'HOURLY' | 'PRO' | 'EVENT'>('ALL');
+  const [activeCategory, setActiveCategory] = useState<'ALL' | 'VIP' | 'PRO' | 'EVENT'>('ALL');
 
   // Edit / Create Modal
   const [editingPlan, setEditingPlan] = useState<Partial<ProductItem> | null>(null);
@@ -46,7 +46,15 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
     setLoading(true);
     try {
       const data = await fetchProducts();
-      setPlans(data);
+      // Normalize any older categories to VIP
+      const normalized = (data || []).map((p) => {
+        let cat = (p.category || '').toUpperCase();
+        if (cat === 'STANDARD' || cat === 'HOURLY' || !cat) {
+          cat = 'VIP';
+        }
+        return { ...p, category: cat as any };
+      });
+      setPlans(normalized);
     } catch (e: any) {
       onShowToast(e.message || 'Failed to load plans');
     } finally {
@@ -58,7 +66,7 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
     loadPlans();
   }, []);
 
-  const handleOpenCreate = (category: 'HOURLY' | 'PRO' | 'EVENT' = 'HOURLY') => {
+  const handleOpenCreate = (category: 'VIP' | 'PRO' | 'EVENT' = 'VIP') => {
     const daily = category === 'PRO' ? 850 : category === 'EVENT' ? 520 : 84;
     const hourly = Number((daily / 24).toFixed(2));
     setIsNewPlan(true);
@@ -71,13 +79,13 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
         ? 'PRO-Cabinet ' + Math.floor(Math.random() * 900 + 100)
         : category === 'EVENT'
         ? 'Festival-Cabinet ' + Math.floor(Math.random() * 900 + 100)
-        : 'Cabinet-H' + Math.floor(Math.random() * 900 + 100),
+        : 'VIP-Cabinet ' + Math.floor(Math.random() * 900 + 100),
       category,
       devicePrice: category === 'PRO' ? 10000 : category === 'EVENT' ? 5000 : 1500,
       hourlyEarnings: hourly,
       dailyEarnings: daily,
       limit: category === 'EVENT' ? 2 : 5,
-      durationDays: category === 'PRO' ? 45 : category === 'EVENT' ? 15 : 30,
+      durationDays: category === 'PRO' ? 45 : category === 'EVENT' ? 15 : 365,
       instantBonus: category === 'PRO' ? 500 : category === 'EVENT' ? 300 : 0,
       requiresActiveHourlyPlan: category === 'PRO',
       startDate: category === 'EVENT' ? today : undefined,
@@ -86,7 +94,7 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
         ? ['Maturity Yield', 'High Return']
         : category === 'EVENT'
         ? ['Limited Event', 'High Yield', 'Instant Bonus']
-        : ['Hourly Yield', 'Auto Settle'],
+        : ['VIP Hourly Yield', 'Auto Settle'],
       imageType: category === 'PRO' ? 'cabinet-pro' : category === 'EVENT' ? 'cabinet-gold' : 'cabinet-green',
       status: 'active',
     });
@@ -142,7 +150,9 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
 
   const filteredPlans = plans.filter((p) => {
     if (activeCategory === 'ALL') return true;
-    return (p.category || 'HOURLY').toUpperCase() === activeCategory;
+    let cat = (p.category || '').toUpperCase();
+    if (cat === 'STANDARD' || cat === 'HOURLY' || !cat) cat = 'VIP';
+    return cat === activeCategory;
   });
 
   return (
@@ -156,17 +166,17 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
               Sharing Hardware & Investment Plans
             </h2>
             <p className="text-xs text-gray-400 mt-0.5">
-              Manage Hourly Yield Devices, PRO Investment Packages, and Festival Event Plans.
+              Manage VIP Power Stations, High-Yield PRO Plans, and Limited Festival Event Packages.
             </p>
           </div>
 
           <div className="flex items-center gap-2.5 flex-wrap">
             <button
-              onClick={() => handleOpenCreate('HOURLY')}
+              onClick={() => handleOpenCreate('VIP')}
               className="px-3.5 py-2 rounded-xl bg-[#FF6000] hover:bg-orange-600 active:scale-95 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-orange-950/40 cursor-pointer"
             >
               <Plus className="w-4 h-4" />
-              <span>Add Hourly Plan</span>
+              <span>Add VIP Plan</span>
             </button>
 
             <button
@@ -199,7 +209,7 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
         <div className="mt-4 flex items-center gap-2 flex-wrap">
           {[
             { id: 'ALL', label: 'All Plans' },
-            { id: 'HOURLY', label: 'Hourly Yield Devices' },
+            { id: 'VIP', label: 'VIP Devices' },
             { id: 'PRO', label: 'High-Yield PRO Plans' },
             { id: 'EVENT', label: 'Festival & Event Plans' },
           ].map((tab) => (
@@ -360,11 +370,11 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
                 <div>
                   <label className="block text-gray-300 font-semibold mb-1">Category</label>
                   <select
-                    value={editingPlan.category || 'HOURLY'}
+                    value={editingPlan.category || 'VIP'}
                     onChange={(e) => setEditingPlan({ ...editingPlan, category: e.target.value as any })}
                     className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none focus:border-[#FF6000]"
                   >
-                    <option value="HOURLY">HOURLY (Hourly Yield Device)</option>
+                    <option value="VIP">VIP (VIP Hourly Yield Device)</option>
                     <option value="PRO">PRO (High-Yield Maturity Contract)</option>
                     <option value="EVENT">EVENT (Festival & Limited Event Plan)</option>
                   </select>

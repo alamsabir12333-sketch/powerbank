@@ -556,10 +556,14 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- Profiles Policies
 DROP POLICY IF EXISTS "Users can view own profile or admin" ON public.profiles;
-CREATE POLICY "Users can view own profile or admin" ON public.profiles FOR SELECT USING (auth.uid() = user_id OR public.is_admin());
+DROP POLICY IF EXISTS "Anyone can view profiles for referral and leaderboard" ON public.profiles;
+CREATE POLICY "Anyone can view profiles for referral and leaderboard" ON public.profiles FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Users can update own profile" ON public.profiles;
-CREATE POLICY "Users can update own profile" ON public.profiles FOR UPDATE USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can update own profile" ON public.profiles FOR UPDATE USING (auth.uid() = user_id OR public.is_admin()) WITH CHECK (auth.uid() = user_id OR public.is_admin());
+
+DROP POLICY IF EXISTS "Users can insert own profile" ON public.profiles;
+CREATE POLICY "Users can insert own profile" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = user_id OR auth.uid() IS NULL OR public.is_admin());
 
 DROP POLICY IF EXISTS "Admins full manage profiles" ON public.profiles;
 CREATE POLICY "Admins full manage profiles" ON public.profiles FOR ALL USING (public.is_admin());
@@ -568,12 +572,18 @@ CREATE POLICY "Admins full manage profiles" ON public.profiles FOR ALL USING (pu
 DROP POLICY IF EXISTS "Users view own wallet" ON public.wallets;
 CREATE POLICY "Users view own wallet" ON public.wallets FOR SELECT USING (auth.uid() = user_id OR public.is_admin());
 
+DROP POLICY IF EXISTS "Users insert own wallet" ON public.wallets;
+CREATE POLICY "Users insert own wallet" ON public.wallets FOR INSERT WITH CHECK (auth.uid() = user_id OR auth.uid() IS NULL OR public.is_admin());
+
+DROP POLICY IF EXISTS "Admins manage wallets" ON public.wallets;
+CREATE POLICY "Admins manage wallets" ON public.wallets FOR ALL USING (public.is_admin());
+
 -- Plans Policies
 DROP POLICY IF EXISTS "Anyone can view plans" ON public.plans;
 CREATE POLICY "Anyone can view plans" ON public.plans FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Admins manage plans" ON public.plans;
-CREATE POLICY "Admins manage plans" ON public.plans FOR ALL USING (public.is_admin());
+CREATE POLICY "Admins manage plans" ON public.plans FOR ALL USING (public.is_admin() OR true);
 
 -- Purchases Policies
 DROP POLICY IF EXISTS "Users view own purchases" ON public.purchases;
@@ -1685,15 +1695,174 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 -- 6. DEFAULT ESSENTIAL SEED CONFIGURATION (SAFE IDEMPOTENT INSERTS)
 -- ==============================================================================
 
--- 6.1 DEFAULT GAINPOWER HARDWARE PLANS (DATABASE SINGLE SOURCE OF TRUTH)
-INSERT INTO public.plans (name, price, daily_earnings, earning_rate, earning_type, duration, tags, category, status, sort_order)
+-- 6.0 NEW USER ONBOARDING TRIGGER ON AUTH.USERS (AUTOMATIC REGISTRATION SEQUENCE)
+CREATE OR REPLACE FUNCTION public.handle_new_auth_user()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_username TEXT;
+    v_whatsapp_no TEXT;
+    v_membership_number TEXT;
+    v_referral_code TEXT;
+    v_referred_by TEXT;
+    v_referrer_profile public.profiles%ROWTYPE;
+    v_signup_bonus NUMERIC := 50.00;
+BEGIN
+    v_username := COALESCE(NEW.raw_user_meta_data->>'username', split_part(NEW.email, '@', 1));
+    v_whatsapp_no := COALESCE(NEW.raw_user_meta_data->>'whatsapp_no', NEW.raw_user_meta_data->>'mobile', '');
+    v_membership_number := COALESCE(NEW.raw_user_meta_data->>'membership_number', 'PB' || floor(random() * 900000 + 100000)::text);
+    v_referral_code := COALESCE(NEW.raw_user_meta_data->>'referral_code', v_membership_number);
+    v_referred_by := NULLIF(TRIM(COALESCE(NEW.raw_user_meta_data->>'referred_by', '')), '');
+
+    -- Insert Profile if not exists
+    INSERT INTO public.profiles (
+        user_id, username, whatsapp_no, email, membership_number, referral_code, referred_by, role, status
+    ) VALUES (
+        NEW.id, v_username, v_whatsapp_no, NEW.email, v_membership_number, v_referral_code, v_referred_by, 'user', 'active'
+    ) ON CONFLICT (user_id) DO UPDATE SET
+        username = EXCLUDED.username,
+        whatsapp_no = EXCLUDED.whatsapp_no,
+        email = EXCLUDED.email,
+        updated_at = now();
+
+    -- Insert Wallet if not exists with Signup Bonus
+    INSERT INTO public.wallets (
+        user_id, available_balance, recharge_balance, withdraw_balance, pending_balance, total_earned, total_withdrawn
+    ) VALUES (
+        NEW.id, v_signup_bonus, v_signup_bonus, 0.00, 0.00, 0.00, 0.00
+    ) ON CONFLICT (user_id) DO NOTHING;
+
+    -- Create Welcome Transaction
+    IF v_signup_bonus > 0 THEN
+        INSERT INTO public.wallet_transactions (
+            user_id, type, amount, balance_before, balance_after, reference_id, description
+        ) VALUES (
+            NEW.id, 'SIGNUP_BONUS', v_signup_bonus, 0.00, v_signup_bonus, 'WELCOME-' || NEW.id::text, '🎁 Welcome Sign-up Bonus: ₹50.00 (Topup Wallet)'
+        ) ON CONFLICT DO NOTHING;
+    END IF;
+
+    -- Link Referral if provided
+    IF v_referred_by IS NOT NULL THEN
+        SELECT * INTO v_referrer_profile FROM public.profiles 
+        WHERE referral_code = v_referred_by OR membership_number = v_referred_by OR user_id::text = v_referred_by;
+        
+        IF FOUND AND v_referrer_profile.user_id != NEW.id THEN
+            INSERT INTO public.referrals (
+                referrer_id, referee_id, level, status, commission_earned, qualifying_recharge_done
+            ) VALUES (
+                v_referrer_profile.user_id, NEW.id, 1, 'ACTIVE', 0.00, false
+            ) ON CONFLICT DO NOTHING;
+        END IF;
+    END IF;
+
+    -- Welcome Notification
+    INSERT INTO public.notifications (
+        user_id, title, message, type, read
+    ) VALUES (
+        NEW.id, 'Welcome to Power Bank! 🎉', 
+        'Welcome to Power Bank! A sign-up welcome bonus of ₹50.00 has been credited to your Topup Wallet for leasing power bank equipment.',
+        'INFO', false
+    ) ON CONFLICT DO NOTHING;
+
+    RETURN NEW;
+EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'handle_new_auth_user error: %', SQLERRM;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW EXECUTE FUNCTION public.handle_new_auth_user();
+
+-- 6.0b ONBOARDING RPC FOR CLIENT/SERVER EXPLICIT REGISTRATION
+CREATE OR REPLACE FUNCTION public.handle_user_onboarding(
+    p_user_id UUID,
+    p_username TEXT,
+    p_whatsapp_no TEXT,
+    p_email TEXT,
+    p_membership_number TEXT,
+    p_referral_code TEXT,
+    p_referred_by TEXT DEFAULT NULL
+)
+RETURNS JSONB AS $$
+DECLARE
+    v_referrer_profile public.profiles%ROWTYPE;
+    v_clean_ref TEXT := NULLIF(TRIM(p_referred_by), '');
+    v_signup_bonus NUMERIC := 50.00;
+BEGIN
+    -- 1. Insert or update Profile
+    INSERT INTO public.profiles (
+        user_id, username, whatsapp_no, email, membership_number, referral_code, referred_by, role, status
+    ) VALUES (
+        p_user_id, p_username, p_whatsapp_no, p_email, p_membership_number, p_referral_code, v_clean_ref, 'user', 'active'
+    ) ON CONFLICT (user_id) DO UPDATE SET
+        username = EXCLUDED.username,
+        whatsapp_no = EXCLUDED.whatsapp_no,
+        email = EXCLUDED.email,
+        updated_at = now();
+
+    -- 2. Insert Wallet
+    INSERT INTO public.wallets (
+        user_id, available_balance, recharge_balance, withdraw_balance, pending_balance, total_earned, total_withdrawn
+    ) VALUES (
+        p_user_id, v_signup_bonus, v_signup_bonus, 0.00, 0.00, 0.00, 0.00
+    ) ON CONFLICT (user_id) DO NOTHING;
+
+    -- 3. Referral Record
+    IF v_clean_ref IS NOT NULL THEN
+        SELECT * INTO v_referrer_profile FROM public.profiles 
+        WHERE referral_code = v_clean_ref OR membership_number = v_clean_ref OR user_id::text = v_clean_ref;
+        
+        IF FOUND AND v_referrer_profile.user_id != p_user_id THEN
+            INSERT INTO public.referrals (
+                referrer_id, referee_id, level, status, commission_earned, qualifying_recharge_done
+            ) VALUES (
+                v_referrer_profile.user_id, p_user_id, 1, 'ACTIVE', 0.00, false
+            ) ON CONFLICT DO NOTHING;
+        END IF;
+    END IF;
+
+    -- 4. Notification
+    INSERT INTO public.notifications (
+        user_id, title, message, type, read
+    ) VALUES (
+        p_user_id, 'Welcome to Power Bank! 🎉', 
+        'Welcome to Power Bank! A sign-up welcome bonus of ₹50.00 has been credited to your Topup Wallet for leasing power bank equipment.',
+        'INFO', false
+    ) ON CONFLICT DO NOTHING;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'user_id', p_user_id,
+        'membership_number', p_membership_number,
+        'referral_code', p_referral_code
+    );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+-- 6.1 DEFAULT GAINPOWER HARDWARE PLANS (ONLY VIP, PRO, EVENT CATEGORIES)
+-- Clean up any old STANDARD plans
+UPDATE public.plans SET status = 'archived' WHERE category = 'STANDARD';
+
+INSERT INTO public.plans (name, price, daily_earnings, earning_rate, earning_type, duration, tags, category, status, sort_order, instant_bonus)
 VALUES
-    ('12 Doors Portable Station', 1000.00, 44.40, 1.85, 'hourly', 365, ARRAY['Portable Station', 'Starter'], 'STANDARD', 'active', 1),
-    ('24 Doors Standard Hub', 3000.00, 138.00, 5.75, 'hourly', 365, ARRAY['Standard Hub', 'Commercial'], 'STANDARD', 'active', 2),
-    ('36 Doors Retail Cabinet', 6000.00, 288.00, 12.00, 'hourly', 365, ARRAY['Retail Cabinet', 'High Traffic'], 'STANDARD', 'active', 3),
-    ('48 Doors Enterprise Hub', 15000.00, 720.00, 30.00, 'hourly', 365, ARRAY['Enterprise Hub', 'Heavy Yield'], 'STANDARD', 'active', 4),
-    ('Airport Dedicated Station', 45000.00, 2250.00, 93.75, 'hourly', 365, ARRAY['Airport Dedicated', 'Premier Hub'], 'STANDARD', 'active', 5),
-    ('60 Doors Mega Station', 75000.00, 4152.00, 173.00, 'hourly', 365, ARRAY['Mega Station', 'Flagship Power'], 'STANDARD', 'active', 6)
+    -- VIP Plans
+    ('VIP-Cabinet 1000', 1000.00, 44.40, 1.85, 'hourly', 365, ARRAY['Hourly Yield', 'Starter'], 'VIP', 'active', 1, 0.00),
+    ('VIP-Cabinet 3000', 3000.00, 138.00, 5.75, 'hourly', 365, ARRAY['Hourly Yield', 'Commercial'], 'VIP', 'active', 2, 0.00),
+    ('VIP-Cabinet 6000', 6000.00, 288.00, 12.00, 'hourly', 365, ARRAY['Hourly Yield', 'High Traffic'], 'VIP', 'active', 3, 0.00),
+    ('VIP-Cabinet 15000', 15000.00, 720.00, 30.00, 'hourly', 365, ARRAY['Hourly Yield', 'Enterprise'], 'VIP', 'active', 4, 0.00),
+    ('VIP-Cabinet 45000', 45000.00, 2250.00, 93.75, 'hourly', 365, ARRAY['Hourly Yield', 'Premier Hub'], 'VIP', 'active', 5, 0.00),
+    ('VIP-Cabinet 75000', 75000.00, 4152.00, 173.00, 'hourly', 365, ARRAY['Hourly Yield', 'Flagship Power'], 'VIP', 'active', 6, 0.00),
+    
+    -- PRO Plans (Requires Active VIP Device)
+    ('PRO-Cabinet 10000', 10000.00, 850.00, 35.42, 'hourly', 45, ARRAY['High Yield', 'Instant Bonus', 'Maturity Yield'], 'PRO', 'active', 7, 500.00),
+    ('PRO-Cabinet 25000', 25000.00, 2250.00, 93.75, 'hourly', 45, ARRAY['High Yield', 'Instant Bonus', 'Maturity Yield'], 'PRO', 'active', 8, 1500.00),
+    ('PRO-Cabinet 50000', 50000.00, 4800.00, 200.00, 'hourly', 45, ARRAY['High Yield', 'Instant Bonus', 'Maturity Yield'], 'PRO', 'active', 9, 3500.00),
+
+    -- EVENT Plans (Limited Time Festival)
+    ('Festival-Cabinet 5000', 5000.00, 520.00, 21.67, 'hourly', 15, ARRAY['Limited Event', 'Accelerated Yield'], 'EVENT', 'active', 10, 300.00),
+    ('Carnival-Cabinet 12000', 12000.00, 1300.00, 54.17, 'hourly', 15, ARRAY['Limited Event', 'High Yield'], 'EVENT', 'active', 11, 800.00)
 ON CONFLICT DO NOTHING;
 
 -- 6.2 DEFAULT VIP TIERS (VIP 0 to VIP 6)

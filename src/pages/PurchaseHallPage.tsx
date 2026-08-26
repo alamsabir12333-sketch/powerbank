@@ -26,7 +26,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
   onPurchaseSuccess,
 }) => {
   const [plans, setPlans] = useState<ProductItem[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState<string>('HOURLY');
+  const [selectedCategory, setSelectedCategory] = useState<string>('VIP');
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ProductItem | null>(null);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
@@ -53,7 +53,17 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
         fetchPlans(),
         checkProEligibility(userId),
       ]);
-      setPlans(fetchedPlans.filter((p) => p.status !== 'archived'));
+      // Filter out archived and ensure no standard plan leak
+      const validPlans = (fetchedPlans || [])
+        .filter((p) => p.status !== 'archived')
+        .map((p) => {
+          let cat = (p.category || '').toUpperCase();
+          if (cat === 'STANDARD' || cat === 'HOURLY' || !cat) {
+            cat = 'VIP';
+          }
+          return { ...p, category: cat as PlanCategory };
+        });
+      setPlans(validPlans);
       setProEligibility(eligibility);
     } catch (e) {
       console.error('Error loading plans/eligibility:', e);
@@ -66,22 +76,18 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
 
   const topupBalance = wallet?.topupBalance ?? wallet?.rechargeBalance ?? wallet?.availableBalance ?? 0;
 
-  // Extract distinct categories dynamically (guaranteeing HOURLY, PRO, EVENT appear in priority order)
+  // Strict 3 categories matching requirement: VIP PLAN, PRO PLAN, EVENT PLAN
   const categories = useMemo(() => {
-    const list: string[] = ['HOURLY', 'PRO', 'EVENT'];
-    plans.forEach((p) => {
-      const cat = (p.category || (p.name.toUpperCase().includes('PRO') ? 'PRO' : 'HOURLY')).toUpperCase();
-      if (!list.includes(cat)) {
-        list.push(cat);
-      }
-    });
-    return list;
-  }, [plans]);
+    return ['VIP', 'PRO', 'EVENT'];
+  }, []);
 
-  // Filter plans by selected category
+  // Filter plans by selected category (VIP, PRO, EVENT)
   const filteredPlans = useMemo(() => {
     return plans.filter((p) => {
-      const cat = (p.category || (p.name.toUpperCase().includes('PRO') ? 'PRO' : 'HOURLY')).toUpperCase();
+      let cat = (p.category || '').toUpperCase();
+      if (cat === 'STANDARD' || cat === 'HOURLY' || !cat) {
+        cat = 'VIP';
+      }
       return cat === selectedCategory;
     });
   }, [plans, selectedCategory]);
@@ -91,13 +97,13 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
     const isEvent = (product.category || '').toUpperCase() === 'EVENT' || product.name.toUpperCase().includes('EVENT');
     const price = product.devicePrice || product.price || 0;
 
-    // Check PRO eligibility
+    // Check PRO eligibility (requires active VIP plan)
     if (isPro) {
       const check = await checkProEligibility(userId, product.id);
       if (!check.eligible) {
         setEligibilityModal({
           isOpen: true,
-          reason: check.reason || 'Active Hourly Plan required to activate PRO Plans.',
+          reason: check.reason || 'Active VIP Plan required to activate PRO Plans.',
           activeHourlyCount: check.activeHourlyCount,
         });
         return;
@@ -176,16 +182,16 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
         </div>
       </div>
 
-      {/* Dynamic Plan Categories Tabs: [ HOURLY PLAN ] [ PRO PLAN ] [ EVENT PLAN ] */}
+      {/* Dynamic Plan Categories Tabs: [ VIP PLAN ] [ PRO PLAN ] [ EVENT PLAN ] */}
       <div className="bg-white border-b border-gray-200/80 px-3 py-2 sticky top-0 z-20 shadow-xs">
         <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
           {categories.map((cat) => {
             const isActive = selectedCategory === cat;
             const isPro = cat === 'PRO';
             const isEvent = cat === 'EVENT';
-            const label = cat === 'HOURLY' ? 'HOURLY PLAN' : cat === 'PRO' ? 'PRO PLAN' : cat === 'EVENT' ? 'EVENT PLAN' : `${cat} PLAN`;
+            const label = cat === 'VIP' ? 'VIP PLAN' : cat === 'PRO' ? 'PRO PLAN' : 'EVENT PLAN';
             const count = plans.filter((p) => {
-              const pCat = (p.category || (p.name.toUpperCase().includes('PRO') ? 'PRO' : 'HOURLY')).toUpperCase();
+              const pCat = (p.category || (p.name.toUpperCase().includes('PRO') ? 'PRO' : 'VIP')).toUpperCase();
               return pCat === cat;
             }).length;
 
@@ -240,7 +246,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                 <div>
                   <h4 className="text-xs font-bold text-amber-950">PRO VIP Eligibility Unlocked</h4>
                   <p className="text-[10.5px] text-amber-800 font-medium">
-                    Active Hourly Devices: <span className="font-bold">{proEligibility.activeHourlyCount}</span>. Enjoy instant bonus & high returns!
+                    Active VIP Devices: <span className="font-bold">{proEligibility.activeHourlyCount}</span>. Enjoy instant bonus & high returns!
                   </p>
                 </div>
               </div>
@@ -255,18 +261,18 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                   <Lock className="w-4 h-4" />
                 </div>
                 <div className="flex-1">
-                  <h4 className="text-xs font-bold text-gray-900">Active Hourly Plan Required</h4>
+                  <h4 className="text-xs font-bold text-gray-900">Active VIP Plan Required</h4>
                   <p className="text-[11px] text-gray-600 mt-0.5 leading-relaxed">
-                    PRO Plans offer exclusive instant cash bonuses and accelerated daily revenue. Activate at least 1 standard Hourly Plan to unlock PRO access.
+                    PRO Plans offer exclusive instant cash bonuses and accelerated daily revenue. Activate at least 1 VIP Plan to unlock PRO access.
                   </p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setSelectedCategory('HOURLY')}
+                onClick={() => setSelectedCategory('VIP')}
                 className="w-full py-1.5 rounded-xl bg-[#FF6000] hover:bg-[#E65100] text-white font-bold text-xs flex items-center justify-center gap-1 shadow-sm transition-all"
               >
-                <span>VIEW HOURLY PLANS</span>
+                <span>VIEW VIP PLANS</span>
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>

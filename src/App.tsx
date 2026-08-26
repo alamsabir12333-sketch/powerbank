@@ -24,17 +24,8 @@ import { RechargeModal } from './components/RechargeModal';
 import { WithdrawalModal } from './components/WithdrawalModal';
 import { BindBankCardModal } from './components/FunctionModals';
 import { MyDeviceModal } from './components/MyDeviceModal';
-import {
-  getCurrentUser,
-  fetchUserProfile,
-  fetchWallet,
-  fetchPurchases,
-  settleAndFetchEarnings,
-  logoutUser,
-  getAdminSession,
-  logoutAdmin,
-} from './services/api';
-import { supabase, isSupabaseConfigured } from './lib/supabase';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { getAdminSession, logoutAdmin } from './services/api';
 import { Zap, RefreshCw, ShieldCheck, Loader2 } from 'lucide-react';
 
 const AdminDashboardPage = React.lazy(() =>
@@ -43,7 +34,20 @@ const AdminDashboardPage = React.lazy(() =>
   }))
 );
 
-export default function App() {
+function AppContent() {
+  const {
+    session,
+    user,
+    profile: userProfile,
+    wallet,
+    purchases,
+    authStatus,
+    authLoading,
+    isAuthenticated,
+    signOut,
+    refreshUserData,
+  } = useAuth();
+
   // Admin Route Isolation
   const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -66,15 +70,18 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastType, setToastType] = useState<ToastType>('info');
 
-  // Core Global States
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [wallet, setWallet] = useState<Wallet | null>(null);
-  const [purchases, setPurchases] = useState<PurchaseItem[]>([]);
-  const [isAuthChecking, setIsAuthChecking] = useState(true);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-
   // Unauthenticated Route / Entry Mode
-  const [authMode, setAuthMode] = useState<'register' | 'login'>('register');
+  const [authMode, setAuthMode] = useState<'register' | 'login'>(() => {
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      const lastAuthAction = sessionStorage.getItem('pb_last_auth_action');
+      if (path === '/login' || lastAuthAction === 'logout') {
+        return 'login';
+      }
+    }
+    return 'register';
+  });
+
   const [inviteCode, setInviteCode] = useState<string>('');
   const [isInviteReadOnly, setIsInviteReadOnly] = useState<boolean>(false);
 
@@ -136,6 +143,8 @@ export default function App() {
         setActiveTab('notifications');
       } else if (path === '/vip' || path === '/vip-levels') {
         setActiveTab('vip_levels');
+      } else if (path === '/' && sessionStorage.getItem('pb_last_auth_action') === 'logout') {
+        setAuthMode('login');
       } else {
         const savedInvite = sessionStorage.getItem('pb_pending_invite_code') || localStorage.getItem('pb_pending_invite_code');
         if (savedInvite) {
@@ -150,104 +159,41 @@ export default function App() {
     return () => window.removeEventListener('popstate', handleLocationCheck);
   }, []);
 
-  // 2. Load User Data and Validate Session
-  const loadUserData = useCallback(async (forcedUserId?: string) => {
-    try {
-      const user = await getCurrentUser();
-      const currentId = forcedUserId || user?.id;
-
-      if (!currentId) {
-        setIsAuthenticated(false);
-        setUserProfile(null);
-        setWallet(null);
-        setPurchases([]);
-        setIsAuthChecking(false);
-        return;
-      }
-
-      // Settle hourly device yields
-      await settleAndFetchEarnings(currentId);
-
-      const [profile, wal, purchs] = await Promise.all([
-        fetchUserProfile(currentId),
-        fetchWallet(currentId),
-        fetchPurchases(currentId),
-      ]);
-
-      setUserProfile(profile);
-      setWallet(wal);
-      setPurchases(purchs);
-      setIsAuthenticated(true);
-    } catch (err) {
-      console.error('Error loading app data:', err);
-      setIsAuthenticated(false);
-    } finally {
-      setIsAuthChecking(false);
-    }
-  }, []);
-
+  // Sync auth mode based on location or explicit logout
   useEffect(() => {
-    loadUserData();
-
-    // Supabase auth state change listener
-    if (isSupabaseConfigured && supabase) {
-      const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
-        if (event === 'SIGNED_IN' && session?.user) {
-          loadUserData(session.user.id);
-        } else if (event === 'SIGNED_OUT') {
-          setIsAuthenticated(false);
-          setUserProfile(null);
-          loadUserData();
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      const lastAuthAction = sessionStorage.getItem('pb_last_auth_action');
+      if (isAuthenticated) {
+        if (path === '/register' || path === '/login' || path.startsWith('/invite/')) {
+          window.history.replaceState({}, '', '/');
         }
-      });
-
-      return () => {
-        authListener.subscription.unsubscribe();
-      };
+      } else {
+        if (path === '/login' || lastAuthAction === 'logout') {
+          setAuthMode('login');
+        } else if (path === '/register' || path.includes('/invite/')) {
+          setAuthMode('register');
+        }
+      }
     }
-  }, [loadUserData]);
-
-  // Periodic earnings settlement (every 30 seconds for active session)
-  useEffect(() => {
-    if (!isAuthenticated || !userProfile?.userId) return;
-
-    const interval = setInterval(() => {
-      const currentId = userProfile.userId || userProfile.id;
-      settleAndFetchEarnings(currentId).then(() => {
-        fetchWallet(currentId).then(setWallet);
-        fetchPurchases(currentId).then(setPurchases);
-      });
-    }, 30000);
-
-    return () => clearInterval(interval);
-  }, [isAuthenticated, userProfile?.userId, userProfile?.id]);
+  }, [authStatus, isAuthenticated]);
 
   const handleLogout = async () => {
-    await logoutUser();
-    setIsAuthenticated(false);
-    setUserProfile(null);
-    setWallet(null);
-    setPurchases([]);
+    await signOut();
     setAuthMode('login');
-    showToast('Logged out successfully.');
-    if (typeof window !== 'undefined') {
-      window.history.replaceState({}, '', '/login');
-    }
+    showToast('Logged out successfully.', 'info');
   };
 
   const handleAuthSuccess = (profile: UserProfile, isNewUser?: boolean) => {
-    setUserProfile(profile);
-    setIsAuthenticated(true);
     setActiveTab('home');
-    loadUserData(profile.userId || profile.id);
     if (typeof window !== 'undefined') {
       window.history.replaceState({}, '', '/');
     }
+    refreshUserData();
   };
 
   // =========================================================================
   // ADMIN PANEL ROUTE HANDLER (/adminbank)
-  // Dedicated, isolated, password-protected admin access
   // =========================================================================
   if (isAdminRoute) {
     if (adminSession) {
@@ -310,10 +256,6 @@ export default function App() {
 
   // =========================================================================
   // PUBLIC PAYMENT CHECKOUT ROUTE HANDLER (/payment/checkout)
-  // Publicly accessible payment gateway checkout:
-  // - Bypasses global visitor login/register guard
-  // - Does NOT require Supabase authenticated session
-  // - Safely reads URL parameters and verifies server-side
   // =========================================================================
   if (isCheckoutRoute) {
     return (
@@ -328,8 +270,8 @@ export default function App() {
     );
   }
 
-  // 1. While initial session is resolving, show sleek splash screen to avoid UI flashes
-  if (isAuthChecking) {
+  // 1. Initial Session Check Loading Screen
+  if (authLoading) {
     return (
       <div className="w-full min-h-screen bg-[#121212] flex flex-col items-center justify-center text-white space-y-4 p-4">
         <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#FF6000] to-[#FFA000] flex items-center justify-center shadow-lg shadow-orange-500/30 animate-pulse">
@@ -346,7 +288,7 @@ export default function App() {
     );
   }
 
-  // 2. Unauthenticated User Flow: FIRST SHOW REGISTER PAGE (or Login if selected)
+  // 2. Unauthenticated User Flow: FIRST SHOW REGISTER PAGE (or Login if selected/logout)
   if (!isAuthenticated) {
     return (
       <>
@@ -358,18 +300,18 @@ export default function App() {
           onShowToast={showToast}
           onModeChange={(mode) => setAuthMode(mode)}
         />
-        <Toast message={toastMessage} />
+        <Toast message={toastMessage} type={toastType} />
       </>
     );
   }
 
-  // 3. Authenticated User Flow: Main Application Container
-  const activeUserId = userProfile?.userId || userProfile?.id || 'usr_demo_01';
+  // 3. Authenticated User Flow
+  const activeUserId = userProfile?.userId || userProfile?.id || user?.id || '';
   const isDarkTab = activeTab === 'home';
 
   return (
     <div className="min-h-screen bg-[#1a1a1a] flex justify-center selection:bg-[#FF6000] selection:text-white">
-      {/* Mobile-First Centered Container (Max 440px wide on desktop to preserve mobile screen ratios) */}
+      {/* Mobile-First Centered Container */}
       <div
         className={`w-full max-w-[440px] min-h-screen flex flex-col relative shadow-[0_0_50px_rgba(0,0,0,0.8)] transition-colors duration-200 ${
           isDarkTab ? 'bg-[#121212]' : 'bg-[#F8F9FA]'
@@ -413,7 +355,7 @@ export default function App() {
                 setActiveTab('withdrawal');
                 window.scrollTo({ top: 0, behavior: 'instant' });
               }}
-              onRefreshData={() => loadUserData()}
+              onRefreshData={() => refreshUserData()}
             />
           )}
 
@@ -431,13 +373,15 @@ export default function App() {
                 window.scrollTo({ top: 0, behavior: 'instant' });
               }}
               onPurchaseSuccess={() => {
-                loadUserData();
+                refreshUserData();
               }}
             />
           )}
 
           {activeTab === 'team' && (
             <TeamPage
+              userId={activeUserId}
+              userProfile={userProfile}
               onNavigateTab={(tab) => {
                 setActiveTab(tab);
                 window.scrollTo({ top: 0, behavior: 'instant' });
@@ -466,7 +410,7 @@ export default function App() {
               }}
               onOpenMyDevice={() => setIsMyDeviceOpen(true)}
               onLogout={handleLogout}
-              onRefreshData={() => loadUserData()}
+              onRefreshData={() => refreshUserData()}
             />
           )}
 
@@ -519,7 +463,7 @@ export default function App() {
                 setActiveTab('bank_card');
                 window.scrollTo({ top: 0, behavior: 'instant' });
               }}
-              onRefreshData={() => loadUserData()}
+              onRefreshData={() => refreshUserData()}
             />
           )}
 
@@ -536,7 +480,7 @@ export default function App() {
                 window.scrollTo({ top: 0, behavior: 'instant' });
               }}
               onShowToast={showToast}
-              onRefreshData={() => loadUserData()}
+              onRefreshData={() => refreshUserData()}
             />
           )}
 
@@ -566,7 +510,7 @@ export default function App() {
                 window.scrollTo({ top: 0, behavior: 'instant' });
               }}
               onSuccess={() => {
-                loadUserData();
+                refreshUserData();
                 setActiveTab('bank_card');
                 window.scrollTo({ top: 0, behavior: 'instant' });
               }}
@@ -625,7 +569,7 @@ export default function App() {
           )}
         </main>
 
-        {/* Global Bottom Navigation (Visible on main tabs) */}
+        {/* Global Bottom Navigation */}
         {activeTab !== 'transactions' &&
           activeTab !== 'notifications' &&
           activeTab !== 'withdrawal' &&
@@ -645,22 +589,17 @@ export default function App() {
           />
         )}
 
-        {/* ========================================================================= */}
-        {/* REAL BACKEND MODALS */}
-        {/* ========================================================================= */}
-
-        {/* 1. Manual UPI Recharge Modal */}
+        {/* Modal Components */}
         <RechargeModal
           isOpen={isRechargeOpen}
           onClose={() => setIsRechargeOpen(false)}
           userId={activeUserId}
           onSuccess={(msg) => {
             showToast(msg);
-            loadUserData();
+            refreshUserData();
           }}
         />
 
-        {/* 2. Real Withdrawal Modal */}
         <WithdrawalModal
           isOpen={isWithdrawalOpen}
           onClose={() => setIsWithdrawalOpen(false)}
@@ -669,22 +608,20 @@ export default function App() {
           onOpenBindCard={() => setIsBindCardOpen(true)}
           onSuccess={(msg) => {
             showToast(msg);
-            loadUserData();
+            refreshUserData();
           }}
         />
 
-        {/* 3. Bind Bank Card Modal */}
         <BindBankCardModal
           isOpen={isBindCardOpen}
           onClose={() => setIsBindCardOpen(false)}
           userId={activeUserId}
           onSuccess={() => {
             showToast('Bank card bound successfully');
-            loadUserData();
+            refreshUserData();
           }}
         />
 
-        {/* 4. My Devices Modal */}
         <MyDeviceModal
           isOpen={isMyDeviceOpen}
           onClose={() => setIsMyDeviceOpen(false)}
@@ -696,13 +633,20 @@ export default function App() {
           }}
           onShowToast={showToast}
           onClaimSuccess={() => {
-            loadUserData();
+            refreshUserData();
           }}
         />
 
-        {/* Global Feedback Toast */}
         <Toast message={toastMessage} type={toastType} />
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }

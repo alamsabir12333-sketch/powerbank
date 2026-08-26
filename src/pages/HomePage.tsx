@@ -100,7 +100,7 @@ export const HomePage: React.FC<HomePageProps> = ({
   const [unreadCount, setUnreadCount] = useState(0);
   const [homePopupNotif, setHomePopupNotif] = useState<NotificationItem | null>(null);
 
-  const userId = userProfile?.userId || userProfile?.id || 'usr_demo_01';
+  const userId = userProfile?.userId || userProfile?.id || '';
 
   // Load Real Platform News from Supabase
   const loadNews = useCallback(async () => {
@@ -114,6 +114,7 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   // Load Real Financial & Duration Summary from Supabase
   const loadHomeSummary = useCallback(async () => {
+    if (!userId) return;
     try {
       const summary = await fetchUserHomeSummary(userId);
       setHomeSummary(summary);
@@ -124,6 +125,7 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   // Fetch unread count & eligible home popup
   const refreshNotifications = useCallback(async () => {
+    if (!userId) return;
     try {
       const [count, eligible] = await Promise.all([
         fetchUnreadNotificationCount(userId),
@@ -138,16 +140,18 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   useEffect(() => {
     loadNews();
-    loadHomeSummary();
-    refreshNotifications();
-
-    const interval = setInterval(() => {
+    if (userId) {
       loadHomeSummary();
       refreshNotifications();
-    }, 15000); // 15s periodic refresh
 
-    return () => clearInterval(interval);
-  }, [loadNews, loadHomeSummary, refreshNotifications, purchases, wallet, userProfile]);
+      const interval = setInterval(() => {
+        loadHomeSummary();
+        refreshNotifications();
+      }, 15000); // 15s periodic refresh
+
+      return () => clearInterval(interval);
+    }
+  }, [loadNews, loadHomeSummary, refreshNotifications, userId, purchases, wallet, userProfile]);
 
   // Handle Home Popup Dismissal (X button)
   const handleDismissHomePopup = async () => {

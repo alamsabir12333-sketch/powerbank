@@ -1,7 +1,7 @@
 project_id = "gainpower"
 
 [functions.create-univepay-payment]
-verify_jwt = false
+verify_jwt = true
 
 [functions.univepay-payment-callback]
 verify_jwt = false

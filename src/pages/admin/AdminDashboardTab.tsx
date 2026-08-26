@@ -156,44 +156,79 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
         </div>
       </div>
 
-      {/* 10 Statistics Metric Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3.5">
-        {statCards.map((card) => {
-          const Icon = card.icon;
-          return (
+      {/* 10 Statistics Metric Grid or Skeleton */}
+      {loading && !stats ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3.5">
+          {Array.from({ length: 10 }).map((_, idx) => (
             <div
-              key={card.id}
-              onClick={() => onNavigateTab(card.actionTab)}
-              className={`relative bg-[#161b22] border rounded-2xl p-4 hover:border-gray-600 transition-all cursor-pointer group flex flex-col justify-between ${card.color}`}
+              key={`skel-${idx}`}
+              className="bg-[#161b22] border border-gray-800/80 rounded-2xl p-4 flex flex-col justify-between h-[138px] animate-pulse"
             >
               <div>
                 <div className="flex items-center justify-between mb-2.5">
-                  <div className="p-2 rounded-xl bg-black/40 border border-white/10">
-                    <Icon className="w-4 h-4" />
-                  </div>
-                  {card.highlightBadge && (
-                    <span className="text-[9.5px] font-extrabold px-2 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/40 animate-pulse">
-                      {card.highlightBadge}
-                    </span>
-                  )}
+                  <div className="w-8 h-8 rounded-xl bg-gray-800/80"></div>
                 </div>
-                <div className="text-gray-400 text-[11.5px] font-medium leading-tight">
-                  {card.label}
-                </div>
-                <div className="text-xl font-extrabold text-white tracking-tight mt-1">
-                  {card.value}
-                </div>
+                <div className="w-24 h-3 bg-gray-800/70 rounded"></div>
+                <div className="w-28 h-6 bg-gray-800 rounded mt-2"></div>
               </div>
-              <div className="text-[11px] text-gray-500 mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between">
-                <span>{card.subValue}</span>
-                <span className="text-gray-400 group-hover:text-white transition-colors text-[10px] font-semibold">
-                  Manage &rarr;
-                </span>
-              </div>
+              <div className="w-20 h-2.5 bg-gray-800/50 rounded mt-2.5 pt-2"></div>
             </div>
-          );
-        })}
-      </div>
+          ))}
+        </div>
+      ) : !stats && !loading ? (
+        <div className="bg-red-950/20 border border-red-800/40 rounded-2xl p-6 text-center space-y-3">
+          <AlertTriangle className="w-8 h-8 text-red-400 mx-auto" />
+          <h3 className="text-base font-bold text-white">Unable to load dashboard data</h3>
+          <p className="text-xs text-gray-400 max-w-md mx-auto">
+            The executive platform statistics could not be loaded from Supabase. Please check your database connection or try syncing again.
+          </p>
+          <button
+            onClick={onRefresh}
+            className="px-4 py-2 bg-[#FF6000] hover:bg-orange-600 text-white text-xs font-bold rounded-xl inline-flex items-center gap-2 cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Retry Sync</span>
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3.5">
+          {statCards.map((card) => {
+            const Icon = card.icon;
+            return (
+              <div
+                key={card.id}
+                onClick={() => onNavigateTab(card.actionTab)}
+                className={`relative bg-[#161b22] border rounded-2xl p-4 hover:border-gray-600 transition-all cursor-pointer group flex flex-col justify-between ${card.color}`}
+              >
+                <div>
+                  <div className="flex items-center justify-between mb-2.5">
+                    <div className="p-2 rounded-xl bg-black/40 border border-white/10">
+                      <Icon className="w-4 h-4" />
+                    </div>
+                    {card.highlightBadge && (
+                      <span className="text-[9.5px] font-extrabold px-2 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/40 animate-pulse">
+                        {card.highlightBadge}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-gray-400 text-[11.5px] font-medium leading-tight">
+                    {card.label}
+                  </div>
+                  <div className="text-xl font-extrabold text-white tracking-tight mt-1">
+                    {card.value}
+                  </div>
+                </div>
+                <div className="text-[11px] text-gray-500 mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between">
+                  <span>{card.subValue}</span>
+                  <span className="text-gray-400 group-hover:text-white transition-colors text-[10px] font-semibold">
+                    Manage &rarr;
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Financial Health Summary Banner */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

@@ -783,6 +783,536 @@ app.get('/api/univepay/balance', async (req, res) => {
   }
 });
 
+// ==============================================================================
+// 5. USER ONBOARDING BACKEND API (ATOMIC REGISTRATION PERSISTENCE)
+// ==============================================================================
+app.post('/api/auth/onboarding', async (req, res) => {
+  const { userId, username, whatsappNo, email, membershipNumber, referralCode, referredBy } = req.body;
+
+  if (!userId || !username || !whatsappNo || !email) {
+    return res.status(400).json({ success: false, error: 'Missing required onboarding parameters.' });
+  }
+
+  if (!supabase) {
+    return res.json({ success: true, message: 'Server operating in local/mock mode.' });
+  }
+
+  try {
+    const memNo = membershipNumber || 'PB' + Math.floor(Math.random() * 900000 + 100000);
+    const refCode = referralCode || memNo;
+    const cleanRef = referredBy ? String(referredBy).trim().toUpperCase() : null;
+
+    // 1. Try atomic PostgreSQL RPC if available
+    try {
+      const { data: rpcRes, error: rpcErr } = await supabase.rpc('handle_user_onboarding', {
+        p_user_id: userId,
+        p_username: String(username).trim(),
+        p_whatsapp_no: String(whatsappNo).replace(/\D/g, ''),
+        p_email: String(email).trim().toLowerCase(),
+        p_membership_number: memNo,
+        p_referral_code: refCode,
+        p_referred_by: cleanRef || null,
+      });
+
+      if (!rpcErr) {
+        return res.json({
+          success: true,
+          message: 'User onboarded atomically via database RPC.',
+          userId,
+          membershipNumber: memNo,
+          referralCode: refCode,
+        });
+      }
+    } catch (rpcCatch) {
+      // Fall through to resilient individual table operations
+    }
+
+    // 2. Safe Profile Provisioning (Check then Insert)
+    const { data: existingProfile } = await supabase
+      .from('profiles')
+      .select('id, user_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (!existingProfile) {
+      const { error: profileErr } = await supabase.from('profiles').insert({
+        user_id: userId,
+        username: String(username).trim(),
+        whatsapp_no: String(whatsappNo).replace(/\D/g, ''),
+        email: String(email).trim().toLowerCase(),
+        membership_number: memNo,
+        referral_code: refCode,
+        referred_by: cleanRef,
+        role: 'user',
+        status: 'active',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      if (profileErr && profileErr.code !== '23505') {
+        console.warn('Profile provisioning note:', profileErr.message);
+      }
+    }
+
+    // 3. Safe Wallet Provisioning (Check then Insert with Welcome Bonus)
+    const { data: existingWallet } = await supabase
+      .from('wallets')
+      .select('id, user_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (!existingWallet) {
+      const { error: walletErr } = await supabase.from('wallets').insert({
+        user_id: userId,
+        available_balance: 50.0,
+        recharge_balance: 50.0,
+        withdraw_balance: 0.0,
+        pending_balance: 0.0,
+        total_earned: 0.0,
+        total_withdrawn: 0.0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      if (walletErr && walletErr.code !== '23505') {
+        console.warn('Wallet provisioning note:', walletErr.message);
+      }
+    }
+
+    // 4. Welcome Transaction
+    try {
+      await supabase.from('wallet_transactions').insert({
+        user_id: userId,
+        type: 'SIGNUP_BONUS',
+        amount: 50.0,
+        balance_before: 0.0,
+        balance_after: 50.0,
+        reference_id: `WELCOME-${userId}`,
+        description: '🎁 Welcome Sign-up Bonus: ₹50.00 (Topup Wallet)',
+        created_at: new Date().toISOString(),
+      });
+    } catch {}
+
+    // 5. Link Referrals if referred
+    if (cleanRef) {
+      try {
+        const { data: refProfile } = await supabase
+          .from('profiles')
+          .select('user_id')
+          .or(`referral_code.eq.${cleanRef},membership_number.eq.${cleanRef}`)
+          .maybeSingle();
+
+        if (refProfile && refProfile.user_id !== userId) {
+          await supabase.from('referrals').insert({
+            referrer_id: refProfile.user_id,
+            referee_id: userId,
+            level: 1,
+            status: 'ACTIVE',
+            commission_earned: 0.0,
+            qualifying_recharge_done: false,
+            created_at: new Date().toISOString(),
+          });
+        }
+      } catch {}
+    }
+
+    // 6. Welcome Notification
+    try {
+      await supabase.from('notifications').insert({
+        user_id: userId,
+        title: 'Welcome to Power Bank! 🎉',
+        message: 'Welcome to Power Bank! A sign-up welcome bonus of ₹50.00 has been credited to your Topup Wallet for leasing power bank equipment.',
+        type: 'INFO',
+        read: false,
+        created_at: new Date().toISOString(),
+      });
+    } catch {}
+
+    return res.json({
+      success: true,
+      userId,
+      membershipNumber: memNo,
+      referralCode: refCode,
+    });
+  } catch (err: any) {
+    console.error('Onboarding exception:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Onboarding failed.' });
+  }
+});
+
+// ==============================================================================
+// 6. PLANS BACKEND API (PUBLIC & FILTERED VIP / PRO / EVENT)
+// ==============================================================================
+app.get('/api/plans', async (req, res) => {
+  if (!supabase) {
+    return res.json({ success: true, data: [] });
+  }
+  try {
+    const { data, error } = await supabase
+      .from('plans')
+      .select('*')
+      .neq('status', 'archived')
+      .order('sort_order', { ascending: true });
+
+    if (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    const cleaned = (data || []).map((p: any) => {
+      let cat = (p.category || '').toUpperCase();
+      if (cat === 'STANDARD' || cat === 'HOURLY' || !cat) cat = 'VIP';
+      return {
+        id: p.id,
+        name: p.name,
+        category: cat,
+        devicePrice: Number(p.price || p.device_price || 0),
+        price: Number(p.price || p.device_price || 0),
+        dailyEarnings: Number(p.daily_earnings || (p.earning_rate ? p.earning_rate * 24 : 0)),
+        hourlyEarnings: Number(p.earning_rate || (p.daily_earnings ? +(p.daily_earnings / 24).toFixed(2) : 0)),
+        durationDays: p.duration || p.duration_days || 365,
+        duration: p.duration || p.duration_days || 365,
+        limit: p.limit || 5,
+        instantBonus: Number(p.instant_bonus || 0),
+        tags: p.tags || ['Hourly Yield'],
+        imageType: p.image_type || (cat === 'PRO' ? 'cabinet-pro' : cat === 'EVENT' ? 'cabinet-gold' : 'cabinet-green'),
+        status: p.status || 'active',
+        startDate: p.start_date || p.start_at,
+        endDate: p.end_date || p.end_at,
+      };
+    });
+
+    return res.json({ success: true, data: cleaned });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==============================================================================
+// 7. ADMIN DASHBOARD & MANAGEMENT BACKEND APIs
+// ==============================================================================
+app.get('/api/admin/dashboard-stats', async (req, res) => {
+  if (!supabase) {
+    return res.json({ success: true, data: {} });
+  }
+  try {
+    const [profilesRes, walletsRes, paymentsRes, depositsRes, withdrawalsRes, purchasesRes, earningsRes] = await Promise.all([
+      supabase.from('profiles').select('id, status'),
+      supabase.from('wallets').select('available_balance, withdraw_balance, recharge_balance'),
+      supabase.from('payments').select('amount, status'),
+      supabase.from('deposit_transactions').select('amount, status'),
+      supabase.from('withdrawals').select('amount, status'),
+      supabase.from('purchases').select('amount, status, plan_category, plans(category)'),
+      supabase.from('earnings').select('amount, status, earning_type'),
+    ]);
+
+    const profiles = profilesRes.data || [];
+    const wallets = walletsRes.data || [];
+    const payments = paymentsRes.data || [];
+    const deposits = depositsRes.data || [];
+    const withdrawals = withdrawalsRes.data || [];
+    const purchases = purchasesRes.data || [];
+    const earnings = earningsRes.data || [];
+
+    const totalUsers = profiles.length;
+    const activeUsers = profiles.filter((p) => p.status === 'active').length;
+    const totalWalletBalance = +wallets.reduce((acc, w) => acc + Number(w.available_balance || 0), 0).toFixed(2);
+
+    // Sum paid recharges across payments and deposit_transactions
+    const paidManualPayments = payments.filter((p) => p.status === 'PAID').reduce((acc, p) => acc + Number(p.amount || 0), 0);
+    const paidGatewayDeposits = deposits.filter((d) => d.status === 'SUCCESS' || d.status === 'COMPLETED').reduce((acc, d) => acc + Number(d.amount || 0), 0);
+    const totalRecharge = +(paidManualPayments + paidGatewayDeposits).toFixed(2);
+
+    const pendingManualPayments = payments.filter((p) => p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING').reduce((acc, p) => acc + Number(p.amount || 0), 0);
+    const pendingGatewayDeposits = deposits.filter((d) => d.status === 'PENDING').reduce((acc, d) => acc + Number(d.amount || 0), 0);
+    const pendingRecharge = +(pendingManualPayments + pendingGatewayDeposits).toFixed(2);
+
+    const totalWithdrawals = +withdrawals.filter((w) => w.status === 'COMPLETED' || w.status === 'SUCCESS').reduce((acc, w) => acc + Number(w.amount || 0), 0).toFixed(2);
+    const pendingWithdrawals = +withdrawals.filter((w) => w.status === 'PENDING' || w.status === 'PROCESSING').reduce((acc, w) => acc + Number(w.amount || 0), 0).toFixed(2);
+
+    const activePurchases = purchases.filter((p) => p.status === 'ACTIVE');
+    const totalInvestments = +activePurchases.reduce((acc, p) => acc + Number(p.amount || 0), 0).toFixed(2);
+
+    const activeHourlyPlans = activePurchases.filter((p: any) => {
+      const cat = (p.plan_category || (Array.isArray(p.plans) ? p.plans[0]?.category : p.plans?.category) || '').toUpperCase();
+      return cat !== 'PRO';
+    }).length;
+
+    const activeProPlans = activePurchases.filter((p: any) => {
+      const cat = (p.plan_category || (Array.isArray(p.plans) ? p.plans[0]?.category : p.plans?.category) || '').toUpperCase();
+      return cat === 'PRO';
+    }).length;
+
+    const totalEarnings = +earnings.reduce((acc, e) => acc + Number(e.amount || 0), 0).toFixed(2);
+    const totalClaimableEarnings = +earnings.filter((e) => e.status === 'CLAIMABLE').reduce((acc, e) => acc + Number(e.amount || 0), 0).toFixed(2);
+    const totalClaimedEarnings = +earnings.filter((e) => e.status === 'CLAIMED').reduce((acc, e) => acc + Number(e.amount || 0), 0).toFixed(2);
+    const referralEarnings = +earnings.filter((e) => (e.earning_type || '').includes('REFERRAL')).reduce((acc, e) => acc + Number(e.amount || 0), 0).toFixed(2);
+
+    return res.json({
+      success: true,
+      data: {
+        totalUsers,
+        activeUsers,
+        totalWalletBalance,
+        totalRecharge,
+        pendingRecharge,
+        totalWithdrawals,
+        pendingWithdrawals,
+        totalInvestments,
+        activeHourlyPlans,
+        activeProPlans,
+        totalEarnings,
+        totalClaimableEarnings,
+        totalClaimedEarnings,
+        referralEarnings,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/admin/users', async (req, res) => {
+  if (!supabase) return res.json({ success: true, data: [] });
+  try {
+    const { data: profiles, error } = await supabase
+      .from('profiles')
+      .select('*, wallets(available_balance, withdraw_balance, recharge_balance), purchases(amount, status)')
+      .order('created_at', { ascending: false });
+
+    if (error) return res.status(500).json({ success: false, error: error.message });
+
+    const formatted = (profiles || []).map((p: any) => {
+      const walletObj = Array.isArray(p.wallets) ? p.wallets[0] : p.wallets;
+      const purchasesList = p.purchases || [];
+      const totalInvested = purchasesList
+        .filter((pur: any) => pur.status === 'ACTIVE')
+        .reduce((sum: number, pur: any) => sum + Number(pur.amount || 0), 0);
+      const activeDevices = purchasesList.filter((pur: any) => pur.status === 'ACTIVE').length;
+
+      return {
+        id: p.id,
+        userId: p.user_id,
+        username: p.username,
+        whatsappNo: p.whatsapp_no,
+        name: p.username,
+        mobile: p.whatsapp_no,
+        email: p.email,
+        membershipNumber: p.membership_number,
+        referralCode: p.referral_code,
+        referredBy: p.referred_by,
+        role: p.role,
+        status: p.status,
+        availableBalance: Number(walletObj?.available_balance || 0),
+        walletBalance: Number(walletObj?.available_balance || 0),
+        totalInvested,
+        activeDevices,
+        createdAt: p.created_at,
+      };
+    });
+
+    return res.json({ success: true, data: formatted });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/admin/recharges', async (req, res) => {
+  if (!supabase) return res.json({ success: true, data: [] });
+  try {
+    const [paymentsRes, depositsRes] = await Promise.all([
+      supabase.from('payments').select('*, profiles(username, whatsapp_no, membership_number)').order('created_at', { ascending: false }),
+      supabase.from('deposit_transactions').select('*, profiles(username, whatsapp_no, membership_number)').order('created_at', { ascending: false }),
+    ]);
+
+    const payments = (paymentsRes.data || []).map((p: any) => {
+      const prof = Array.isArray(p.profiles) ? p.profiles[0] : p.profiles;
+      return {
+        id: p.id,
+        userId: p.user_id,
+        username: prof?.username || 'User',
+        whatsappNo: prof?.whatsapp_no || '',
+        membershipNumber: prof?.membership_number || '',
+        amount: Number(p.amount || 0),
+        paymentMethod: p.payment_method || 'UPI',
+        utrNumber: p.utr_number || p.reference_id || '',
+        referenceId: p.reference_id || p.utr_number || '',
+        status: p.status,
+        createdAt: p.created_at,
+        type: 'MANUAL_UPI',
+      };
+    });
+
+    const deposits = (depositsRes.data || []).map((d: any) => {
+      const prof = Array.isArray(d.profiles) ? d.profiles[0] : d.profiles;
+      return {
+        id: d.id,
+        userId: d.user_id,
+        username: prof?.username || 'User',
+        whatsappNo: prof?.whatsapp_no || '',
+        membershipNumber: prof?.membership_number || '',
+        amount: Number(d.amount || 0),
+        paymentMethod: d.channel || 'UNIVEPAY',
+        utrNumber: d.traceno || '',
+        referenceId: d.traceno || '',
+        status: d.status === 'SUCCESS' ? 'PAID' : d.status,
+        createdAt: d.created_at,
+        type: 'GATEWAY_DEPOSIT',
+      };
+    });
+
+    const combined = [...payments, ...deposits].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return res.json({ success: true, data: combined });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/approve-recharge', async (req, res) => {
+  const { paymentId, adminId = 'adm_root' } = req.body;
+  if (!paymentId || !supabase) return res.status(400).json({ success: false, error: 'Missing paymentId' });
+
+  try {
+    const { data: payment, error: fetchErr } = await supabase.from('payments').select('*').eq('id', paymentId).single();
+    if (fetchErr || !payment) return res.status(404).json({ success: false, error: 'Payment not found' });
+    if (payment.status === 'PAID') return res.json({ success: true, message: 'Already approved' });
+
+    // Credit User Wallet
+    const { data: wallet } = await supabase.from('wallets').select('*').eq('user_id', payment.user_id).single();
+    const currentBal = Number(wallet?.available_balance || 0);
+    const newBal = currentBal + Number(payment.amount);
+
+    await supabase.from('wallets').update({
+      available_balance: newBal,
+      recharge_balance: Number(wallet?.recharge_balance || 0) + Number(payment.amount),
+      updated_at: new Date().toISOString(),
+    }).eq('user_id', payment.user_id);
+
+    // Update payment status
+    await supabase.from('payments').update({
+      status: 'PAID',
+      verified_at: new Date().toISOString(),
+      verified_by: adminId,
+    }).eq('id', paymentId);
+
+    // Insert wallet transaction
+    await supabase.from('wallet_transactions').insert({
+      user_id: payment.user_id,
+      type: 'RECHARGE_APPROVED',
+      amount: Number(payment.amount),
+      balance_before: currentBal,
+      balance_after: newBal,
+      reference_id: payment.utr_number || payment.id,
+      description: `⚡ Admin Approved Topup: ₹${payment.amount} (UTR: ${payment.utr_number || 'N/A'})`,
+      created_at: new Date().toISOString(),
+    });
+
+    // Notify user
+    await supabase.from('notifications').insert({
+      user_id: payment.user_id,
+      title: 'Topup Approved! ⚡',
+      message: `Your recharge of ₹${payment.amount} has been verified and added to your Topup Wallet.`,
+      type: 'SUCCESS',
+      read: false,
+      created_at: new Date().toISOString(),
+    });
+
+    return res.json({ success: true, message: 'Recharge approved successfully.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/admin/withdrawals', async (req, res) => {
+  if (!supabase) return res.json({ success: true, data: [] });
+  try {
+    const { data, error } = await supabase
+      .from('withdrawals')
+      .select('*, profiles(username, whatsapp_no, membership_number)')
+      .order('created_at', { ascending: false });
+
+    if (error) return res.status(500).json({ success: false, error: error.message });
+
+    const formatted = (data || []).map((w: any) => {
+      const prof = Array.isArray(w.profiles) ? w.profiles[0] : w.profiles;
+      return {
+        id: w.id,
+        userId: w.user_id,
+        username: prof?.username || 'User',
+        whatsappNo: prof?.whatsapp_no || '',
+        membershipNumber: prof?.membership_number || '',
+        amount: Number(w.amount || 0),
+        actualAmount: Number(w.actual_amount || w.amount || 0),
+        fee: Number(w.fee || 0),
+        status: w.status,
+        accountNumber: w.account_number || '',
+        ifscCode: w.ifsc_code || '',
+        holderName: w.holder_name || '',
+        bankName: w.bank_name || '',
+        bankRefNo: w.bank_ref_no || '',
+        rejectedReason: w.rejected_reason || '',
+        createdAt: w.created_at,
+      };
+    });
+
+    return res.json({ success: true, data: formatted });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/approve-withdrawal', async (req, res) => {
+  const { withdrawalId, bankRefNo = '', adminId = 'adm_root' } = req.body;
+  if (!withdrawalId || !supabase) return res.status(400).json({ success: false, error: 'Missing withdrawalId' });
+
+  try {
+    const { data: w, error: fetchErr } = await supabase.from('withdrawals').select('*').eq('id', withdrawalId).single();
+    if (fetchErr || !w) return res.status(404).json({ success: false, error: 'Withdrawal not found' });
+    if (w.status === 'COMPLETED') return res.json({ success: true, message: 'Already approved' });
+
+    await supabase.from('withdrawals').update({
+      status: 'COMPLETED',
+      bank_ref_no: bankRefNo || `REF-${Date.now()}`,
+      processed_at: new Date().toISOString(),
+      processed_by: adminId,
+    }).eq('id', withdrawalId);
+
+    // Update wallet total_withdrawn
+    const { data: wallet } = await supabase.from('wallets').select('*').eq('user_id', w.user_id).single();
+    if (wallet) {
+      await supabase.from('wallets').update({
+        total_withdrawn: Number(wallet.total_withdrawn || 0) + Number(w.amount),
+        updated_at: new Date().toISOString(),
+      }).eq('user_id', w.user_id);
+    }
+
+    // Insert wallet transaction
+    await supabase.from('wallet_transactions').insert({
+      user_id: w.user_id,
+      type: 'WITHDRAWAL_PAID',
+      amount: Number(w.amount),
+      balance_before: Number(wallet?.available_balance || 0),
+      balance_after: Number(wallet?.available_balance || 0),
+      reference_id: bankRefNo || w.id,
+      description: `🏦 Withdrawal Paid: ₹${w.amount} to A/C ${w.account_number} (Ref: ${bankRefNo || 'COMPLETED'})`,
+      created_at: new Date().toISOString(),
+    });
+
+    // Notify user
+    await supabase.from('notifications').insert({
+      user_id: w.user_id,
+      title: 'Withdrawal Processed! 🏦',
+      message: `Your withdrawal of ₹${w.amount} has been paid to your bank account (${w.account_number}).`,
+      type: 'SUCCESS',
+      read: false,
+      created_at: new Date().toISOString(),
+    });
+
+    return res.json({ success: true, message: 'Withdrawal marked as completed.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({

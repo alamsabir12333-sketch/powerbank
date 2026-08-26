@@ -4,7 +4,7 @@ import { PlaceholderModal } from '../components/PlaceholderModal';
 import { CustomerSupportModal } from '../components/CustomerSupportModal';
 import { fetchUserTeamSummary } from '../services/api';
 import { defaultReferralSettings } from '../data/mockData';
-import { TabType, UserTeamSummary, ReferralSettings } from '../types';
+import { TabType, UserTeamSummary, ReferralSettings, UserProfile } from '../types';
 import {
   Users,
   Copy,
@@ -22,11 +22,15 @@ import {
 } from 'lucide-react';
 
 interface TeamPageProps {
+  userId?: string;
+  userProfile?: UserProfile | null;
   onNavigateTab: (tab: TabType) => void;
   onShowToast: (msg: string) => void;
 }
 
 export const TeamPage: React.FC<TeamPageProps> = ({
+  userId,
+  userProfile,
   onNavigateTab,
   onShowToast,
 }) => {
@@ -37,10 +41,12 @@ export const TeamPage: React.FC<TeamPageProps> = ({
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  const activeUserId = userId || userProfile?.userId || userProfile?.id || '';
+
   // Dynamic team summary state
   const [teamSummary, setTeamSummary] = useState<UserTeamSummary>({
-    referralCode: '2829906',
-    referralLink: 'https://powerbank.app/invite?code=2829906',
+    referralCode: userProfile?.referralCode || '2829906',
+    referralLink: `https://powerbank.app/invite?code=${userProfile?.referralCode || '2829906'}`,
     totalMembers: 0,
     directMembers: 0,
     activeDevices: 0,
@@ -64,10 +70,12 @@ export const TeamPage: React.FC<TeamPageProps> = ({
   });
 
   const loadTeamData = async () => {
+    if (!activeUserId) {
+      setLoading(false);
+      return;
+    }
     try {
-      const session = localStorage.getItem('pb_session');
-      const userId = session ? JSON.parse(session).userId : 'usr_demo_01';
-      const data = await fetchUserTeamSummary(userId);
+      const data = await fetchUserTeamSummary(activeUserId);
       setTeamSummary(data);
     } catch (e) {
       console.warn('Error fetching dynamic team summary:', e);
@@ -78,7 +86,7 @@ export const TeamPage: React.FC<TeamPageProps> = ({
 
   useEffect(() => {
     loadTeamData();
-  }, []);
+  }, [activeUserId]);
 
   const copyCode = () => {
     navigator.clipboard.writeText(teamSummary.referralCode);

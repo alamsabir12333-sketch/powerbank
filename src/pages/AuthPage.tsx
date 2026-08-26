@@ -18,10 +18,9 @@ import {
 } from 'lucide-react';
 import { RegisterFormData, LoginFormData, UserProfile } from '../types';
 import {
-  registerUserAccount,
-  loginUserAccount,
   verifyReferralCode,
 } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 
 interface AuthPageProps {
   initialMode?: 'register' | 'login';
@@ -40,6 +39,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   onShowToast,
   onModeChange,
 }) => {
+  const { signUp, signIn } = useAuth();
   const [mode, setMode] = useState<'register' | 'login'>(initialMode);
 
   // Registration Form State
@@ -160,7 +160,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         referralCode: referralCode.trim().toUpperCase() || undefined,
       };
 
-      const result = await registerUserAccount(formData);
+      const result = await signUp(formData);
 
       // Clear pending invite code once registered
       if (typeof window !== 'undefined') {
@@ -170,8 +170,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
       onShowToast?.('Account created successfully! Welcome to Power Bank.');
 
-      // Build initial user profile
-      const newProfile: UserProfile = {
+      // Build initial verified user profile
+      const newProfile: UserProfile = result.profile || {
         id: result.user?.id || 'usr_' + Date.now(),
         userId: result.user?.id || 'usr_' + Date.now(),
         username: username.trim(),
@@ -186,7 +186,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         status: 'active',
         deviceEarnings: 0,
         teamEarnings: 0,
-        walletBalance: 0,
+        walletBalance: 50.0,
       };
 
       onAuthSuccess(newProfile, true);
@@ -218,9 +218,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         password: loginPassword,
       };
 
-      const user = await loginUserAccount(formData);
-      const { fetchUserProfile } = await import('../services/api');
-      const profile = await fetchUserProfile(user.id);
+      const profile = await signIn(formData);
 
       onShowToast?.(`Welcome back, ${profile.username || 'Member'}!`);
       onAuthSuccess(profile, false);

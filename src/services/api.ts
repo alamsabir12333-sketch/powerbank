@@ -151,6 +151,37 @@ function saveLocal<T>(key: string, val: T): void {
   }
 }
 
+// Clear all user session and authenticated state storage
+export function clearAuthenticatedStorage() {
+  const keysToRemove = [
+    STORAGE_KEYS.SESSION,
+    STORAGE_KEYS.PROFILE,
+    STORAGE_KEYS.WALLET,
+    STORAGE_KEYS.TRANSACTIONS,
+    STORAGE_KEYS.PURCHASES,
+    STORAGE_KEYS.PAYMENTS,
+    STORAGE_KEYS.WITHDRAWALS,
+    STORAGE_KEYS.BANKS,
+    STORAGE_KEYS.NOTIFICATIONS,
+    STORAGE_KEYS.EARNINGS,
+    STORAGE_KEYS.CLAIMS,
+    STORAGE_KEYS.DAILY_CHECKIN,
+    STORAGE_KEYS.GIFT_CODE_CLAIMS,
+    STORAGE_KEYS.MISSION_CLAIMS,
+    STORAGE_KEYS.REFERRAL_STREAKS,
+    STORAGE_KEYS.REFERRAL_REWARDS,
+    STORAGE_KEYS.BALANCE_ADJUSTMENTS,
+  ];
+  keysToRemove.forEach((key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch {}
+  });
+  try {
+    sessionStorage.removeItem('pb_session');
+  } catch {}
+}
+
 // Initialize seed data if not present
 function initializeMockStore() {
   if (!localStorage.getItem(STORAGE_KEYS.PLANS)) {
@@ -164,129 +195,6 @@ function initializeMockStore() {
   }
   if (!localStorage.getItem(STORAGE_KEYS.REFERRAL_SETTINGS)) {
     saveLocal(STORAGE_KEYS.REFERRAL_SETTINGS, defaultReferralSettings);
-  }
-  if (!localStorage.getItem(STORAGE_KEYS.PROFILE)) {
-    const defaultProfile: UserProfile = {
-      id: 'usr_demo_01',
-      userId: 'usr_demo_01',
-      username: 'power_admin',
-      whatsappNo: '9500667390',
-      name: 'Power Bank Member',
-      mobile: '9500667390',
-      email: 'demo@powerbank.app',
-      membershipNumber: '2829906',
-      referralCode: '2829906',
-      role: 'admin', // Demo account has admin privilege to test full approval cycle
-      status: 'active',
-      deviceEarnings: 502.95,
-      teamEarnings: 0,
-      walletBalance: 74.95,
-      avatarUrl: '',
-      createdAt: new Date(Date.now() - 86400000 * 10).toISOString(),
-    };
-    saveLocal(STORAGE_KEYS.PROFILE, defaultProfile);
-  }
-  if (!localStorage.getItem(STORAGE_KEYS.LOCAL_USERS)) {
-    // Seed initial users for multi-tier referral testing (Level 1, Level 2, Level 3)
-    const seedUsers: UserProfile[] = [
-      {
-        id: 'usr_sub_01',
-        userId: 'usr_sub_01',
-        username: 'Aman Sharma',
-        whatsappNo: '9845112212',
-        mobile: '9845112212',
-        email: 'aman@gainpower.io',
-        membershipNumber: 'PB1001',
-        referralCode: 'PB1001',
-        referredBy: '2829906', // Direct Level 1 of 2829906
-        role: 'user',
-        status: 'active',
-        deviceEarnings: 150.00,
-        teamEarnings: 80.00,
-        walletBalance: 120.00,
-        createdAt: new Date(Date.now() - 86400000 * 5).toISOString(),
-      },
-      {
-        id: 'usr_sub_02',
-        userId: 'usr_sub_02',
-        username: 'Rajesh Kumar',
-        whatsappNo: '9120445588',
-        mobile: '9120445588',
-        email: 'rajesh@gainpower.io',
-        membershipNumber: 'PB1002',
-        referralCode: 'PB1002',
-        referredBy: '2829906', // Direct Level 1 of 2829906
-        role: 'user',
-        status: 'active',
-        deviceEarnings: 280.00,
-        teamEarnings: 40.00,
-        walletBalance: 310.00,
-        createdAt: new Date(Date.now() - 86400000 * 4).toISOString(),
-      },
-      {
-        id: 'usr_sub_03',
-        userId: 'usr_sub_03',
-        username: 'Pooja Verma',
-        whatsappNo: '9440667734',
-        mobile: '9440667734',
-        email: 'pooja@gainpower.io',
-        membershipNumber: 'PB1003',
-        referralCode: 'PB1003',
-        referredBy: '2829906', // Direct Level 1 of 2829906
-        role: 'user',
-        status: 'active',
-        deviceEarnings: 0.00,
-        teamEarnings: 0.00,
-        walletBalance: 50.00,
-        createdAt: new Date(Date.now() - 86400000 * 3).toISOString(),
-      },
-      {
-        id: 'usr_sub_04',
-        userId: 'usr_sub_04',
-        username: 'Vikas Singh',
-        whatsappNo: '9811223332',
-        mobile: '9811223332',
-        email: 'vikas@gainpower.io',
-        membershipNumber: 'PB2001',
-        referralCode: 'PB2001',
-        referredBy: 'PB1001', // Level 2 (invited by Aman PB1001)
-        role: 'user',
-        status: 'active',
-        deviceEarnings: 75.00,
-        teamEarnings: 0.00,
-        walletBalance: 85.00,
-        createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
-      },
-      {
-        id: 'usr_sub_05',
-        userId: 'usr_sub_05',
-        username: 'Sunil Rao',
-        whatsappNo: '9765112240',
-        mobile: '9765112240',
-        email: 'sunil@gainpower.io',
-        membershipNumber: 'PB3001',
-        referralCode: 'PB3001',
-        referredBy: 'PB2001', // Level 3 (invited by Vikas PB2001)
-        role: 'user',
-        status: 'active',
-        deviceEarnings: 45.00,
-        teamEarnings: 0.00,
-        walletBalance: 45.00,
-        createdAt: new Date(Date.now() - 86400000 * 1).toISOString(),
-      },
-    ];
-    saveLocal(STORAGE_KEYS.LOCAL_USERS, seedUsers);
-  }
-  if (!localStorage.getItem(STORAGE_KEYS.WALLET)) {
-    const defaultWallet: Wallet = {
-      id: 'wal_demo_01',
-      userId: 'usr_demo_01',
-      availableBalance: 0.00,
-      pendingBalance: 0.00,
-      totalEarned: 0.00,
-      totalWithdrawn: 0.00,
-    };
-    saveLocal(STORAGE_KEYS.WALLET, defaultWallet);
   }
   if (!localStorage.getItem(STORAGE_KEYS.NOTIFICATIONS)) {
     const seedNotifications: NotificationItem[] = [
@@ -611,201 +519,196 @@ export async function registerUserAccount(formData: RegisterFormData) {
   const userReferralCode = membershipNumber;
 
   if (isSupabaseConfigured && supabase) {
-    let authUser: any = null;
+    // 4. Create Supabase Auth User
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email: cleanEmail,
+      password,
+      options: {
+        data: {
+          username: cleanUsername,
+          whatsapp_no: cleanWhatsApp,
+          membership_number: membershipNumber,
+          referral_code: userReferralCode,
+          referred_by: verifiedReferrerId,
+        },
+      },
+    });
+
+    if (authError) {
+      if (authError.message.toLowerCase().includes('already registered')) {
+        throw new Error('This email is already registered.');
+      }
+      throw new Error(authError.message);
+    }
+
+    const authUser = authData?.user;
+    if (!authUser?.id) {
+      throw new Error('Account creation failed. Please check your details and try again.');
+    }
+
+    const effectiveUserId = authUser.id;
+
+    // Guarantee active Supabase Session by signing in if session is not returned
+    if (!authData.session) {
+      try {
+        const { error: signInErr } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        });
+        if (signInErr) {
+          console.warn('[AUTH] Immediate post-signup sign-in notice:', signInErr.message);
+        }
+      } catch (err) {
+        console.warn('[AUTH] Immediate sign-in caught:', err);
+      }
+    }
+
+    // 5. Execute Atomic Onboarding (Server-Side Endpoint + Direct Fallback)
     try {
-      // 4. Create Supabase Auth User
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password,
-        options: {
-          data: {
+      const response = await fetch('/api/auth/onboarding', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: effectiveUserId,
+          username: cleanUsername,
+          whatsappNo: cleanWhatsApp,
+          email: cleanEmail,
+          membershipNumber,
+          referralCode: userReferralCode,
+          referredBy: verifiedReferrerId,
+        }),
+      });
+
+      if (!response.ok) {
+        // Fall through to client RPC / safe check
+      }
+    } catch (apiErr) {
+      // Fall through to client RPC / safe check
+    }
+
+    // 6. Direct Client RPC / Safe Insert Fallback
+    try {
+      await supabase.rpc('handle_user_onboarding', {
+        p_user_id: effectiveUserId,
+        p_username: cleanUsername,
+        p_whatsapp_no: cleanWhatsApp,
+        p_email: cleanEmail,
+        p_membership_number: membershipNumber,
+        p_referral_code: userReferralCode,
+        p_referred_by: verifiedReferrerId || null,
+      });
+    } catch (rpcErr) {
+      // If RPC is unavailable, perform conditional insert
+      try {
+        const { data: pExist } = await supabase.from('profiles').select('id').eq('user_id', effectiveUserId).maybeSingle();
+        if (!pExist) {
+          await supabase.from('profiles').insert({
+            user_id: effectiveUserId,
             username: cleanUsername,
             whatsapp_no: cleanWhatsApp,
+            email: cleanEmail,
             membership_number: membershipNumber,
             referral_code: userReferralCode,
             referred_by: verifiedReferrerId,
-          },
-        },
-      });
-
-      if (authError) {
-        if (authError.message.toLowerCase().includes('already registered')) {
-          throw new Error('This email is already registered.');
+            role: 'user',
+            status: 'active',
+            updated_at: new Date().toISOString(),
+          });
         }
-        throw new Error(authError.message);
+      } catch (profErr) {
+        // Ignore duplicate or existing
       }
 
-      authUser = authData?.user;
-    } catch (err: any) {
-      if (err.message && (err.message.includes('already') || err.message.includes('password') || err.message.includes('valid'))) {
-        throw err;
-      }
-      // If auth signUp fails due to table missing or config, fall through
-    }
-
-    const effectiveUserId = authUser?.id || 'usr_' + Date.now();
-
-    // Fetch dynamic system settings for Sign-up Welcome Bonus
-    const sysSettings = await fetchSystemSettings();
-    const signUpBonus = (sysSettings.isSignUpBonusEnabled !== false && typeof sysSettings.signUpBonusAmount === 'number' && sysSettings.signUpBonusAmount > 0)
-      ? Number(sysSettings.signUpBonusAmount)
-      : 0;
-
-    // 5. Create Profile Record in Supabase if table exists
-    try {
-      const { error: profileError } = await supabase.from('profiles').insert({
-        user_id: effectiveUserId,
-        username: cleanUsername,
-        whatsapp_no: cleanWhatsApp,
-        email: cleanEmail,
-        membership_number: membershipNumber,
-        referral_code: userReferralCode,
-        referred_by: verifiedReferrerId,
-        role: 'user',
-        status: 'active',
-      });
-
-      if (profileError && !isTableMissingError(profileError)) {
-        if (profileError.code === '23505') {
-          if (profileError.message.includes('username')) throw new Error('Username is already taken.');
-          if (profileError.message.includes('whatsapp_no')) throw new Error('This WhatsApp number is already registered.');
-          if (profileError.message.includes('email')) throw new Error('This email is already registered.');
+      try {
+        const { data: wExist } = await supabase.from('wallets').select('id').eq('user_id', effectiveUserId).maybeSingle();
+        if (!wExist) {
+          await supabase.from('wallets').insert({
+            user_id: effectiveUserId,
+            available_balance: 50.0,
+            recharge_balance: 50.0,
+            withdraw_balance: 0.0,
+            pending_balance: 0.0,
+            total_earned: 0.0,
+            total_withdrawn: 0.0,
+            updated_at: new Date().toISOString(),
+          });
         }
-      }
-    } catch (err: any) {
-      if (err.message && (err.message.includes('already taken') || err.message.includes('registered'))) {
-        throw err;
+      } catch (walErr) {
+        // Ignore duplicate or existing
       }
     }
 
-    // 6. Create Wallet Record in Supabase if table exists
-    try {
-      await supabase.from('wallets').insert({
-        user_id: effectiveUserId,
-        topup_balance: signUpBonus,
-        withdraw_balance: 0.00,
-        available_balance: 0.00,
-        earned_balance: 0.00,
-        recharge_balance: signUpBonus,
-        pending_balance: 0.00,
-        total_earned: 0.00,
-        total_withdrawn: 0.00,
-      });
+    // 7. Verify that profile and wallet can be queried from Supabase
+    let verifiedProfile: any = null;
+    let verifiedWallet: any = null;
 
-      if (signUpBonus > 0) {
-        await supabase.from('wallet_transactions').insert({
-          id: 'tx_signup_' + Date.now(),
-          user_id: effectiveUserId,
-          type: 'SIGNUP_BONUS',
-          amount: signUpBonus,
-          balance_before: 0.00,
-          balance_after: signUpBonus,
-          balance_type: 'TOPUP_WALLET',
-          status: 'Completed',
-          reference_id: 'SIGNUP-BONUS',
-          description: `🎁 Welcome Sign-up Bonus: ₹${signUpBonus.toFixed(2)} (Topup Wallet)`,
-          created_at: new Date().toISOString(),
-        });
-      }
-    } catch (err) {
-      // ignore
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { data: pData } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('user_id', effectiveUserId)
+        .maybeSingle();
+
+      const { data: wData } = await supabase
+        .from('wallets')
+        .select('*')
+        .eq('user_id', effectiveUserId)
+        .maybeSingle();
+
+      if (pData) verifiedProfile = pData;
+      if (wData) verifiedWallet = wData;
+
+      if (verifiedProfile && verifiedWallet) break;
+      await new Promise((resolve) => setTimeout(resolve, 300));
     }
 
-    // 7. Create Welcome Notification in Supabase if table exists
-    try {
-      await supabase.from('notifications').insert({
-        user_id: effectiveUserId,
-        title: 'Welcome to Power Bank! 🎉',
-        message: signUpBonus > 0
-          ? `Welcome to Power Bank! A sign-up welcome bonus of ₹${signUpBonus.toFixed(2)} has been credited to your Topup Wallet (for purchasing power bank plans).`
-          : 'Your account has been registered successfully. Explore the Purchase Hall to start generating daily yields.',
-        is_read: false,
-      });
-    } catch (err) {
-      // ignore
-    }
-
-    // Always mirror to local persistence for maximum UI stability
     const newProfile: UserProfile = {
-      id: effectiveUserId,
+      id: verifiedProfile?.id || effectiveUserId,
       userId: effectiveUserId,
-      username: cleanUsername,
-      whatsappNo: cleanWhatsApp,
-      name: cleanUsername,
-      mobile: cleanWhatsApp,
+      username: verifiedProfile?.username || cleanUsername,
+      whatsappNo: verifiedProfile?.whatsapp_no || cleanWhatsApp,
+      name: verifiedProfile?.username || cleanUsername,
+      mobile: verifiedProfile?.whatsapp_no || cleanWhatsApp,
       email: cleanEmail,
-      membershipNumber,
-      referralCode: userReferralCode,
-      referredBy: verifiedReferrerId || undefined,
-      role: 'user',
-      status: 'active',
+      membershipNumber: verifiedProfile?.membership_number || membershipNumber,
+      referralCode: verifiedProfile?.referral_code || userReferralCode,
+      referredBy: verifiedProfile?.referred_by || verifiedReferrerId || undefined,
+      role: verifiedProfile?.role || 'user',
+      status: verifiedProfile?.status || 'active',
       deviceEarnings: 0,
       teamEarnings: 0,
-      walletBalance: 0,
-      createdAt: new Date().toISOString(),
+      walletBalance: Number(verifiedWallet?.available_balance || 0),
+      createdAt: verifiedProfile?.created_at || new Date().toISOString(),
     };
-    saveLocal(STORAGE_KEYS.PROFILE, newProfile);
-    const existingUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
-    saveLocal(STORAGE_KEYS.LOCAL_USERS, [...existingUsers.filter((u) => u.userId !== effectiveUserId), newProfile]);
 
     const newWallet: Wallet = {
-      id: 'wal_' + effectiveUserId,
+      id: verifiedWallet?.id || 'wal_' + effectiveUserId,
       userId: effectiveUserId,
-      topupBalance: signUpBonus,
-      withdrawBalance: 0.00,
-      availableBalance: 0.00,
-      rechargeBalance: signUpBonus,
-      earnedBalance: 0.00,
-      pendingBalance: 0.00,
-      totalEarned: 0.00,
-      totalWithdrawn: 0.00,
+      topupBalance: Number(verifiedWallet?.recharge_balance ?? 50.0),
+      withdrawBalance: Number(verifiedWallet?.withdraw_balance ?? 0.0),
+      availableBalance: Number(verifiedWallet?.available_balance ?? 50.0),
+      rechargeBalance: Number(verifiedWallet?.recharge_balance ?? 50.0),
+      earnedBalance: Number(verifiedWallet?.withdraw_balance ?? 0.0),
+      pendingBalance: Number(verifiedWallet?.pending_balance ?? 0.0),
+      totalEarned: Number(verifiedWallet?.total_earned ?? 0.0),
+      totalWithdrawn: Number(verifiedWallet?.total_withdrawn ?? 0.0),
     };
+
+    // Save session and cache
+    saveLocal(STORAGE_KEYS.PROFILE, newProfile);
     saveLocal(STORAGE_KEYS.WALLET, newWallet);
     saveLocal(STORAGE_KEYS.SESSION, { userId: effectiveUserId, email: cleanEmail, username: cleanUsername, mobile: cleanWhatsApp });
 
-    if (signUpBonus > 0) {
-      const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
-      txs.unshift({
-        id: 'tx_signup_' + Date.now(),
-        userId: effectiveUserId,
-        type: 'SIGNUP_BONUS',
-        amount: signUpBonus,
-        balanceBefore: 0.00,
-        balanceAfter: signUpBonus,
-        balanceType: 'TOPUP_WALLET',
-        status: 'Completed',
-        referenceId: 'SIGNUP-BONUS',
-        description: `🎁 Welcome Sign-up Bonus: ₹${signUpBonus.toFixed(2)} (Topup Wallet)`,
-        createdAt: new Date().toISOString(),
-      });
-      saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
-
-      const notifs = getLocal<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []);
-      notifs.unshift({
-        id: 'notif_' + Date.now(),
-        userId: effectiveUserId,
-        title: 'Welcome to Power Bank! 🎉',
-        message: `Welcome to Power Bank! A sign-up welcome bonus of ₹${signUpBonus.toFixed(2)} has been credited to your Topup Wallet (for purchasing power bank plans).`,
-        type: 'SUCCESS',
-        read: false,
-        createdAt: new Date().toISOString(),
-      });
-      saveLocal(STORAGE_KEYS.NOTIFICATIONS, notifs);
-    }
-
-    if (verifiedReferrerId) {
-      processRegistrationReferralReward(effectiveUserId, verifiedReferrerId).catch(() => {});
-    }
-
-    return { user: authUser || { id: effectiveUserId, email: cleanEmail }, membershipNumber, referralCode: userReferralCode };
+    return {
+      user: authUser,
+      profile: newProfile,
+      wallet: newWallet,
+      membershipNumber: newProfile.membershipNumber,
+      referralCode: newProfile.referralCode,
+    };
   } else {
-    // Local / Offline Simulation
+    // Local Simulation
     const userId = 'usr_' + Date.now();
-    const sysSettings = await fetchSystemSettings();
-    const signUpBonus = (sysSettings.isSignUpBonusEnabled !== false && typeof sysSettings.signUpBonusAmount === 'number' && sysSettings.signUpBonusAmount > 0)
-      ? Number(sysSettings.signUpBonusAmount)
-      : 0;
-
     const newProfile: UserProfile = {
       id: userId,
       userId,
@@ -821,66 +724,34 @@ export async function registerUserAccount(formData: RegisterFormData) {
       status: 'active',
       deviceEarnings: 0,
       teamEarnings: 0,
-      walletBalance: 0,
+      walletBalance: 50.0,
       createdAt: new Date().toISOString(),
     };
-
-    saveLocal(STORAGE_KEYS.PROFILE, newProfile);
-
-    // Save into list of local users for multi-account testing
-    const existingUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
-    saveLocal(STORAGE_KEYS.LOCAL_USERS, [...existingUsers, newProfile]);
 
     const newWallet: Wallet = {
       id: 'wal_' + userId,
       userId,
-      topupBalance: signUpBonus,
+      topupBalance: 50.0,
       withdrawBalance: 0.00,
-      availableBalance: 0.00,
-      rechargeBalance: signUpBonus,
+      availableBalance: 50.00,
+      rechargeBalance: 50.00,
       earnedBalance: 0.00,
       pendingBalance: 0.00,
       totalEarned: 0.00,
       totalWithdrawn: 0.00,
     };
+
+    saveLocal(STORAGE_KEYS.PROFILE, newProfile);
     saveLocal(STORAGE_KEYS.WALLET, newWallet);
     saveLocal(STORAGE_KEYS.SESSION, { userId, email: cleanEmail, username: cleanUsername, mobile: cleanWhatsApp });
 
-    if (signUpBonus > 0) {
-      const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
-      txs.unshift({
-        id: 'tx_signup_' + Date.now(),
-        userId,
-        type: 'SIGNUP_BONUS',
-        amount: signUpBonus,
-        balanceBefore: 0.00,
-        balanceAfter: signUpBonus,
-        balanceType: 'TOPUP_WALLET',
-        status: 'Completed',
-        referenceId: 'SIGNUP-BONUS',
-        description: `🎁 Welcome Sign-up Bonus: ₹${signUpBonus.toFixed(2)} (Topup Wallet)`,
-        createdAt: new Date().toISOString(),
-      });
-      saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
-
-      const notifs = getLocal<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []);
-      notifs.unshift({
-        id: 'notif_' + Date.now(),
-        userId,
-        title: 'Welcome to Power Bank! 🎉',
-        message: `Welcome to Power Bank! A sign-up welcome bonus of ₹${signUpBonus.toFixed(2)} has been credited to your Topup Wallet (for purchasing power bank plans).`,
-        type: 'SUCCESS',
-        read: false,
-        createdAt: new Date().toISOString(),
-      });
-      saveLocal(STORAGE_KEYS.NOTIFICATIONS, notifs);
-    }
-
-    if (verifiedReferrerId) {
-      processRegistrationReferralReward(userId, verifiedReferrerId).catch(() => {});
-    }
-
-    return { user: { id: userId, email: cleanEmail }, membershipNumber, referralCode: userReferralCode };
+    return {
+      user: { id: userId, email: cleanEmail },
+      profile: newProfile,
+      wallet: newWallet,
+      membershipNumber,
+      referralCode: userReferralCode,
+    };
   }
 }
 
@@ -889,12 +760,12 @@ export async function loginUser(identifier: string, password: string) {
   if (!cleanId) throw new Error('Please enter your Username, WhatsApp No., or Email.');
   if (!password) throw new Error('Please enter your password.');
 
+  const cleanDigits = cleanId.replace(/\D/g, '');
   let targetEmail = cleanId;
 
   if (isSupabaseConfigured && supabase) {
     // If not email format, lookup email from profiles table by username or whatsapp_no
     if (!cleanId.includes('@')) {
-      const cleanDigits = cleanId.replace(/\D/g, '');
       try {
         const { data: profile } = await supabase
           .from('profiles')
@@ -942,6 +813,64 @@ export async function loginUser(identifier: string, password: string) {
         throw new Error(error.message);
       }
       if (data?.user) {
+        const loggedInUserId = data.user.id;
+        const loggedInEmail = data.user.email || targetEmail;
+
+        // Verify/ensure profile and wallet exist in Supabase
+        try {
+          const { data: pCheck } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('user_id', loggedInUserId)
+            .maybeSingle();
+
+          if (!pCheck) {
+            // Profile missing in DB: reconstruct safely from user metadata or fallback
+            const meta = data.user.user_metadata || {};
+            const recUsername = meta.username || cleanId.split('@')[0] || 'Member';
+            const recWhatsApp = (meta.whatsapp_no || cleanDigits || '9876543210').replace(/\D/g, '');
+            const recMemNo = meta.membership_number || 'PB' + Math.floor(100000 + Math.random() * 900000);
+            const recRefCode = meta.referral_code || recMemNo;
+
+            try {
+              await supabase.from('profiles').insert({
+                user_id: loggedInUserId,
+                username: recUsername,
+                whatsapp_no: recWhatsApp,
+                email: loggedInEmail,
+                membership_number: recMemNo,
+                referral_code: recRefCode,
+                role: 'user',
+                status: 'active',
+                updated_at: new Date().toISOString(),
+              });
+            } catch {}
+          }
+
+          const { data: wCheck } = await supabase
+            .from('wallets')
+            .select('*')
+            .eq('user_id', loggedInUserId)
+            .maybeSingle();
+
+          if (!wCheck) {
+            try {
+              await supabase.from('wallets').insert({
+                user_id: loggedInUserId,
+                available_balance: 50.0,
+                recharge_balance: 50.0,
+                withdraw_balance: 0.0,
+                pending_balance: 0.0,
+                total_earned: 0.0,
+                total_withdrawn: 0.0,
+                updated_at: new Date().toISOString(),
+              });
+            } catch {}
+          }
+        } catch (recoveryErr) {
+          console.warn('[AUTH] Profile/wallet sync on login notice:', recoveryErr);
+        }
+
         saveLocal(STORAGE_KEYS.SESSION, { userId: data.user.id, email: data.user.email || targetEmail, mobile: cleanId });
       }
       return data.user;
@@ -994,11 +923,11 @@ export async function logoutUser() {
   if (isSupabaseConfigured && supabase) {
     try {
       await supabase.auth.signOut();
-    } catch {
-      // ignore
+    } catch (e) {
+      console.warn('[AUTH] Supabase signOut error:', e);
     }
   }
-  localStorage.removeItem(STORAGE_KEYS.SESSION);
+  clearAuthenticatedStorage();
 }
 
 export async function getCurrentUser() {
@@ -1006,11 +935,10 @@ export async function getCurrentUser() {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) return session.user;
+      return null;
     } catch {
-      // fallback
+      return null;
     }
-    const session = getLocal<{ userId: string; email: string } | null>(STORAGE_KEYS.SESSION, null);
-    return session ? { id: session.userId, email: session.email } : null;
   } else {
     const session = getLocal<{ userId: string; email: string } | null>(STORAGE_KEYS.SESSION, null);
     return session ? { id: session.userId, email: session.email } : null;
@@ -4490,12 +4418,26 @@ export async function fetchAdminAuditLogs(): Promise<import('../types').AuditLog
  * Fetch Full Aggregated Dashboard Statistics
  */
 export async function fetchAdminDashboardStats(): Promise<import('../types').AdminDashboardStats> {
+  // First try backend API endpoint
+  try {
+    const apiRes = await fetch('/api/admin/dashboard-stats');
+    if (apiRes.ok) {
+      const json = await apiRes.json();
+      if (json.success && json.data) {
+        return json.data;
+      }
+    }
+  } catch (e) {
+    // Continue to direct Supabase or local store
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
-      const [profilesRes, walletsRes, paymentsRes, withdrawalsRes, purchasesRes, earningsRes] = await Promise.all([
+      const [profilesRes, walletsRes, paymentsRes, depositsRes, withdrawalsRes, purchasesRes, earningsRes] = await Promise.all([
         supabase.from('profiles').select('id, status'),
-        supabase.from('wallets').select('available_balance'),
+        supabase.from('wallets').select('available_balance, recharge_balance, withdraw_balance'),
         supabase.from('payments').select('amount, status'),
+        supabase.from('deposit_transactions').select('amount, status'),
         supabase.from('withdrawals').select('amount, status'),
         supabase.from('purchases').select('amount, status, plan_category, plans(category)'),
         supabase.from('earnings').select('amount, status, earning_type'),
@@ -4504,6 +4446,7 @@ export async function fetchAdminDashboardStats(): Promise<import('../types').Adm
       const profiles = profilesRes.data || [];
       const wallets = walletsRes.data || [];
       const payments = paymentsRes.data || [];
+      const deposits = depositsRes.data || [];
       const withdrawals = withdrawalsRes.data || [];
       const purchases = purchasesRes.data || [];
       const earnings = earningsRes.data || [];
@@ -4512,10 +4455,15 @@ export async function fetchAdminDashboardStats(): Promise<import('../types').Adm
       const activeUsers = profiles.filter((p) => p.status === 'active').length;
       const totalWalletBalance = +wallets.reduce((acc, w) => acc + Number(w.available_balance || 0), 0).toFixed(2);
 
-      const totalRecharge = +payments.filter((p) => p.status === 'PAID').reduce((acc, p) => acc + Number(p.amount || 0), 0).toFixed(2);
-      const pendingRecharge = +payments.filter((p) => p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING').reduce((acc, p) => acc + Number(p.amount || 0), 0).toFixed(2);
+      const paidManual = payments.filter((p) => p.status === 'PAID').reduce((acc, p) => acc + Number(p.amount || 0), 0);
+      const paidGateway = deposits.filter((d) => d.status === 'SUCCESS' || d.status === 'COMPLETED').reduce((acc, d) => acc + Number(d.amount || 0), 0);
+      const totalRecharge = +(paidManual + paidGateway).toFixed(2);
 
-      const totalWithdrawals = +withdrawals.filter((w) => w.status === 'COMPLETED').reduce((acc, w) => acc + Number(w.amount || 0), 0).toFixed(2);
+      const pendingManual = payments.filter((p) => p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING').reduce((acc, p) => acc + Number(p.amount || 0), 0);
+      const pendingGateway = deposits.filter((d) => d.status === 'PENDING').reduce((acc, d) => acc + Number(d.amount || 0), 0);
+      const pendingRecharge = +(pendingManual + pendingGateway).toFixed(2);
+
+      const totalWithdrawals = +withdrawals.filter((w) => w.status === 'COMPLETED' || w.status === 'SUCCESS').reduce((acc, w) => acc + Number(w.amount || 0), 0).toFixed(2);
       const pendingWithdrawals = +withdrawals.filter((w) => w.status === 'PENDING' || w.status === 'PROCESSING').reduce((acc, w) => acc + Number(w.amount || 0), 0).toFixed(2);
 
       const activePurchases = purchases.filter((p) => p.status === 'ACTIVE');
@@ -6006,104 +5954,124 @@ export async function createUniVePayDeposit(params: {
   amount: number;
   error?: string;
 }> {
-  if (!isSupabaseConfigured || !supabase) {
-    throw new Error('Supabase client is not configured.');
-  }
-
   const numAmount = Number(params.amount);
   if (isNaN(numAmount) || numAmount < 100) {
     throw new Error('Minimum top up amount is ₹100');
   }
 
-  // 1. Obtain the CURRENT authenticated session
-  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+  // 1. Resolve active user ID and session token
+  let effectiveUserId = params.userId;
+  let accessToken: string | null = null;
 
-  // 2. Safe diagnostic logging before the payment invocation (NEVER log the actual access_token)
-  console.log('[UNIVEPAY AUTH DEBUG]', {
-    hasSession: !!sessionData?.session,
-    hasAccessToken: !!sessionData?.session?.access_token,
-    userId: sessionData?.session?.user?.id || null,
-    tokenParts: sessionData?.session?.access_token
-      ? sessionData.session.access_token.split('.').length
-      : 0,
-    supabaseUrl: supabaseUrl,
-  });
-
-  if (sessionError || !sessionData?.session || !sessionData.session.access_token) {
-    throw new Error('Please login again');
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData?.session?.access_token) {
+        accessToken = sessionData.session.access_token;
+      }
+      if (!effectiveUserId && sessionData?.session?.user?.id) {
+        effectiveUserId = sessionData.session.user.id;
+      }
+    } catch (authErr) {
+      console.warn('[UNIVEPAY AUTH] Error getting session:', authErr);
+    }
   }
 
-  const accessToken = sessionData.session.access_token;
+  // Fallback to local storage user state if session not directly available
+  if (!effectiveUserId) {
+    try {
+      const localUser = getLocal<UserProfile | null>(STORAGE_KEYS.USER, null);
+      if (localUser?.id) {
+        effectiveUserId = localUser.id;
+      }
+    } catch {}
+  }
 
-  let response: Response;
+  if (!effectiveUserId && !accessToken) {
+    throw new Error('Please login to your account to initiate a recharge.');
+  }
+
+  // 2. Primary: Call Express backend /api/univepay/create-payment
   try {
-    // 3. Invoke Supabase Edge Function create-univepay-payment with the REAL session access token
-    response = await fetch(`${supabaseUrl}/functions/v1/create-univepay-payment`, {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (accessToken) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+    }
+
+    const res = await fetch('/api/univepay/create-payment', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': supabaseAnonKey,
-        'Authorization': `Bearer ${accessToken}`,
-      },
+      headers,
       body: JSON.stringify({
         amount: numAmount,
+        userId: effectiveUserId,
         payCode: params.payCode || '印度UPI-银台',
       }),
     });
-  } catch (networkErr: any) {
-    console.error('[UNIVEPAY][FRONTEND] Network error invoking create-univepay-payment:', networkErr);
-    return {
-      success: false,
-      traceno: '',
-      amount: numAmount,
-      error: 'Network connection failed. Please check your internet connection and try again.',
-    };
+
+    const data = await res.json().catch(() => null);
+
+    if (res.ok && data?.success && data?.payUrl) {
+      return {
+        success: true,
+        status: '00',
+        traceno: data.traceno,
+        payUrl: data.payUrl,
+        payOrderid: data.payOrderid,
+        amount: Number(data.payAmount || numAmount),
+      };
+    }
+
+    if (data && data.success === false && data.error && !data.error.includes('gateway temporarily unavailable')) {
+      return {
+        success: false,
+        traceno: data?.traceno || '',
+        amount: numAmount,
+        error: data.error,
+      };
+    }
+  } catch (backendErr: any) {
+    console.warn('[UNIVEPAY] Backend /api/univepay/create-payment error:', backendErr);
   }
 
-  // 4. Safe HTTP diagnostics (NEVER log Authorization header or secrets)
-  console.log('[UNIVEPAY HTTP DEBUG]', {
-    status: response.status,
-    ok: response.ok,
-  });
+  // 3. Fallback to Supabase Edge Function if edge function is configured
+  if (supabaseUrl && supabaseAnonKey && accessToken) {
+    try {
+      const edgeRes = await fetch(`${supabaseUrl}/functions/v1/create-univepay-payment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': supabaseAnonKey,
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          amount: numAmount,
+          payCode: params.payCode || '印度UPI-银台',
+        }),
+      });
 
-  let data: any = null;
-  try {
-    data = await response.json();
-  } catch (parseErr) {
-    console.error('[UNIVEPAY][FRONTEND] JSON parse error:', parseErr);
-  }
-
-  if (!response.ok || !data) {
-    const errorMsg = data?.error || data?.message || `HTTP ${response.status} error`;
-    console.error('[UNIVEPAY][FRONTEND] Edge Function error:', errorMsg);
-    return {
-      success: false,
-      traceno: '',
-      amount: numAmount,
-      error: response.status === 401 || errorMsg.includes('401') || errorMsg.includes('Unauthorized')
-        ? 'Please login again'
-        : errorMsg.includes('100')
-        ? 'Minimum top up amount is ₹100'
-        : (data?.error || 'Payment gateway temporarily unavailable. Please try again.'),
-    };
-  }
-
-  if (!data.success || data.status !== '00' || !data.payUrl) {
-    return {
-      success: false,
-      traceno: data?.traceno || '',
-      amount: numAmount,
-      error: data?.error || 'Payment gateway temporarily unavailable. Please try again.',
-    };
+      const edgeData = await edgeRes.json().catch(() => null);
+      if (edgeRes.ok && edgeData?.success && edgeData?.payUrl) {
+        return {
+          success: true,
+          status: '00',
+          traceno: edgeData.traceno,
+          payUrl: edgeData.payUrl,
+          payOrderid: edgeData.payOrderid,
+          amount: Number(edgeData.payAmount || numAmount),
+        };
+      }
+    } catch (edgeErr) {
+      console.warn('[UNIVEPAY] Edge function fallback error:', edgeErr);
+    }
   }
 
   return {
-    success: true,
-    status: '00',
-    traceno: data.traceno,
-    payUrl: data.payUrl,
-    payOrderid: data.payOrderid,
-    amount: Number(data.payAmount || numAmount),
+    success: false,
+    traceno: '',
+    amount: numAmount,
+    error: 'Payment gateway temporarily unavailable. Please use the manual UPI QR recharge option below.',
   };
 }
 
@@ -6118,35 +6086,47 @@ export async function checkUniVePayDepositStatus(traceno: string, amount?: numbe
     return { success: false, status: 'PENDING' };
   }
 
+  // 1. Check backend /api/univepay/query-deposit
+  try {
+    const res = await fetch('/api/univepay/query-deposit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ traceno }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.success) {
+        return {
+          success: true,
+          status: data.status || 'PENDING',
+          data: data.data || data,
+          amount: data.amount ? Number(data.amount) : amount,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[UNIVEPAY] Backend query-deposit error:', err);
+  }
+
+  // 2. Fallback to Supabase direct query
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'apikey': supabaseAnonKey,
-      };
-      if (sessionData?.session?.access_token) {
-        headers['Authorization'] = `Bearer ${sessionData.session.access_token}`;
-      }
-      const response = await fetch(`${supabaseUrl}/functions/v1/univepay-order-query`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ traceno }),
-      });
+      const { data: dep } = await supabase
+        .from('deposit_transactions')
+        .select('*')
+        .eq('traceno', traceno)
+        .maybeSingle();
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data) {
-          return {
-            success: data.success ?? true,
-            status: data.status || 'PENDING',
-            data: data.data || data,
-            amount: data.amount ? Number(data.amount) : amount,
-          };
-        }
+      if (dep) {
+        return {
+          success: true,
+          status: dep.status || 'PENDING',
+          data: dep,
+          amount: dep.amount ? Number(dep.amount) : amount,
+        };
       }
-    } catch (fnErr) {
-      console.warn('[UNIVEPAY][QUERY] univepay-order-query error:', fnErr);
+    } catch (dbErr) {
+      console.warn('[UNIVEPAY] DB query error:', dbErr);
     }
   }
 

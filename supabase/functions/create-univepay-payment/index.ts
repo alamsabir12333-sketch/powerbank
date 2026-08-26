@@ -48,38 +48,26 @@ serve(async (req) => {
     // PART 2 — AUTHENTICATION SECURITY: Determine user from Supabase JWT
     // =========================================================================
     const authHeader = req.headers.get("Authorization") || "";
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
 
-    if (!authHeader.startsWith("Bearer ")) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    let authenticatedUserId: string | null = null;
+    if (token) {
+      const { data: userData, error: authError } = await supabase.auth.getUser(token);
+      if (!authError && userData?.user?.id) {
+        authenticatedUserId = userData.user.id;
+      }
     }
-
-    const token = authHeader.substring(7).trim();
-
-    if (!token) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const { data: { user }, error: userError } =
-      await supabase.auth.getUser(token);
-
-    if (userError || !user) {
-      console.error("[UNIVEPAY AUTH] Invalid user token:", userError?.message);
-      return new Response(
-        JSON.stringify({ success: false, error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const userId = user.id;
 
     const requestJson = await req.json().catch(() => ({}));
     const { amount, payCode = "印度UPI-银台" } = requestJson;
+
+    // Strict validation: Must be an authenticated user
+    if (!authenticatedUserId) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Unauthorized. Please login to continue." }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 401 }
+      );
+    }
 
     const numAmount = Number(amount);
     if (!numAmount || numAmount < 100) {
@@ -101,7 +89,7 @@ serve(async (req) => {
     // PART 4 & 5 — DATABASE ORDER CREATION: Call RPC create_univepay_deposit_order
     // =========================================================================
     const { data: rpcResult, error: rpcErr } = await supabase.rpc("create_univepay_deposit_order", {
-      p_user_id: userId,
+      p_user_id: authenticatedUserId,
       p_amount: numAmount,
       p_traceno: traceno,
       p_pay_code: payCode,
