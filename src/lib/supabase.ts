@@ -1,11 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
 
 const metaEnv = (import.meta as any).env || {};
-const rawUrl = metaEnv.VITE_SUPABASE_URL || '';
+const rawUrl = metaEnv.VITE_SUPABASE_URL || 'https://evhwqlnymvoduclmzshz.supabase.co';
 const supabaseAnonKey = metaEnv.VITE_SUPABASE_ANON_KEY || '';
 
 export const formatSupabaseUrl = (url: string): string => {
-  if (!url) return '';
+  if (!url) return 'https://evhwqlnymvoduclmzshz.supabase.co';
   const trimmed = url.trim();
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     return trimmed;
@@ -14,7 +14,7 @@ export const formatSupabaseUrl = (url: string): string => {
   if (/^[a-z0-9-]+$/i.test(trimmed)) {
     return `https://${trimmed}.supabase.co`;
   }
-  return '';
+  return 'https://evhwqlnymvoduclmzshz.supabase.co';
 };
 
 const supabaseUrl = formatSupabaseUrl(rawUrl);

@@ -5994,84 +5994,84 @@ export async function archiveAdminNotification(batchId: string, adminId: string)
 // ==============================================================================
 
 export async function createUniVePayDeposit(params: {
-  userId: string;
   amount: number;
-  name?: string;
-  email?: string;
-  phone?: string;
+  userId?: string;
   payCode?: string;
 }): Promise<{
   success: boolean;
+  status?: string;
   traceno: string;
   payUrl?: string;
   payOrderid?: string;
   amount: number;
   error?: string;
 }> {
-  try {
-    let authHeader: Record<string, string> = {};
-    if (supabase) {
-      try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        if (sessionData?.session?.access_token) {
-          authHeader['Authorization'] = `Bearer ${sessionData.session.access_token}`;
-        }
-      } catch (tokenErr) {}
-    }
-
-    const res = await fetch('/api/univepay/create-payment', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...authHeader,
-      },
-      body: JSON.stringify({
-        userId: params.userId,
-        amount: params.amount,
-        payCode: params.payCode || '印度UPI-银台',
-      }),
-    });
-
-    const data = await res.json();
-    if (!res.ok || !data.success) {
-      throw new Error(data.error || 'Failed to create Univepay payment order');
-    }
-
-    return {
-      success: true,
-      traceno: data.traceno,
-      payUrl: data.payUrl,
-      payOrderid: data.payOrderid,
-      amount: params.amount,
-    };
-  } catch (err: any) {
-    console.warn('Backend Univepay create-payment error, checking Supabase function fallback:', err.message);
-
-    if (isSupabaseConfigured && supabase) {
-      try {
-        const { data, error } = await supabase.functions.invoke('create-univepay-payment', {
-          body: {
-            userId: params.userId,
-            amount: params.amount,
-            payCode: params.payCode || '印度UPI-银台',
-          },
-        });
-        if (!error && data?.success) {
-          return {
-            success: true,
-            traceno: data.traceno,
-            payUrl: data.payUrl,
-            payOrderid: data.payOrderid,
-            amount: params.amount,
-          };
-        }
-      } catch (fnErr) {
-        console.warn('Supabase edge function fallback failed:', fnErr);
-      }
-    }
-
-    throw err;
+  if (!isSupabaseConfigured || !supabase) {
+    throw new Error('Supabase client is not configured.');
   }
+
+  const numAmount = Number(params.amount);
+  if (isNaN(numAmount) || numAmount < 100) {
+    throw new Error('Minimum top up amount is ₹100');
+  }
+
+  // 1. Obtain the CURRENT authenticated session
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError || !sessionData?.session || !sessionData.session.access_token) {
+    throw new Error('Please login again');
+  }
+
+  // 2. Safe diagnostic logging before the payment invocation (NEVER log the actual access_token)
+  console.log('[UNIVEPAY AUTH]', {
+    hasSession: !!sessionData.session,
+    hasAccessToken: !!sessionData.session?.access_token,
+    userId: sessionData.session?.user?.id || null,
+    supabaseUrl: 'https://evhwqlnymvoduclmzshz.supabase.co',
+  });
+
+  // 3. Invoke Supabase Edge Function create-univepay-payment with the REAL session access token
+  const { data, error } = await supabase.functions.invoke('create-univepay-payment', {
+    body: {
+      amount: numAmount,
+      payCode: params.payCode || '印度UPI-银台',
+    },
+    headers: {
+      Authorization: `Bearer ${sessionData.session.access_token}`,
+    },
+  });
+
+  if (error) {
+    console.error('[UNIVEPAY][FRONTEND] Edge Function invocation error:', error);
+    const msg = error.message || 'Payment gateway temporarily unavailable. Please try again.';
+    return {
+      success: false,
+      traceno: '',
+      amount: numAmount,
+      error: msg.includes('401') || msg.includes('Unauthorized')
+        ? 'Please login again'
+        : msg.includes('100')
+        ? 'Minimum top up amount is ₹100'
+        : 'Payment gateway temporarily unavailable. Please try again.',
+    };
+  }
+
+  if (!data || !data.success || data.status !== '00' || !data.payUrl) {
+    return {
+      success: false,
+      traceno: data?.traceno || '',
+      amount: numAmount,
+      error: data?.error || 'Payment gateway temporarily unavailable. Please try again.',
+    };
+  }
+
+  return {
+    success: true,
+    status: '00',
+    traceno: data.traceno,
+    payUrl: data.payUrl,
+    payOrderid: data.payOrderid,
+    amount: Number(data.payAmount || numAmount),
+  };
 }
 
 export async function checkUniVePayDepositStatus(traceno: string, amount?: number): Promise<{
@@ -6079,35 +6079,38 @@ export async function checkUniVePayDepositStatus(traceno: string, amount?: numbe
   status: string;
   data?: any;
   amount?: number;
+  error?: string;
 }> {
-  try {
-    const res = await fetch('/api/univepay/query-deposit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ traceno }),
-    });
-    const data = await res.json();
-    return {
-      success: data.success ?? true,
-      status: data.status || 'PENDING',
-      data: data.data,
-      amount: data.amount,
-    };
-  } catch (e: any) {
-    if (isSupabaseConfigured && supabase) {
-      try {
-        const { data } = await supabase
-          .from('deposit_transactions')
-          .select('*')
-          .eq('traceno', traceno)
-          .maybeSingle();
-        if (data) {
-          return { success: true, status: data.status, data };
-        }
-      } catch (sbErr) {}
-    }
+  if (!traceno) {
     return { success: false, status: 'PENDING' };
   }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const headers: Record<string, string> = {};
+      if (sessionData?.session?.access_token) {
+        headers.Authorization = `Bearer ${sessionData.session.access_token}`;
+      }
+      const { data, error } = await supabase.functions.invoke('univepay-order-query', {
+        body: { traceno },
+        headers,
+      });
+
+      if (!error && data) {
+        return {
+          success: data.success ?? true,
+          status: data.status || 'PENDING',
+          data: data.data || data,
+          amount: data.amount ? Number(data.amount) : amount,
+        };
+      }
+    } catch (fnErr) {
+      console.warn('[UNIVEPAY][QUERY] univepay-order-query error:', fnErr);
+    }
+  }
+
+  return { success: true, status: 'PENDING' };
 }
 
 export async function submitUniVePayUtrSupplement(

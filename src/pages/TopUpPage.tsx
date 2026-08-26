@@ -106,10 +106,14 @@ export const TopUpPage: React.FC<TopUpPageProps> = ({
     if (!activeTraceno) return;
     const interval = setInterval(async () => {
       try {
-        const result = await checkUniVePayDepositStatus(activeTraceno);
+        const result = await checkUniVePayDepositStatus(activeTraceno, activeAmount);
         if (result.status === 'SUCCESS') {
           onShowToast(`Recharge of ₹${result.amount || activeAmount} successful!`);
           if (onRefreshData) onRefreshData();
+          setActiveTraceno(null);
+          clearInterval(interval);
+        } else if (result.status === 'FAILED' || result.status === 'REJECTED' || result.status === 'EXPIRED') {
+          onShowToast('Payment was not completed or has expired.');
           setActiveTraceno(null);
           clearInterval(interval);
         }
@@ -179,6 +183,11 @@ export const TopUpPage: React.FC<TopUpPageProps> = ({
   };
 
   const handleProceedTopUp = async () => {
+    if (!userId) {
+      onShowToast('Please log in to continue.');
+      return;
+    }
+
     if (activeAmount < 100) {
       onShowToast('Minimum top up amount is ₹100.');
       return;
@@ -192,14 +201,13 @@ export const TopUpPage: React.FC<TopUpPageProps> = ({
 
     try {
       const order = await createUniVePayDeposit({
-        userId,
         amount: activeAmount,
         payCode: '印度UPI-银台',
       });
 
       if (order.success && order.payUrl && typeof order.payUrl === 'string' && (order.payUrl.startsWith('https://') || order.payUrl.startsWith('http://'))) {
         setActiveTraceno(order.traceno);
-        onShowToast(`Opening Univepay payment gateway for ₹${activeAmount}...`);
+        onShowToast(`Opening UniVePay payment gateway for ₹${activeAmount}...`);
 
         // Redirect user to the official gateway checkout URL
         try {
@@ -210,11 +218,13 @@ export const TopUpPage: React.FC<TopUpPageProps> = ({
         return;
       }
 
-      // If status is not 00 or payUrl is missing/invalid, show error without opening manual modal
-      onShowToast('Payment gateway temporarily unavailable. Please try again.');
+      // If status is not 00 or payUrl is missing/invalid, show safe error without opening manual modal
+      const errMessage = order.error || 'Payment gateway temporarily unavailable. Please try again.';
+      onShowToast(errMessage);
     } catch (err: any) {
-      console.error('Univepay payment initiation error:', err.message);
-      onShowToast('Payment gateway temporarily unavailable. Please try again.');
+      console.error('UniVePay payment initiation error:', err);
+      const safeMessage = err.message || 'Payment gateway temporarily unavailable. Please try again.';
+      onShowToast(safeMessage);
     } finally {
       setIsRedirecting(false);
     }
