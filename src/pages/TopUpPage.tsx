@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import React, { useState, useEffect, useRef } from 'react';
+import { supabase } from '../lib/supabaseClient';
 import { Wallet } from '../types';
-import { checkUniVePayDepositStatus } from '../services/api';
 import { ChevronLeft, FileText, Loader2, Sparkles } from 'lucide-react';
 
 interface TopUpPageProps {
@@ -25,69 +24,48 @@ export default function TopUpPage({
 }: TopUpPageProps) {
   const [selectedAmount, setSelectedAmount] = useState<number>(500);
   const [customAmount, setCustomAmount] = useState<string>('');
-  const [balance, setBalance] = useState<number>(() => propWallet?.rechargeBalance ?? propWallet?.availableBalance ?? 50.0);
+  const [balance, setBalance] = useState<number>(() => propWallet?.rechargeBalance ?? propWallet?.availableBalance ?? 0.0);
   const [loading, setLoading] = useState<boolean>(false);
   const [userProfile, setUserProfile] = useState<any>(null);
-  const [activeTraceno, setActiveTraceno] = useState<string | null>(null);
+  const pollingRef = useRef<any>(null);
+
+  const fetchWallet = async (uid: string) => {
+    if (!supabase) return;
+    try {
+      const { data: wallet } = await supabase.from('wallets').select('balance, recharge_balance, available_balance').eq('user_id', uid).maybeSingle();
+      if (wallet) {
+        setBalance(wallet.balance ?? wallet.recharge_balance ?? wallet.available_balance ?? 0);
+      }
+    } catch (_e) {}
+  };
 
   useEffect(() => {
     async function loadUserData() {
       try {
         if (!supabase) return;
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
+        const { data: { user } } = await supabase.auth.getUser();
         const effectiveId = user?.id || propUserId;
         if (effectiveId) {
-          const { data: walletData } = await supabase
-            .from('wallets')
-            .select('balance, recharge_balance, available_balance')
-            .eq('user_id', effectiveId)
-            .maybeSingle();
-
-          if (walletData) {
-            setBalance(walletData.balance ?? walletData.recharge_balance ?? walletData.available_balance ?? 0);
-          }
-
+          await fetchWallet(effectiveId);
           const { data: profile } = await supabase.from('profiles').select('*').eq('id', effectiveId).maybeSingle();
           if (profile) setUserProfile(profile);
         }
       } catch (e) {
-        console.warn('Error loading user wallet in TopUpPage:', e);
+        console.warn('Error loading user profile in TopUpPage:', e);
       }
     }
     loadUserData();
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
   }, [propUserId]);
 
-  // Sync prop balance when available
+  // Sync with propWallet updates
   useEffect(() => {
     if (propWallet) {
       setBalance(propWallet.rechargeBalance ?? propWallet.availableBalance ?? 0);
     }
   }, [propWallet]);
-
-  // Polling for automated payment confirmation
-  useEffect(() => {
-    if (!activeTraceno) return;
-    const interval = setInterval(async () => {
-      try {
-        const result = await checkUniVePayDepositStatus(activeTraceno);
-        if (result.status === 'SUCCESS') {
-          const notifyMsg = `Recharge of ₹${result.amount || selectedAmount} successfully credited!`;
-          if (onShowToast) onShowToast(notifyMsg);
-          else alert(notifyMsg);
-          if (onRefreshData) onRefreshData();
-          setActiveTraceno(null);
-          clearInterval(interval);
-        } else if (result.status === 'FAILED' || result.status === 'EXPIRED') {
-          setActiveTraceno(null);
-          clearInterval(interval);
-        }
-      } catch (_e) {}
-    }, 4000);
-
-    return () => clearInterval(interval);
-  }, [activeTraceno, onRefreshData, onShowToast, selectedAmount]);
 
   const handleTopUp = async () => {
     const finalAmount = customAmount ? parseFloat(customAmount) : selectedAmount;
@@ -103,9 +81,7 @@ export default function TopUpPage({
       let currentUserId = propUserId;
       let currentUserEmail = 'customer@example.com';
       if (supabase) {
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
+        const { data: { user } } = await supabase.auth.getUser();
         if (user) {
           currentUserId = user.id;
           currentUserEmail = user.email || 'customer@example.com';
@@ -116,7 +92,6 @@ export default function TopUpPage({
         throw new Error('Please log in first');
       }
 
-      // Invoke Supabase Edge Function create-payin-order
       let response: any = null;
       if (supabase) {
         try {
@@ -135,7 +110,6 @@ export default function TopUpPage({
       }
 
       if (!response || response?.error || !response?.data?.success) {
-        // Fallback to Express backend API route if edge function is unreachable
         const res = await fetch('/api/create-payin-order', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -155,22 +129,46 @@ export default function TopUpPage({
         throw new Error(response?.error?.message || response?.data?.msg || response?.data?.error || 'Payment initiation failed');
       }
 
-      const payUrl = response.data.payUrl;
-      const orderId = response.data.orderId || response.data.traceno;
-      if (orderId) {
-        setActiveTraceno(orderId);
+      const { payUrl, orderId } = response.data;
+
+      // Start fallback status polling in background
+      if (supabase && orderId) {
+        let attempts = 0;
+        pollingRef.current = setInterval(async () => {
+          attempts++;
+          try {
+            const { data: order } = await supabase
+              .from('deposit_transactions')
+              .select('status')
+              .eq('order_id', orderId)
+              .maybeSingle();
+
+            if (order?.status === 'SUCCESS') {
+              clearInterval(pollingRef.current);
+              await fetchWallet(currentUserId!);
+              if (onRefreshData) onRefreshData();
+              const successMsg = 'Deposit successful! Balance updated.';
+              if (onShowToast) onShowToast(successMsg);
+              else alert(successMsg);
+            }
+          } catch (_err) {}
+
+          if (attempts > 40) {
+            clearInterval(pollingRef.current);
+          }
+        }, 3000);
       }
 
       if (onShowToast) {
-        onShowToast(`Redirecting to Payment Gateway for ₹${finalAmount}...`);
+        onShowToast(`Redirecting to payment gateway for ₹${finalAmount}...`);
       }
 
-      // Redirect user to Gateway checkout
+      // Open Payment Page
       window.location.href = payUrl;
     } catch (err: any) {
-      const errorMsg = err.message || 'Payment initiation failed';
-      if (onShowToast) onShowToast(errorMsg);
-      else alert(errorMsg);
+      const errText = err.message || 'Payment failed';
+      if (onShowToast) onShowToast(errText);
+      else alert(errText);
     } finally {
       setLoading(false);
     }
@@ -178,36 +176,35 @@ export default function TopUpPage({
 
   return (
     <div className="flex flex-col min-h-screen bg-[#F8F9FA] text-[#1A202C]">
-      {/* Curved Orange Header */}
-      <div className="bg-gradient-to-b from-[#FF5500] to-[#FF6E1A] text-white pt-6 pb-14 px-4 rounded-b-[32px] relative shadow-md shadow-orange-600/10">
+      {/* Orange Top Bar */}
+      <div className="bg-[#FF5500] text-white pt-8 pb-14 px-4 rounded-b-[30px] relative shadow-md shadow-orange-600/10">
         <div className="flex items-center justify-between max-w-lg mx-auto">
           <button
             onClick={() => (onBack ? onBack() : window.history.back())}
-            className="w-9 h-9 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-xs flex items-center justify-center transition-colors cursor-pointer"
+            className="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center transition-colors cursor-pointer"
           >
             <ChevronLeft className="w-5 h-5 text-white" />
           </button>
-          <h1 className="text-lg font-bold tracking-wide">Top Up</h1>
+          <h1 className="text-lg font-semibold tracking-wide">Top Up</h1>
           <button
             onClick={() => onNavigateTab && onNavigateTab('transactions')}
-            className="w-9 h-9 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-xs flex items-center justify-center transition-colors cursor-pointer"
+            className="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center transition-colors cursor-pointer"
           >
             <FileText className="w-4 h-4 text-white" />
           </button>
         </div>
       </div>
 
-      {/* Main Form Container */}
+      {/* Amount Selector Card */}
       <div className="px-4 -mt-8 flex-1 max-w-lg mx-auto w-full pb-10">
-        <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 flex flex-col items-center">
-          <h2 className="text-4xl sm:text-5xl font-black text-[#1A202C] tracking-tight">
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col items-center">
+          <h2 className="text-4xl font-black text-[#1A202C]">
             ₹{customAmount || selectedAmount.toLocaleString('en-IN')}
           </h2>
-          <p className="text-gray-400 text-xs sm:text-sm mt-1.5 font-medium">
+          <p className="text-gray-400 text-sm mt-1">
             Available balance: ₹{balance.toFixed(2)}
           </p>
 
-          {/* Preset Buttons Grid */}
           <div className="grid grid-cols-3 gap-3 w-full mt-6">
             {PRESET_AMOUNTS.map((amt) => {
               const isSelected = selectedAmount === amt && !customAmount;
@@ -221,15 +218,15 @@ export default function TopUpPage({
                     setSelectedAmount(amt);
                     setCustomAmount('');
                   }}
-                  className={`py-3.5 px-2 rounded-2xl font-bold relative border transition-all cursor-pointer flex flex-col items-center justify-center ${
+                  className={`py-3 rounded-xl font-bold relative border transition-all cursor-pointer ${
                     isSelected
-                      ? 'border-[#FF5500] text-[#FF5500] bg-[#FFF5F0] shadow-xs ring-1 ring-[#FF5500]'
-                      : 'border-gray-100 text-gray-800 bg-gray-50 hover:bg-gray-100'
+                      ? 'border-[#FF5500] text-[#FF5500] bg-[#FFF5F0]'
+                      : 'border-gray-100 text-gray-800 bg-gray-50/50 hover:bg-gray-100'
                   }`}
                 >
-                  <span className="text-base sm:text-lg">₹{amt}</span>
+                  ₹{amt}
                   {isRecommended && (
-                    <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-[#FF5500] text-white text-[9px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap shadow-xs flex items-center gap-0.5">
+                    <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-[#FF5500] text-white text-[9px] px-1.5 py-0.2 rounded-full whitespace-nowrap flex items-center gap-0.5 font-semibold">
                       <Sparkles className="w-2.5 h-2.5" /> Recommended
                     </span>
                   )}
@@ -238,31 +235,26 @@ export default function TopUpPage({
             })}
           </div>
 
-          {/* Custom Amount Input */}
-          <div className="w-full mt-7">
-            <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-base">₹</span>
-              <input
-                type="number"
-                placeholder="Or enter other amount (Min ₹100)"
-                value={customAmount}
-                onChange={(e) => setCustomAmount(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-200 focus:border-[#FF5500] rounded-2xl pl-8 pr-4 py-3.5 text-sm font-semibold text-gray-900 focus:outline-none transition-colors placeholder:text-gray-400"
-              />
-            </div>
+          <div className="w-full mt-6">
+            <input
+              type="number"
+              placeholder="₹ Or enter other amount (Min ₹100)"
+              value={customAmount}
+              onChange={(e) => setCustomAmount(e.target.value)}
+              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-[#FF5500] text-gray-900 font-medium"
+            />
           </div>
 
-          {/* Submit Action Button */}
           <button
             type="button"
             onClick={handleTopUp}
             disabled={loading}
-            className="w-full mt-8 bg-[#FF5500] hover:bg-[#E04B00] active:scale-[0.99] text-white font-bold py-4 rounded-2xl shadow-lg shadow-[#FF5500]/25 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer text-base"
+            className="w-full mt-8 bg-[#FF5500] hover:bg-[#E04B00] text-white font-bold py-4 rounded-2xl shadow-lg shadow-[#FF5500]/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer text-base"
           >
             {loading ? (
               <>
                 <Loader2 className="w-5 h-5 animate-spin" />
-                <span>Processing Payment...</span>
+                <span>Processing...</span>
               </>
             ) : (
               <span>Top Up</span>

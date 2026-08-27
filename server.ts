@@ -524,7 +524,7 @@ const handleCreatePayment = async (req: express.Request, res: express.Response) 
   const notifyUrl = supabaseBaseUrl
     ? `${supabaseBaseUrl}/functions/v1/payment-callback`
     : `${appUrl}/api/payment-callback`;
-  const callbackUrl = `${appUrl}/`;
+  const callbackUrl = process.env.GATEWAY_CALLBACK_URL || 'https://gainpower-top-1.com/wallet?status=success';
 
   // Initialize canonical deposit transaction record
   if (supabase) {

@@ -1014,6 +1014,110 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 
+-- 5.3.1 ATOMIC DEPOSIT SUCCESS (DIRECT RPC FOR CALLBACK/WEBHOOK)
+DROP FUNCTION IF EXISTS public.process_deposit_success CASCADE;
+DROP FUNCTION IF EXISTS public.process_deposit_success(TEXT, TEXT, JSONB) CASCADE;
+DROP FUNCTION IF EXISTS public.process_deposit_success(TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS public.process_deposit_success(TEXT) CASCADE;
+
+CREATE OR REPLACE FUNCTION public.process_deposit_success(
+    p_order_id TEXT,
+    p_serial_no TEXT DEFAULT NULL,
+    p_raw_callback JSONB DEFAULT '{}'::JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_amount NUMERIC(12, 2);
+    v_status TEXT;
+    v_old_balance NUMERIC(12, 2) := 0;
+    v_new_balance NUMERIC(12, 2) := 0;
+BEGIN
+    -- Lock transaction record
+    SELECT user_id, amount, status 
+    INTO v_user_id, v_amount, v_status
+    FROM public.deposit_transactions
+    WHERE order_id = p_order_id OR traceno = p_order_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('success', false, 'error', 'ORDER_NOT_FOUND');
+    END IF;
+
+    -- Prevent duplicate processing
+    IF v_status = 'SUCCESS' THEN
+        RETURN jsonb_build_object('success', true, 'message', 'ALREADY_PROCESSED');
+    END IF;
+
+    -- Update deposit record
+    UPDATE public.deposit_transactions
+    SET status = 'SUCCESS',
+        serial_no = COALESCE(p_serial_no, serial_no),
+        raw_response = p_raw_callback,
+        updated_at = now()
+    WHERE order_id = p_order_id OR traceno = p_order_id;
+
+    -- Credit user wallet if user exists
+    IF v_user_id IS NOT NULL THEN
+        INSERT INTO public.wallets (user_id, balance, recharge_balance, available_balance, created_at, updated_at)
+        VALUES (v_user_id, 0, 0, 0, now(), now())
+        ON CONFLICT (user_id) DO NOTHING;
+
+        SELECT COALESCE(balance, recharge_balance, available_balance, 0) INTO v_old_balance 
+        FROM public.wallets 
+        WHERE user_id = v_user_id 
+        FOR UPDATE;
+
+        v_new_balance := v_old_balance + v_amount;
+
+        UPDATE public.wallets
+        SET balance = v_new_balance,
+            recharge_balance = COALESCE(recharge_balance, 0) + v_amount,
+            available_balance = COALESCE(available_balance, 0) + v_amount,
+            updated_at = now()
+        WHERE user_id = v_user_id;
+
+        -- Sync profiles table if exists
+        BEGIN
+            UPDATE public.profiles
+            SET balance = v_new_balance,
+                updated_at = now()
+            WHERE id = v_user_id;
+        EXCEPTION WHEN OTHERS THEN
+            NULL;
+        END;
+
+        -- Record ledger entries
+        BEGIN
+            INSERT INTO public.wallet_transactions (user_id, wallet_type, amount, type, status, reference_id, description, created_at)
+            VALUES (v_user_id, 'TOPUP', v_amount, 'DEPOSIT', 'COMPLETED', p_order_id, 'Online Gateway TopUp', now());
+        EXCEPTION WHEN OTHERS THEN
+            NULL;
+        END;
+
+        BEGIN
+            INSERT INTO public.wallet_ledger (user_id, balance_before, amount, balance_after, transaction_type, reference_id, created_at)
+            VALUES (v_user_id, v_old_balance, v_amount, v_new_balance, 'DEPOSIT_SUCCESS', p_order_id, now());
+        EXCEPTION WHEN OTHERS THEN
+            NULL;
+        END;
+    END IF;
+
+    RETURN jsonb_build_object(
+        'success', true, 
+        'order_id', p_order_id, 
+        'credited_amount', v_amount, 
+        'new_balance', v_new_balance
+    );
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.process_deposit_success TO anon, authenticated, service_role;
+
+
 -- 5.4 ATOMIC DISCRETE HOURLY YIELD CALCULATION
 DROP FUNCTION IF EXISTS public.settle_and_calculate_earnings CASCADE;
 CREATE OR REPLACE FUNCTION public.settle_and_calculate_earnings(p_user_id UUID)

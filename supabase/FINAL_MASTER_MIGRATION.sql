@@ -1073,48 +1073,67 @@ GRANT EXECUTE ON FUNCTION public.handle_new_auth_user TO anon, authenticated, se
 -- ==============================================================================
 -- 7.5 ATOMIC DEPOSIT TRANSACTION PROCEDURE (CHINESE GATEWAY PAYIN / WEBHOOK)
 -- ==============================================================================
+ALTER TABLE IF EXISTS public.deposit_transactions 
+ADD COLUMN IF NOT EXISTS serial_no TEXT,
+ADD COLUMN IF NOT EXISTS raw_response JSONB;
+
 DROP FUNCTION IF EXISTS public.process_deposit_success CASCADE;
+DROP FUNCTION IF EXISTS public.process_deposit_success(TEXT, TEXT, JSONB) CASCADE;
+DROP FUNCTION IF EXISTS public.process_deposit_success(TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS public.process_deposit_success(TEXT) CASCADE;
+
 CREATE OR REPLACE FUNCTION public.process_deposit_success(
     p_order_id TEXT,
-    p_serial_no TEXT,
-    p_raw_callback JSONB
+    p_serial_no TEXT DEFAULT NULL,
+    p_raw_callback JSONB DEFAULT '{}'::JSONB
 )
-RETURNS VOID
+RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
     v_user_id UUID;
-    v_amount NUMERIC(10, 2);
+    v_amount NUMERIC(12, 2);
     v_status TEXT;
-    v_old_balance NUMERIC(10, 2);
-    v_new_balance NUMERIC(10, 2);
+    v_old_balance NUMERIC(12, 2) := 0;
+    v_new_balance NUMERIC(12, 2) := 0;
 BEGIN
-    -- 1. Lock and fetch deposit record
-    SELECT user_id, amount, status INTO v_user_id, v_amount, v_status
+    -- Lock transaction record
+    SELECT user_id, amount, status 
+    INTO v_user_id, v_amount, v_status
     FROM public.deposit_transactions
     WHERE order_id = p_order_id OR traceno = p_order_id
     FOR UPDATE;
 
-    -- 2. Process only if transaction is still PENDING
-    IF v_status = 'PENDING' OR v_status IS NULL THEN
-        -- Update deposit_transactions table
-        UPDATE public.deposit_transactions
-        SET status = 'SUCCESS',
-            serial_no = p_serial_no,
-            raw_response = p_raw_callback,
-            callback_payload = p_raw_callback,
-            completed_at = now(),
-            updated_at = now()
-        WHERE order_id = p_order_id OR traceno = p_order_id;
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('success', false, 'error', 'ORDER_NOT_FOUND');
+    END IF;
 
-        -- Fetch and update user balance in wallets table
+    -- Prevent duplicate processing
+    IF v_status = 'SUCCESS' THEN
+        RETURN jsonb_build_object('success', true, 'message', 'ALREADY_PROCESSED');
+    END IF;
+
+    -- Update deposit record
+    UPDATE public.deposit_transactions
+    SET status = 'SUCCESS',
+        serial_no = COALESCE(p_serial_no, serial_no),
+        raw_response = p_raw_callback,
+        updated_at = now()
+    WHERE order_id = p_order_id OR traceno = p_order_id;
+
+    -- Credit user wallet if user exists
+    IF v_user_id IS NOT NULL THEN
+        INSERT INTO public.wallets (user_id, balance, recharge_balance, available_balance, created_at, updated_at)
+        VALUES (v_user_id, 0, 0, 0, now(), now())
+        ON CONFLICT (user_id) DO NOTHING;
+
         SELECT COALESCE(balance, recharge_balance, available_balance, 0) INTO v_old_balance 
         FROM public.wallets 
         WHERE user_id = v_user_id 
         FOR UPDATE;
 
-        v_new_balance := COALESCE(v_old_balance, 0) + v_amount;
+        v_new_balance := v_old_balance + v_amount;
 
         UPDATE public.wallets
         SET balance = v_new_balance,
@@ -1123,19 +1142,38 @@ BEGIN
             updated_at = now()
         WHERE user_id = v_user_id;
 
-        -- Sync balance with profiles table if mirrored
-        UPDATE public.profiles
-        SET balance = v_new_balance,
-            updated_at = now()
-        WHERE id = v_user_id OR user_id = v_user_id;
+        -- Sync profiles table if exists
+        BEGIN
+            UPDATE public.profiles
+            SET balance = v_new_balance,
+                updated_at = now()
+            WHERE id = v_user_id;
+        EXCEPTION WHEN OTHERS THEN
+            NULL;
+        END;
 
-        -- Insert into wallet_transactions & wallet_ledger
-        INSERT INTO public.wallet_transactions (user_id, wallet_type, amount, type, status, reference_id, description, created_at)
-        VALUES (v_user_id, 'TOPUP', v_amount, 'DEPOSIT', 'COMPLETED', p_order_id, 'Online Gateway Recharge UPI', now());
+        -- Record ledger entries
+        BEGIN
+            INSERT INTO public.wallet_transactions (user_id, wallet_type, amount, type, status, reference_id, description, created_at)
+            VALUES (v_user_id, 'TOPUP', v_amount, 'DEPOSIT', 'COMPLETED', p_order_id, 'Online Gateway TopUp', now());
+        EXCEPTION WHEN OTHERS THEN
+            NULL;
+        END;
 
-        INSERT INTO public.wallet_ledger (user_id, balance_before, amount, balance_after, transaction_type, reference_id, created_at)
-        VALUES (v_user_id, COALESCE(v_old_balance, 0), v_amount, v_new_balance, 'DEPOSIT_SUCCESS', p_order_id, now());
+        BEGIN
+            INSERT INTO public.wallet_ledger (user_id, balance_before, amount, balance_after, transaction_type, reference_id, created_at)
+            VALUES (v_user_id, v_old_balance, v_amount, v_new_balance, 'DEPOSIT_SUCCESS', p_order_id, now());
+        EXCEPTION WHEN OTHERS THEN
+            NULL;
+        END;
     END IF;
+
+    RETURN jsonb_build_object(
+        'success', true, 
+        'order_id', p_order_id, 
+        'credited_amount', v_amount, 
+        'new_balance', v_new_balance
+    );
 END;
 $$;
 
