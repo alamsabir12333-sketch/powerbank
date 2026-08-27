@@ -1,385 +1,268 @@
 import React, { useState, useEffect } from 'react';
-import { motion } from 'motion/react';
-import {
-  ChevronLeft,
-  FileText,
-  AlertCircle,
-  CheckCircle2,
-  RefreshCw,
-  Zap,
-  QrCode,
-  ShieldCheck,
-  Copy,
-  Check,
-  Upload,
-  X,
-  ExternalLink,
-  Loader2,
-} from 'lucide-react';
-import { Wallet, PaymentSettings } from '../types';
-import {
-  fetchPaymentSettings,
-  submitRechargeRequest,
-  uploadPaymentProof,
-  createUniVePayDeposit,
-  checkUniVePayDepositStatus,
-} from '../services/api';
+import { supabase } from '../lib/supabase';
+import { Wallet } from '../types';
+import { checkUniVePayDepositStatus } from '../services/api';
+import { ChevronLeft, FileText, Loader2, Sparkles } from 'lucide-react';
 
 interface TopUpPageProps {
-  userId: string;
-  wallet: Wallet | null;
-  onBack: () => void;
-  onNavigateTab: (tab: any) => void;
-  onShowToast: (msg: string) => void;
+  userId?: string;
+  wallet?: Wallet | null;
+  onBack?: () => void;
+  onNavigateTab?: (tab: any) => void;
+  onShowToast?: (msg: string) => void;
   onRefreshData?: () => void;
 }
 
-interface PresetAmount {
-  value: number;
-  recommended?: boolean;
-}
+const PRESET_AMOUNTS = [500, 1500, 2000, 3000, 3500, 5000, 7000, 10000, 20000, 30000];
 
-const PRESET_AMOUNTS: PresetAmount[] = [
-  { value: 500 },
-  { value: 1500, recommended: true },
-  { value: 2000 },
-  { value: 3000 },
-  { value: 3500, recommended: true },
-  { value: 5000, recommended: true },
-  { value: 7000 },
-  { value: 10000 },
-  { value: 20000 },
-  { value: 30000 },
-];
-
-type ChannelType = 'payu' | 'toppay' | 'upay';
-
-interface ChannelConfig {
-  id: ChannelType;
-  name: string;
-  badge: string;
-}
-
-const CHANNELS: ChannelConfig[] = [
-  { id: 'payu', name: 'PayU', badge: 'Fast UPI' },
-  { id: 'toppay', name: 'TopPay', badge: 'Auto Scan' },
-  { id: 'upay', name: 'UPay', badge: 'Instant QR' },
-];
-
-export const TopUpPage: React.FC<TopUpPageProps> = ({
-  userId,
-  wallet,
+export default function TopUpPage({
+  userId: propUserId,
+  wallet: propWallet,
   onBack,
   onNavigateTab,
   onShowToast,
   onRefreshData,
-}) => {
+}: TopUpPageProps) {
   const [selectedAmount, setSelectedAmount] = useState<number>(500);
   const [customAmount, setCustomAmount] = useState<string>('');
-  const [isDepositModalOpen, setIsDepositModalOpen] = useState(false);
-
-  // Multi-channel deposit modal states
-  const [selectedChannel, setSelectedChannel] = useState<ChannelType>('payu');
-  const [utrNumber, setUtrNumber] = useState<string>('');
-  const [screenshotFile, setScreenshotFile] = useState<File | null>(null);
-  const [screenshotPreview, setScreenshotPreview] = useState<string | null>(null);
-  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [copiedUpi, setCopiedUpi] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [isSubmitted, setIsSubmitted] = useState(false);
-
-  const [isRedirecting, setIsRedirecting] = useState(false);
+  const [balance, setBalance] = useState<number>(() => propWallet?.rechargeBalance ?? propWallet?.availableBalance ?? 50.0);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [userProfile, setUserProfile] = useState<any>(null);
   const [activeTraceno, setActiveTraceno] = useState<string | null>(null);
 
-  const availableBalance = wallet?.rechargeBalance ?? wallet?.availableBalance ?? 7.78;
-  const activeAmount = customAmount ? parseFloat(customAmount) || selectedAmount : selectedAmount;
-
   useEffect(() => {
-    fetchPaymentSettings().then((settings) => {
-      setPaymentSettings(settings);
-    });
-  }, []);
+    async function loadUserData() {
+      try {
+        if (!supabase) return;
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        const effectiveId = user?.id || propUserId;
+        if (effectiveId) {
+          const { data: walletData } = await supabase
+            .from('wallets')
+            .select('balance, recharge_balance, available_balance')
+            .eq('user_id', effectiveId)
+            .maybeSingle();
 
-  // Poll for deposit completion when an active order is initiated
+          if (walletData) {
+            setBalance(walletData.balance ?? walletData.recharge_balance ?? walletData.available_balance ?? 0);
+          }
+
+          const { data: profile } = await supabase.from('profiles').select('*').eq('id', effectiveId).maybeSingle();
+          if (profile) setUserProfile(profile);
+        }
+      } catch (e) {
+        console.warn('Error loading user wallet in TopUpPage:', e);
+      }
+    }
+    loadUserData();
+  }, [propUserId]);
+
+  // Sync prop balance when available
+  useEffect(() => {
+    if (propWallet) {
+      setBalance(propWallet.rechargeBalance ?? propWallet.availableBalance ?? 0);
+    }
+  }, [propWallet]);
+
+  // Polling for automated payment confirmation
   useEffect(() => {
     if (!activeTraceno) return;
     const interval = setInterval(async () => {
       try {
-        const result = await checkUniVePayDepositStatus(activeTraceno, activeAmount);
+        const result = await checkUniVePayDepositStatus(activeTraceno);
         if (result.status === 'SUCCESS') {
-          onShowToast(`Recharge of ₹${result.amount || activeAmount} successful!`);
+          const notifyMsg = `Recharge of ₹${result.amount || selectedAmount} successfully credited!`;
+          if (onShowToast) onShowToast(notifyMsg);
+          else alert(notifyMsg);
           if (onRefreshData) onRefreshData();
           setActiveTraceno(null);
           clearInterval(interval);
-        } else if (result.status === 'FAILED' || result.status === 'REJECTED' || result.status === 'EXPIRED') {
-          onShowToast('Payment was not completed or has expired.');
+        } else if (result.status === 'FAILED' || result.status === 'EXPIRED') {
           setActiveTraceno(null);
           clearInterval(interval);
         }
-      } catch (e) {}
+      } catch (_e) {}
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [activeTraceno, onRefreshData, onShowToast, activeAmount]);
+  }, [activeTraceno, onRefreshData, onShowToast, selectedAmount]);
 
-  // Resolve channel details
-  const getChannelDetails = () => {
-    if (!paymentSettings) {
-      return { upiId: 'powerbank.pay@upi', qrImageUrl: '', name: 'PayU' };
-    }
-    if (selectedChannel === 'payu') {
-      return {
-        upiId: paymentSettings.payuUpiId || paymentSettings.upiId || 'payu.powerbank@upi',
-        qrImageUrl: paymentSettings.payuQrImageUrl || paymentSettings.qrImageUrl || '',
-        name: 'PayU',
-      };
-    } else if (selectedChannel === 'toppay') {
-      return {
-        upiId: paymentSettings.toppayUpiId || paymentSettings.upiId || 'toppay.powerbank@upi',
-        qrImageUrl: paymentSettings.toppayQrImageUrl || paymentSettings.qrImageUrl || '',
-        name: 'TopPay',
-      };
-    } else {
-      return {
-        upiId: paymentSettings.upayUpiId || paymentSettings.upiId || 'upay.powerbank@upi',
-        qrImageUrl: paymentSettings.upayQrImageUrl || paymentSettings.qrImageUrl || '',
-        name: 'UPay',
-      };
-    }
-  };
-
-  const channelDetails = getChannelDetails();
-
-  const handleCopyUpi = () => {
-    navigator.clipboard.writeText(channelDetails.upiId);
-    setCopiedUpi(true);
-    setTimeout(() => setCopiedUpi(false), 2000);
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (file.size > 5 * 1024 * 1024) {
-      setError('Screenshot file size must be less than 5MB.');
-      return;
-    }
-
-    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-    if (!validTypes.includes(file.type)) {
-      setError('Please upload a valid image (JPG, PNG, or WEBP).');
-      return;
-    }
-
-    setError(null);
-    setScreenshotFile(file);
-
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setScreenshotPreview(reader.result as string);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleProceedTopUp = async () => {
-    if (!userId) {
-      onShowToast('Please log in to continue.');
-      return;
-    }
-
-    if (activeAmount < 100) {
-      onShowToast('Minimum top up amount is ₹100.');
-      return;
-    }
-    setError(null);
-    setIsSubmitted(false);
-    setUtrNumber('');
-    setScreenshotFile(null);
-    setScreenshotPreview(null);
-    setIsRedirecting(true);
-
-    try {
-      const order = await createUniVePayDeposit({
-        amount: activeAmount,
-        payCode: '印度UPI-银台',
-      });
-
-      if (order.success && order.payUrl && typeof order.payUrl === 'string' && (order.payUrl.startsWith('https://') || order.payUrl.startsWith('http://'))) {
-        setActiveTraceno(order.traceno);
-        onShowToast(`Opening UniVePay payment gateway for ₹${activeAmount}...`);
-
-        // Redirect user to the official gateway checkout URL
-        try {
-          window.location.href = order.payUrl;
-        } catch (navErr) {
-          window.open(order.payUrl, '_self');
-        }
-        return;
-      }
-
-      // If status is not 00 or payUrl is missing/invalid, show safe error without opening manual modal
-      const errMessage = order.error || 'Payment gateway temporarily unavailable. Please try again.';
-      onShowToast(errMessage);
-    } catch (err: any) {
-      console.error('UniVePay payment initiation error:', err);
-      const safeMessage = err.message || 'Payment gateway temporarily unavailable. Please try again.';
-      onShowToast(safeMessage);
-    } finally {
-      setIsRedirecting(false);
-    }
-  };
-
-  const handleSubmitDeposit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!utrNumber.trim()) {
-      setError('Please enter the 12-digit UTR number from your payment receipt.');
-      return;
-    }
-    if (utrNumber.trim().length < 6) {
-      setError('Please enter a valid 12-digit UTR reference number.');
+  const handleTopUp = async () => {
+    const finalAmount = customAmount ? parseFloat(customAmount) : selectedAmount;
+    if (!finalAmount || finalAmount < 100) {
+      const msg = 'Minimum recharge is ₹100';
+      if (onShowToast) onShowToast(msg);
+      else alert(msg);
       return;
     }
 
     setLoading(true);
-    setError(null);
-
     try {
-      let uploadedProofUrl: string | undefined = undefined;
-      if (screenshotFile) {
-        uploadedProofUrl = await uploadPaymentProof(screenshotFile, userId);
+      let currentUserId = propUserId;
+      let currentUserEmail = 'customer@example.com';
+      if (supabase) {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (user) {
+          currentUserId = user.id;
+          currentUserEmail = user.email || 'customer@example.com';
+        }
       }
 
-      await submitRechargeRequest(userId, activeAmount, utrNumber.trim(), uploadedProofUrl);
+      if (!currentUserId) {
+        throw new Error('Please log in first');
+      }
 
-      setIsSubmitted(true);
-      onShowToast(`Deposit request of ₹${activeAmount} submitted via ${channelDetails.name}!`);
-      if (onRefreshData) onRefreshData();
-      setTimeout(() => {
-        setIsDepositModalOpen(false);
-      }, 2500);
+      // Invoke Supabase Edge Function create-payin-order
+      let response: any = null;
+      if (supabase) {
+        try {
+          response = await supabase.functions.invoke('create-payin-order', {
+            body: {
+              amount: finalAmount,
+              userId: currentUserId,
+              customerName: userProfile?.full_name || userProfile?.username || 'Customer',
+              customerEmail: currentUserEmail,
+              customerPhone: userProfile?.phone || '9876543210',
+            },
+          });
+        } catch (_fnErr) {
+          response = null;
+        }
+      }
+
+      if (!response || response?.error || !response?.data?.success) {
+        // Fallback to Express backend API route if edge function is unreachable
+        const res = await fetch('/api/create-payin-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            amount: finalAmount,
+            userId: currentUserId,
+            customerName: userProfile?.full_name || userProfile?.username || 'Customer',
+            customerEmail: currentUserEmail,
+            customerPhone: userProfile?.phone || '9876543210',
+          }),
+        });
+        const backendData = await res.json();
+        response = { data: backendData, error: null };
+      }
+
+      if (response?.error || !response?.data?.success || !response?.data?.payUrl) {
+        throw new Error(response?.error?.message || response?.data?.msg || response?.data?.error || 'Payment initiation failed');
+      }
+
+      const payUrl = response.data.payUrl;
+      const orderId = response.data.orderId || response.data.traceno;
+      if (orderId) {
+        setActiveTraceno(orderId);
+      }
+
+      if (onShowToast) {
+        onShowToast(`Redirecting to Payment Gateway for ₹${finalAmount}...`);
+      }
+
+      // Redirect user to Gateway checkout
+      window.location.href = payUrl;
     } catch (err: any) {
-      setError(err.message || 'Failed to submit deposit. Please try again.');
+      const errorMsg = err.message || 'Payment initiation failed';
+      if (onShowToast) onShowToast(errorMsg);
+      else alert(errorMsg);
     } finally {
       setLoading(false);
     }
   };
 
-  const qrUrl =
-    channelDetails.qrImageUrl ||
-    `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(
-      `upi://pay?pa=${channelDetails.upiId}&pn=PowerBank_${channelDetails.name}&am=${activeAmount}&cu=INR`
-    )}`;
-
   return (
-    <div className="min-h-screen bg-[#f4f6f8] text-gray-900 pb-28">
-      {/* Orange Curved Header matching App theme */}
-      <div className="relative bg-gradient-to-b from-[#FF6000] to-[#FF7A00] text-white pt-5 pb-14 px-4 overflow-hidden">
-        {/* Subtle geometric background curved waves */}
-        <div className="absolute inset-0 opacity-15 pointer-events-none">
-          <svg className="w-full h-full" viewBox="0 0 400 200" fill="none" preserveAspectRatio="none">
-            <circle cx="200" cy="-50" r="180" stroke="white" strokeWidth="1.5" />
-            <circle cx="200" cy="-50" r="230" stroke="white" strokeWidth="1.5" />
-            <circle cx="200" cy="-50" r="280" stroke="white" strokeWidth="1.5" />
-          </svg>
-        </div>
-
-        {/* Top bar with circular action buttons */}
-        <div className="relative z-10 flex items-center justify-between max-w-lg mx-auto">
+    <div className="flex flex-col min-h-screen bg-[#F8F9FA] text-[#1A202C]">
+      {/* Curved Orange Header */}
+      <div className="bg-gradient-to-b from-[#FF5500] to-[#FF6E1A] text-white pt-6 pb-14 px-4 rounded-b-[32px] relative shadow-md shadow-orange-600/10">
+        <div className="flex items-center justify-between max-w-lg mx-auto">
           <button
-            onClick={onBack}
-            className="w-9 h-9 rounded-full bg-white flex items-center justify-center text-gray-800 shadow-sm hover:bg-gray-100 transition-colors cursor-pointer"
+            onClick={() => (onBack ? onBack() : window.history.back())}
+            className="w-9 h-9 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-xs flex items-center justify-center transition-colors cursor-pointer"
           >
-            <ChevronLeft className="w-5 h-5 -ml-0.5" />
+            <ChevronLeft className="w-5 h-5 text-white" />
           </button>
-
-          <h1 className="text-lg font-bold text-white tracking-wide">Top Up</h1>
-
+          <h1 className="text-lg font-bold tracking-wide">Top Up</h1>
           <button
-            onClick={() => onNavigateTab('transactions')}
-            className="w-9 h-9 rounded-full bg-white flex items-center justify-center text-gray-800 shadow-sm hover:bg-gray-100 transition-colors cursor-pointer"
+            onClick={() => onNavigateTab && onNavigateTab('transactions')}
+            className="w-9 h-9 rounded-full bg-white/20 hover:bg-white/30 backdrop-blur-xs flex items-center justify-center transition-colors cursor-pointer"
           >
-            <FileText className="w-4 h-4" />
+            <FileText className="w-4 h-4 text-white" />
           </button>
         </div>
       </div>
 
-      {/* Main Content Container with deep rounded top corners overlapping orange header */}
-      <div className="relative -mt-6 max-w-lg mx-auto bg-white rounded-t-[32px] shadow-sm px-5 pt-7 pb-10 min-h-[calc(100vh-140px)] flex flex-col justify-between">
-        <div className="space-y-6">
-          {/* Main Top Up Amount Display */}
-          <div className="text-center space-y-1.5">
-            <div className="text-4xl sm:text-5xl font-extrabold text-gray-900 tracking-tight">
-              ₹{activeAmount.toLocaleString('en-IN')}
-            </div>
-            <p className="text-xs sm:text-sm text-gray-500 font-medium">
-              Available balance: ₹{availableBalance.toFixed(2)}
-            </p>
-          </div>
+      {/* Main Form Container */}
+      <div className="px-4 -mt-8 flex-1 max-w-lg mx-auto w-full pb-10">
+        <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 flex flex-col items-center">
+          <h2 className="text-4xl sm:text-5xl font-black text-[#1A202C] tracking-tight">
+            ₹{customAmount || selectedAmount.toLocaleString('en-IN')}
+          </h2>
+          <p className="text-gray-400 text-xs sm:text-sm mt-1.5 font-medium">
+            Available balance: ₹{balance.toFixed(2)}
+          </p>
 
-          {/* Grid of Preset Amounts (3 columns) */}
-          <div className="grid grid-cols-3 gap-3">
-            {PRESET_AMOUNTS.map((item) => {
-              const isSelected = selectedAmount === item.value && !customAmount;
+          {/* Preset Buttons Grid */}
+          <div className="grid grid-cols-3 gap-3 w-full mt-6">
+            {PRESET_AMOUNTS.map((amt) => {
+              const isSelected = selectedAmount === amt && !customAmount;
+              const isRecommended = [1500, 3500, 5000].includes(amt);
+
               return (
-                <div key={item.value} className="relative flex flex-col items-center">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedAmount(item.value);
-                      setCustomAmount('');
-                    }}
-                    className={`w-full py-4 px-2 rounded-2xl font-extrabold text-base sm:text-lg transition-all text-center flex flex-col items-center justify-center cursor-pointer ${
-                      isSelected
-                        ? 'bg-[#FFF4EB] border-2 border-[#FF6000] text-[#FF6000] shadow-sm'
-                        : 'bg-[#f8f9fa] border border-transparent text-gray-800 hover:bg-gray-100'
-                    }`}
-                  >
-                    <span>₹{item.value}</span>
-                  </button>
-
-                  {/* "Recommended" Badge attached below preset button */}
-                  {item.recommended && (
-                    <span className="bg-[#FF6000] text-white text-[9px] sm:text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm -mt-2 z-10 whitespace-nowrap">
-                      Recommended
+                <button
+                  key={amt}
+                  type="button"
+                  onClick={() => {
+                    setSelectedAmount(amt);
+                    setCustomAmount('');
+                  }}
+                  className={`py-3.5 px-2 rounded-2xl font-bold relative border transition-all cursor-pointer flex flex-col items-center justify-center ${
+                    isSelected
+                      ? 'border-[#FF5500] text-[#FF5500] bg-[#FFF5F0] shadow-xs ring-1 ring-[#FF5500]'
+                      : 'border-gray-100 text-gray-800 bg-gray-50 hover:bg-gray-100'
+                  }`}
+                >
+                  <span className="text-base sm:text-lg">₹{amt}</span>
+                  {isRecommended && (
+                    <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-[#FF5500] text-white text-[9px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap shadow-xs flex items-center gap-0.5">
+                      <Sparkles className="w-2.5 h-2.5" /> Recommended
                     </span>
                   )}
-                </div>
+                </button>
               );
             })}
           </div>
 
-          {/* Optional Custom Input */}
-          <div className="pt-1">
-            <div className="relative bg-[#f8f9fa] rounded-2xl border border-gray-200 focus-within:border-[#FF6000] transition-colors">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-sm">
-                ₹
-              </span>
+          {/* Custom Amount Input */}
+          <div className="w-full mt-7">
+            <div className="relative">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-base">₹</span>
               <input
                 type="number"
-                value={customAmount}
-                onChange={(e) => {
-                  setCustomAmount(e.target.value);
-                }}
                 placeholder="Or enter other amount (Min ₹100)"
-                className="w-full bg-transparent pl-8 pr-4 py-3 text-gray-900 font-bold text-sm outline-none placeholder:text-gray-400 placeholder:font-normal"
+                value={customAmount}
+                onChange={(e) => setCustomAmount(e.target.value)}
+                className="w-full bg-gray-50 border border-gray-200 focus:border-[#FF5500] rounded-2xl pl-8 pr-4 py-3.5 text-sm font-semibold text-gray-900 focus:outline-none transition-colors placeholder:text-gray-400"
               />
             </div>
           </div>
-        </div>
 
-        {/* Fixed / Sticky Bottom Action Button */}
-        <div className="pt-8">
+          {/* Submit Action Button */}
           <button
             type="button"
-            disabled={isRedirecting}
-            onClick={handleProceedTopUp}
-            className="w-full py-4 rounded-2xl bg-[#FF6000] hover:bg-[#E05300] active:scale-[0.99] disabled:opacity-75 text-white font-bold text-base shadow-lg shadow-orange-700/20 transition-all cursor-pointer flex items-center justify-center gap-2"
+            onClick={handleTopUp}
+            disabled={loading}
+            className="w-full mt-8 bg-[#FF5500] hover:bg-[#E04B00] active:scale-[0.99] text-white font-bold py-4 rounded-2xl shadow-lg shadow-[#FF5500]/25 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer text-base"
           >
-            {isRedirecting ? (
+            {loading ? (
               <>
                 <Loader2 className="w-5 h-5 animate-spin" />
-                <span>Connecting to Gateway...</span>
+                <span>Processing Payment...</span>
               </>
             ) : (
               <span>Top Up</span>
@@ -387,225 +270,8 @@ export const TopUpPage: React.FC<TopUpPageProps> = ({
           </button>
         </div>
       </div>
-
-      {/* Multi-Channel Deposit & UTR Verification Modal */}
-      {isDepositModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-xs">
-          <motion.div
-            initial={{ scale: 0.95, opacity: 0, y: 15 }}
-            animate={{ scale: 1, opacity: 1, y: 0 }}
-            exit={{ scale: 0.95, opacity: 0, y: 15 }}
-            className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden text-gray-900 max-h-[92vh] flex flex-col"
-          >
-            {/* Modal Header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-[#f8f9fa]">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-full bg-[#FF6000]/15 text-[#FF6000] flex items-center justify-center font-black">
-                  ₹
-                </div>
-                <div>
-                  <h3 className="font-bold text-base text-gray-900">Complete Top Up</h3>
-                  <span className="text-[11px] text-gray-500 font-medium">
-                    Deposit ₹{activeAmount.toLocaleString('en-IN')} via UPI
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={() => setIsDepositModalOpen(false)}
-                className="w-8 h-8 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-700 flex items-center justify-center cursor-pointer transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-5 overflow-y-auto no-scrollbar space-y-4">
-              {error && (
-                <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs flex items-center gap-2 font-medium">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{error}</span>
-                </div>
-              )}
-
-              {isSubmitted ? (
-                <div className="bg-orange-50 p-6 rounded-2xl border border-orange-200 text-center space-y-3 my-3">
-                  <div className="w-14 h-14 rounded-full bg-[#FF6000] text-white mx-auto flex items-center justify-center shadow-md">
-                    <CheckCircle2 className="w-8 h-8" />
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-lg text-gray-900">Top Up Request Submitted!</h4>
-                    <p className="text-xs text-gray-600 mt-1">
-                      Your deposit of <strong className="text-[#FF6000]">₹{activeAmount}</strong> via{' '}
-                      <strong>{channelDetails.name}</strong> is under review.
-                    </p>
-                    <p className="text-[11px] text-gray-500 mt-1 font-mono">UTR: {utrNumber.trim()}</p>
-                  </div>
-                </div>
-              ) : (
-                <form onSubmit={handleSubmitDeposit} className="space-y-4">
-                  {/* Select Channel (PayU, TopPay, UPay) */}
-                  <div>
-                    <label className="block text-xs font-bold text-gray-700 mb-2">
-                      1. Select Payment Channel
-                    </label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {CHANNELS.map((ch) => {
-                        const isSelected = selectedChannel === ch.id;
-                        return (
-                          <button
-                            key={ch.id}
-                            type="button"
-                            onClick={() => setSelectedChannel(ch.id)}
-                            className={`p-2.5 rounded-xl border flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
-                              isSelected
-                                ? 'bg-[#FFF4EB] border-2 border-[#FF6000] text-[#FF6000] shadow-sm'
-                                : 'bg-[#f8f9fa] border-gray-200 text-gray-700 hover:bg-gray-100'
-                            }`}
-                          >
-                            <span className="text-xs font-bold">{ch.name}</span>
-                            <span
-                              className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${
-                                isSelected ? 'bg-[#FF6000] text-white' : 'bg-gray-200 text-gray-600'
-                              }`}
-                            >
-                              {ch.badge}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* QR & UPI Section */}
-                  <div className="bg-[#f8f9fa] p-4 rounded-2xl border border-gray-200 space-y-3 text-center">
-                    <div className="flex items-center justify-between text-xs text-gray-600 font-semibold">
-                      <span className="flex items-center gap-1 text-[#FF6000]">
-                        <Zap className="w-3.5 h-3.5" /> Pay via {channelDetails.name} QR
-                      </span>
-                      <span className="text-[10px] bg-orange-100 text-orange-800 px-2 py-0.5 rounded-full font-bold">
-                        Verified Channel
-                      </span>
-                    </div>
-
-                    <div className="p-3 bg-white rounded-2xl border border-gray-200 inline-block shadow-inner">
-                      <img
-                        src={qrUrl}
-                        alt={`${channelDetails.name} QR Code`}
-                        className="w-36 h-36 object-contain mx-auto"
-                        referrerPolicy="no-referrer"
-                      />
-                      <span className="text-[10px] text-gray-500 font-bold block mt-1">
-                        Scan with GooglePay / PhonePe / Paytm / UPI
-                      </span>
-                    </div>
-
-                    {/* Copy UPI ID */}
-                    <div className="flex items-center justify-between p-2.5 bg-white rounded-xl border border-gray-200 text-left">
-                      <div className="overflow-hidden pr-2">
-                        <span className="text-[10px] text-gray-400 block font-medium">
-                          {channelDetails.name} UPI ID
-                        </span>
-                        <span className="text-xs font-mono font-bold text-gray-900 truncate block">
-                          {channelDetails.upiId}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleCopyUpi}
-                        className="px-3 py-1.5 rounded-lg bg-[#FF6000] hover:bg-[#E05300] text-white text-xs font-bold flex items-center gap-1 shrink-0 transition-colors shadow-sm cursor-pointer"
-                      >
-                        {copiedUpi ? (
-                          <>
-                            <Check className="w-3.5 h-3.5" />
-                            <span>Copied</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3.5 h-3.5" />
-                            <span>Copy</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* 12-Digit UTR Number */}
-                  <div>
-                    <label className="block text-xs font-bold text-gray-700 mb-1.5">
-                      2. Enter 12-Digit UTR / Reference No <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={utrNumber}
-                      onChange={(e) => setUtrNumber(e.target.value)}
-                      placeholder="e.g. 423985729104"
-                      className="w-full bg-[#f8f9fa] border border-gray-200 rounded-xl px-3.5 py-3 text-gray-900 font-mono text-sm focus:outline-none focus:border-[#FF6000] transition-colors"
-                    />
-                  </div>
-
-                  {/* Upload Screenshot */}
-                  <div>
-                    <label className="block text-xs font-bold text-gray-700 mb-1.5">
-                      3. Upload Payment Receipt (Optional)
-                    </label>
-                    {screenshotPreview ? (
-                      <div className="p-2 bg-[#f8f9fa] rounded-xl border border-gray-200 flex items-center justify-between">
-                        <div className="flex items-center gap-2.5 overflow-hidden">
-                          <img
-                            src={screenshotPreview}
-                            alt="Receipt"
-                            className="w-12 h-12 object-cover rounded-lg border border-gray-200"
-                          />
-                          <span className="text-xs font-semibold text-gray-800 truncate">
-                            {screenshotFile?.name}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setScreenshotFile(null);
-                            setScreenshotPreview(null);
-                          }}
-                          className="p-1.5 rounded-lg bg-red-100 text-red-600 text-xs"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ) : (
-                      <label className="border border-dashed border-gray-300 hover:border-[#FF6000] rounded-xl p-3 flex flex-col items-center justify-center cursor-pointer transition-colors bg-[#f8f9fa]">
-                        <Upload className="w-4 h-4 text-gray-400 mb-1" />
-                        <span className="text-xs text-gray-600 font-semibold">Upload Screenshot</span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={handleFileChange}
-                          className="hidden"
-                        />
-                      </label>
-                    )}
-                  </div>
-
-                  {/* Submit Button */}
-                  <button
-                    type="submit"
-                    disabled={loading || !utrNumber.trim()}
-                    className="w-full py-3.5 rounded-xl bg-[#FF6000] hover:bg-[#E05300] text-white font-bold text-sm shadow-md transition-all active:scale-[0.99] disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
-                  >
-                    {loading ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Submitting Deposit...</span>
-                      </>
-                    ) : (
-                      <span>Submit Top Up Request (₹{activeAmount})</span>
-                    )}
-                  </button>
-                </form>
-              )}
-            </div>
-          </motion.div>
-        </div>
-      )}
     </div>
   );
-};
+}
+
+export { TopUpPage };
