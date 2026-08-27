@@ -352,22 +352,33 @@ export async function checkWhatsAppAvailability(whatsappNo: string): Promise<boo
   if (!cleanNo) return true;
 
   if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id')
-      .or(`whatsapp_no.eq.${cleanNo},mobile.eq.${cleanNo}`)
-      .limit(1);
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id')
+        .or(`phone.eq.${cleanNo},whatsapp_no.eq.${cleanNo},mobile.eq.${cleanNo}`)
+        .limit(1);
 
-    if (error && error.code !== 'PGRST116') {
-      console.warn('Error checking whatsapp:', error);
+      if (error && error.code !== 'PGRST116') {
+        console.warn('Error checking phone availability:', error);
+        // Fallback check on phone directly if or filter has column mismatch
+        const { data: phoneData } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('phone', cleanNo)
+          .maybeSingle();
+        if (phoneData) return false;
+        return true;
+      }
+      return !data || data.length === 0;
+    } catch {
       return true;
     }
-    return !data || data.length === 0;
   } else {
     const allUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
     const current = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {} as UserProfile);
     const match = [...allUsers, current].find(
-      (u) => (u.whatsappNo || u.mobile) === cleanNo
+      (u) => (u.whatsappNo || u.mobile || (u as any).phone) === cleanNo
     );
     return !match;
   }
@@ -461,7 +472,7 @@ export async function verifyReferralCode(code: string): Promise<{
 export async function registerUserAccount(formData: RegisterFormData) {
   const name = (formData.name || formData.username || '').trim();
   const phone = (formData.phone || formData.whatsappNo || '').replace(/\D/g, '');
-  const cleanEmail = formData.email?.trim().toLowerCase() || `${phone}@powerbank.app`;
+  const cleanEmail = formData.email?.trim().toLowerCase() || `${phone}@gainpower.internal`;
   const cleanUsername = (formData.username || (name ? name.toLowerCase().replace(/[^a-z0-9]/g, '_') : '') || `user_${phone.slice(-4)}`).trim();
   const { password, confirmPassword, withdrawalPassword, referralCode } = formData;
 
@@ -486,6 +497,9 @@ export async function registerUserAccount(formData: RegisterFormData) {
   }
 
   const cleanRefCode = referralCode?.trim().toUpperCase() || '';
+  if (!cleanRefCode) {
+    throw new Error('Referral code is required.');
+  }
 
   // 2. Database & Phone Uniqueness Check (ONE USER = ONE ACCOUNT)
   const isPhoneFree = await checkWhatsAppAvailability(phone);
@@ -495,26 +509,24 @@ export async function registerUserAccount(formData: RegisterFormData) {
 
   // 3. Referral Verification & Self-Referral Prevention
   let verifiedReferrerId: string | null = null;
-  if (cleanRefCode) {
-    if (
-      cleanRefCode.toLowerCase() === cleanUsername.toLowerCase() ||
-      cleanRefCode.toLowerCase() === cleanEmail.toLowerCase() ||
-      cleanRefCode === phone
-    ) {
-      throw new Error('You cannot use your own referral code.');
-    }
-    const refCheck = await verifyReferralCode(cleanRefCode);
-    if (!refCheck.valid) {
-      throw new Error('Invalid referral code.');
-    }
-    if (
-      refCheck.referrerName?.toLowerCase() === cleanUsername.toLowerCase() ||
-      refCheck.referrerId === cleanUsername
-    ) {
-      throw new Error('You cannot use your own referral code.');
-    }
-    verifiedReferrerId = refCheck.referrerId || cleanRefCode;
+  if (
+    cleanRefCode.toLowerCase() === cleanUsername.toLowerCase() ||
+    cleanRefCode.toLowerCase() === cleanEmail.toLowerCase() ||
+    cleanRefCode === phone
+  ) {
+    throw new Error('You cannot use your own referral code.');
   }
+  const refCheck = await verifyReferralCode(cleanRefCode);
+  if (!refCheck.valid) {
+    throw new Error('Invalid referral code.');
+  }
+  if (
+    refCheck.referrerName?.toLowerCase() === cleanUsername.toLowerCase() ||
+    refCheck.referrerId === cleanUsername
+  ) {
+    throw new Error('You cannot use your own referral code.');
+  }
+  verifiedReferrerId = refCheck.referrerId || cleanRefCode;
 
   const membershipNumber = 'PB' + Math.floor(100000 + Math.random() * 900000);
   const userReferralCode = membershipNumber;
@@ -575,6 +587,7 @@ export async function registerUserAccount(formData: RegisterFormData) {
             whatsapp_no: phone,
             mobile: phone,
             phone: phone,
+            full_name: name,
             withdrawal_password: withdrawalPassword.trim(),
             membership_number: membershipNumber,
             referral_code: userReferralCode,
@@ -648,7 +661,7 @@ export async function registerUserAccount(formData: RegisterFormData) {
           referredBy: verifiedReferrerId,
         }),
       });
-    } catch (apiErr) {
+    } catch (_apiErr) {
       // Fall through to client RPC / safe check
     }
 
@@ -663,15 +676,18 @@ export async function registerUserAccount(formData: RegisterFormData) {
         p_referral_code: userReferralCode,
         p_referred_by: verifiedReferrerId || null,
       });
-    } catch (rpcErr) {
+    } catch (_rpcErr) {
       // If RPC is unavailable, perform conditional insert
       try {
-        const { data: pExist } = await supabase.from('profiles').select('id').eq('user_id', effectiveUserId).maybeSingle();
+        const { data: pExist } = await supabase.from('profiles').select('id').or(`id.eq.${effectiveUserId},user_id.eq.${effectiveUserId}`).maybeSingle();
         if (!pExist) {
           await supabase.from('profiles').insert({
+            id: effectiveUserId,
             user_id: effectiveUserId,
             username: cleanUsername,
+            phone: phone,
             whatsapp_no: phone,
+            full_name: name,
             email: cleanEmail,
             membership_number: membershipNumber,
             referral_code: userReferralCode,
@@ -681,17 +697,18 @@ export async function registerUserAccount(formData: RegisterFormData) {
             updated_at: new Date().toISOString(),
           });
         }
-      } catch (profErr) {
+      } catch (_profErr) {
         // Ignore duplicate or existing
       }
 
       try {
-        const { data: wExist } = await supabase.from('wallets').select('id').eq('user_id', effectiveUserId).maybeSingle();
+        const { data: wExist } = await supabase.from('wallets').select('id').or(`id.eq.${effectiveUserId},user_id.eq.${effectiveUserId}`).maybeSingle();
         if (!wExist) {
           await supabase.from('wallets').insert({
+            id: effectiveUserId,
             user_id: effectiveUserId,
-            available_balance: 50.0,
-            recharge_balance: 50.0,
+            available_balance: 0.0,
+            recharge_balance: 0.0,
             withdraw_balance: 0.0,
             pending_balance: 0.0,
             total_earned: 0.0,
@@ -699,7 +716,7 @@ export async function registerUserAccount(formData: RegisterFormData) {
             updated_at: new Date().toISOString(),
           });
         }
-      } catch (walErr) {
+      } catch (_walErr) {
         // Ignore duplicate or existing
       }
     }
@@ -830,62 +847,58 @@ export async function loginUser(identifier: string, password: string) {
 
   const cleanDigits = cleanId.replace(/\D/g, '');
   let targetEmail = cleanId;
-  let profileFound = false;
 
   if (isSupabaseConfigured && supabase) {
-    // If not email format, lookup email from profiles table by username or whatsapp_no/mobile
     if (!cleanId.includes('@')) {
       try {
         const { data: profile } = await supabase
           .from('profiles')
-          .select('email, id')
-          .or(`username.ilike.${cleanId},whatsapp_no.eq.${cleanDigits},mobile.eq.${cleanDigits}`)
+          .select('email, id, user_id')
+          .or(`phone.eq.${cleanDigits},whatsapp_no.eq.${cleanDigits},mobile.eq.${cleanDigits},username.ilike.${cleanId}`)
           .limit(1)
           .maybeSingle();
 
         if (profile?.email) {
           targetEmail = profile.email;
-          profileFound = true;
         } else {
-          // Check if fallback email format matches
-          targetEmail = `${cleanDigits || cleanId}@powerbank.app`;
+          targetEmail = `${cleanDigits || cleanId}@gainpower.internal`;
         }
       } catch {
-        targetEmail = `${cleanDigits || cleanId}@powerbank.app`;
+        targetEmail = `${cleanDigits || cleanId}@gainpower.internal`;
       }
-    } else {
-      profileFound = true;
     }
 
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      let { data, error } = await supabase.auth.signInWithPassword({
         email: targetEmail,
         password,
       });
+
+      // If initial login fails and targetEmail was @gainpower.internal, attempt fallback with @powerbank.app
+      if (error && targetEmail.endsWith('@gainpower.internal') && cleanDigits) {
+        const legacyEmail = `${cleanDigits}@powerbank.app`;
+        const legacyResult = await supabase.auth.signInWithPassword({
+          email: legacyEmail,
+          password,
+        });
+        if (!legacyResult.error && legacyResult.data) {
+          data = legacyResult.data;
+          error = null;
+          targetEmail = legacyEmail;
+        }
+      }
+
       if (error) {
         const errLower = error.message.toLowerCase();
-        if (errLower.includes('invalid login credentials') || errLower.includes('invalid_grant')) {
-          // Check local users as fallback
-          const allUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
-          const current = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {} as UserProfile);
-          const found = [...allUsers, current].find(
-            (u) =>
-              u.username?.toLowerCase() === cleanId.toLowerCase() ||
-              u.email?.toLowerCase() === cleanId.toLowerCase() ||
-              (u.whatsappNo && u.whatsappNo === cleanDigits) ||
-              (u.mobile && u.mobile === cleanDigits)
-          );
-          if (found) {
-            saveLocal(STORAGE_KEYS.SESSION, { userId: found.userId || found.id, email: found.email || targetEmail, mobile: found.mobile || cleanId });
-            saveLocal(STORAGE_KEYS.PROFILE, found);
-            return { id: found.userId || found.id, email: found.email };
-          }
-          if (!profileFound && cleanDigits.length === 10) {
-            throw new Error('Account not found. Please register first.');
-          }
-          throw new Error('Invalid phone number or password.');
+        if (
+          errLower.includes('invalid login credentials') ||
+          errLower.includes('invalid_grant') ||
+          errLower.includes('user not found') ||
+          errLower.includes('email not confirmed')
+        ) {
+          throw new Error('Account not found or password incorrect. Please register first.');
         }
-        throw new Error(error.message || 'Invalid phone number or password.');
+        throw new Error(error.message || 'Account not found or password incorrect. Please register first.');
       }
       if (data?.user) {
         const loggedInUserId = data.user.id;
@@ -2552,6 +2565,36 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
   saveLocal(STORAGE_KEYS.WALLET, wallet);
   saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
 
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase.from('purchases').insert({
+        user_id: userId,
+        plan_id: plan.id,
+        plan_name: plan.name,
+        plan_category: newPurchase.planCategory,
+        amount: planPrice,
+        hourly_rate: hourlyRate,
+        earning_rate: hourlyRate,
+        daily_earnings: dailyEarning,
+        duration_days: durationDays,
+        instant_bonus: instantBonus,
+        total_earned: 0,
+        claimable_earnings: 0,
+        status: 'ACTIVE',
+      });
+
+      await supabase.from('wallets').update({
+        recharge_balance: wallet.rechargeBalance,
+        withdraw_balance: wallet.withdrawBalance,
+        available_balance: (wallet.rechargeBalance || 0) + (wallet.withdrawBalance || 0),
+        total_earned: wallet.totalEarned || 0,
+        updated_at: new Date().toISOString(),
+      }).eq('user_id', userId);
+    } catch (dbErr) {
+      console.warn('[PURCHASE] Supabase sync notice:', dbErr);
+    }
+  }
+
   // Create Notification
   const notifs = getLocal<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []);
   notifs.unshift({
@@ -3377,12 +3420,12 @@ export async function saveBankAccount(
         id: newBank.id,
         user_id: userId,
         account_holder_name: newBank.accountHolderName,
+        holder_name: newBank.accountHolderName,
         bank_name: newBank.bankName,
         account_number: newBank.accountNumber,
         ifsc: newBank.ifsc,
+        ifsc_code: newBank.ifsc,
         is_default: newBank.isDefault,
-        is_deleted: false,
-        status: 'active',
       });
       if (error && !isTableMissingError(error)) {
         console.warn('Supabase save bank error:', error.message);
@@ -3494,16 +3537,20 @@ export async function deleteBankAccount(userId: string, bankId: string): Promise
 
   if (isSupabaseConfigured && supabase) {
     try {
-      await supabase
+      // Direct delete or soft delete
+      const { error: delErr } = await supabase
         .from('bank_accounts')
-        .update({
-          is_deleted: true,
-          status: 'deleted',
-          is_default: false,
-          updated_at: new Date().toISOString(),
-        })
+        .delete()
         .eq('id', bankId)
         .eq('user_id', userId);
+
+      if (delErr) {
+        await supabase
+          .from('bank_accounts')
+          .update({ is_default: false })
+          .eq('id', bankId)
+          .eq('user_id', userId);
+      }
 
       // Re-assign default if needed
       const remainingActive = banks.find((b) => b.userId === userId && !b.isDeleted && b.status !== 'deleted');

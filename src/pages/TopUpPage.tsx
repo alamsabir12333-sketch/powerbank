@@ -79,18 +79,26 @@ export default function TopUpPage({
     setLoading(true);
     try {
       let currentUserId = propUserId;
-      let currentUserEmail = 'customer@example.com';
+      let currentUserEmail = '';
+      let currentUserPhone = userProfile?.phone || userProfile?.whatsapp_no || userProfile?.mobile || '';
+
       if (supabase) {
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
           currentUserId = user.id;
-          currentUserEmail = user.email || 'customer@example.com';
+          currentUserEmail = user.email || '';
+          if (!currentUserPhone && user.user_metadata?.phone) {
+            currentUserPhone = user.user_metadata.phone;
+          }
         }
       }
 
       if (!currentUserId) {
         throw new Error('Please log in first');
       }
+
+      const effectivePhone = currentUserPhone || userProfile?.phone || userProfile?.whatsapp_no || '9999999999';
+      const effectiveEmail = currentUserEmail || `${effectivePhone}@gainpower.internal`;
 
       let response: any = null;
       if (supabase) {
@@ -99,9 +107,9 @@ export default function TopUpPage({
             body: {
               amount: finalAmount,
               userId: currentUserId,
-              customerName: userProfile?.full_name || userProfile?.username || 'Customer',
-              customerEmail: currentUserEmail,
-              customerPhone: userProfile?.phone || '9876543210',
+              customerName: userProfile?.full_name || userProfile?.username || userProfile?.name || 'Customer',
+              customerEmail: effectiveEmail,
+              customerPhone: effectivePhone,
             },
           });
         } catch (_fnErr) {
@@ -116,9 +124,9 @@ export default function TopUpPage({
           body: JSON.stringify({
             amount: finalAmount,
             userId: currentUserId,
-            customerName: userProfile?.full_name || userProfile?.username || 'Customer',
-            customerEmail: currentUserEmail,
-            customerPhone: userProfile?.phone || '9876543210',
+            customerName: userProfile?.full_name || userProfile?.username || userProfile?.name || 'Customer',
+            customerEmail: effectiveEmail,
+            customerPhone: effectivePhone,
           }),
         });
         const backendData = await res.json();

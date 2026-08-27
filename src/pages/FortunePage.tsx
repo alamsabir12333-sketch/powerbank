@@ -51,9 +51,13 @@ export const FortunePage: React.FC<FortunePageProps> = ({
   const [claiming, setClaiming] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
-  const userId = userProfile?.userId || userProfile?.id || 'usr_demo_01';
+  const userId = userProfile?.userId || userProfile?.id || '';
 
   const loadPageData = async () => {
+    if (!userId) {
+      setLoadingCheckIn(false);
+      return;
+    }
     try {
       // Settle any pending yield calculation in background so stats are up to date
       await settleAndCalculateEarnings(userId);

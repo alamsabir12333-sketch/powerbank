@@ -72,14 +72,14 @@ export const MePage: React.FC<MePageProps> = ({
   const [isGiftCodeOpen, setIsGiftCodeOpen] = useState(false);
   const [vipStatus, setVipStatus] = useState<UserVipStatus | null>(null);
 
-  const mobile = userProfile?.mobile || '9876543210';
-  const membershipNumber = userProfile?.membershipNumber || 'PB888999';
+  const mobile = userProfile?.mobile || userProfile?.whatsappNo || '';
+  const membershipNumber = userProfile?.membershipNumber || userProfile?.referralCode || '';
   const referralCode = userProfile?.referralCode || membershipNumber;
   const deviceEarnings = userProfile?.deviceEarnings || wallet?.totalEarned || 0;
   const teamEarnings = userProfile?.teamEarnings || 0;
   const topupBalance = wallet?.topupBalance ?? wallet?.rechargeBalance ?? 0;
   const withdrawBalance = wallet?.withdrawBalance ?? wallet?.earnedBalance ?? wallet?.availableBalance ?? 0;
-  const userId = userProfile?.userId || userProfile?.id || 'usr_demo_01';
+  const userId = userProfile?.userId || userProfile?.id || '';
 
   useEffect(() => {
     let isMounted = true;

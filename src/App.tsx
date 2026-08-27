@@ -120,6 +120,16 @@ function AppContent() {
 
       const searchParams = new URLSearchParams(window.location.search);
       let refParam = searchParams.get('ref') || searchParams.get('code') || '';
+      const paymentStatus = searchParams.get('status');
+
+      if (paymentStatus === 'success' || path === '/wallet' || path === '/wallet/success') {
+        setActiveTab('recharge');
+        showToast('Payment successful! Your wallet has been credited.', 'success');
+        refreshUserData();
+        if (typeof window !== 'undefined') {
+          window.history.replaceState({}, '', '/');
+        }
+      }
 
       if (!refParam && path.includes('/invite/')) {
         const segments = path.split('/invite/');

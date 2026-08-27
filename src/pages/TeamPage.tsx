@@ -42,11 +42,13 @@ export const TeamPage: React.FC<TeamPageProps> = ({
   const [loading, setLoading] = useState(true);
 
   const activeUserId = userId || userProfile?.userId || userProfile?.id || '';
+  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://gainpower-top-1.com';
+  const effectiveRefCode = userProfile?.referralCode || userProfile?.membershipNumber || '';
 
   // Dynamic team summary state
   const [teamSummary, setTeamSummary] = useState<UserTeamSummary>({
-    referralCode: userProfile?.referralCode || '2829906',
-    referralLink: `https://powerbank.app/invite?code=${userProfile?.referralCode || '2829906'}`,
+    referralCode: effectiveRefCode,
+    referralLink: `${currentOrigin}/invite/${effectiveRefCode}`,
     totalMembers: 0,
     directMembers: 0,
     activeDevices: 0,

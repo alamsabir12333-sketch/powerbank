@@ -119,7 +119,7 @@ export const BindBankCardModal: React.FC<{
   onClose: () => void;
   userId?: string;
   onSuccess?: () => void;
-}> = ({ isOpen, onClose, userId = 'usr_demo_01', onSuccess }) => {
+}> = ({ isOpen, onClose, userId = '', onSuccess }) => {
   const [name, setName] = useState('');
   const [account, setAccount] = useState('');
   const [ifsc, setIfsc] = useState('');
@@ -247,10 +247,10 @@ export const InviteFriendsModal: React.FC<{
   onClose: () => void;
   referralCode?: string;
   onCopyToast?: (text: string) => void;
-}> = ({ isOpen, onClose, referralCode = 'PB888999', onCopyToast }) => {
+}> = ({ isOpen, onClose, referralCode = '', onCopyToast }) => {
   const [copied, setCopied] = useState(false);
-  const hostOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://powerbank.app';
-  const inviteLink = `${hostOrigin}/invite/${referralCode}`;
+  const hostOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://gainpower-top-1.com';
+  const inviteLink = referralCode ? `${hostOrigin}/invite/${referralCode}` : hostOrigin;
 
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);

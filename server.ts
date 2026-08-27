@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import { createServer as createViteServer } from 'vite';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
@@ -117,8 +118,9 @@ app.post('/api/auth/register', async (req, res) => {
   } = req.body;
 
   const cleanPhone = String(phone).replace(/\D/g, '');
-  const cleanEmail = (email || `${cleanPhone}@powerbank.app`).toLowerCase().trim();
+  const cleanEmail = (email || `${cleanPhone}@gainpower.internal`).toLowerCase().trim();
   const cleanUsername = (username || name || `user_${cleanPhone.slice(-4)}`).trim();
+  const cleanRef = String(referralCode || '').trim().toUpperCase();
   const memNum = membershipNumber || 'PB' + Math.floor(100000 + Math.random() * 900000);
 
   if (!cleanPhone || cleanPhone.length !== 10) {
@@ -126,6 +128,19 @@ app.post('/api/auth/register', async (req, res) => {
   }
   if (!password || password.length < 6) {
     return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
+  }
+  if (!withdrawalPassword || String(withdrawalPassword).trim().length < 4) {
+    return res.status(400).json({ success: false, error: 'Withdrawal password is required (minimum 4 characters).' });
+  }
+  if (!cleanRef) {
+    return res.status(400).json({ success: false, error: 'Referral code is required.' });
+  }
+  if (
+    cleanRef === cleanPhone ||
+    cleanRef.toLowerCase() === cleanUsername.toLowerCase() ||
+    cleanRef.toLowerCase() === cleanEmail.toLowerCase()
+  ) {
+    return res.status(400).json({ success: false, error: 'You cannot use your own referral code.' });
   }
 
   try {
@@ -137,7 +152,7 @@ app.post('/api/auth/register', async (req, res) => {
       const { data: existingProfile } = await supabase
         .from('profiles')
         .select('id, user_id, whatsapp_no, username')
-        .or(`whatsapp_no.eq.${cleanPhone},mobile.eq.${cleanPhone}`)
+        .or(`phone.eq.${cleanPhone},whatsapp_no.eq.${cleanPhone},mobile.eq.${cleanPhone}`)
         .maybeSingle();
 
       if (existingProfile) {
@@ -248,9 +263,13 @@ app.post('/api/auth/register', async (req, res) => {
           .from('profiles')
           .insert({
             user_id: createdUserId,
+            name: name || cleanUsername,
+            full_name: name || cleanUsername,
+            phone: cleanPhone,
+            phone_number: cleanPhone,
+            mobile: cleanPhone,
             username: cleanUsername,
             whatsapp_no: cleanPhone,
-            mobile: cleanPhone,
             email: cleanEmail,
             membership_number: memNum,
             referral_code: memNum,
@@ -262,6 +281,23 @@ app.post('/api/auth/register', async (req, res) => {
           .select()
           .single();
         finalProfile = insertedProf;
+      } else {
+        const { data: updatedProf } = await supabase
+          .from('profiles')
+          .update({
+            name: name || cleanUsername,
+            full_name: name || cleanUsername,
+            phone: cleanPhone,
+            phone_number: cleanPhone,
+            mobile: cleanPhone,
+            username: cleanUsername,
+            whatsapp_no: cleanPhone,
+            referred_by: referralCode || profExist.referred_by || null,
+          })
+          .or(`id.eq.${profExist.id},user_id.eq.${createdUserId}`)
+          .select()
+          .single();
+        if (updatedProf) finalProfile = updatedProf;
       }
 
       // 5. Ensure wallet row exists with ₹50 Sign-up Bonus
@@ -290,9 +326,10 @@ app.post('/api/auth/register', async (req, res) => {
         finalWallet = insertedWal;
       }
 
-      // 6. Securely hash and store withdrawal password in user_security table
+      // 6. Securely hash and store withdrawal password in user_security table using bcrypt
       if (withdrawalPassword) {
-        const wthPassHash = crypto.createHash('sha256').update(String(withdrawalPassword).trim()).digest('hex');
+        const cleanPass = String(withdrawalPassword).trim();
+        const wthPassHash = bcrypt.hashSync(cleanPass, 10);
         try {
           await supabase
             .from('user_security')
@@ -1057,27 +1094,50 @@ app.post('/api/wallet/withdraw', async (req, res) => {
   if (supabase) {
     // 1. Verify withdrawal password hash from user_security table
     const cleanPass = String(withdrawalPassword).trim();
-    const inputHash = crypto.createHash('sha256').update(cleanPass).digest('hex');
 
-    const { data: secData, error: secErr } = await supabase
+    const { data: secData } = await supabase
       .from('user_security')
       .select('withdrawal_password_hash')
       .eq('user_id', userId)
       .maybeSingle();
 
     if (secData && secData.withdrawal_password_hash) {
-      if (secData.withdrawal_password_hash !== inputHash) {
+      const storedHash = secData.withdrawal_password_hash;
+      let isValid = false;
+
+      if (storedHash.startsWith('$2a$') || storedHash.startsWith('$2b$') || storedHash.startsWith('$2y$')) {
+        isValid = bcrypt.compareSync(cleanPass, storedHash);
+      } else {
+        // Fallback for legacy SHA-256 hash
+        const inputSha256 = crypto.createHash('sha256').update(cleanPass).digest('hex');
+        if (inputSha256 === storedHash) {
+          isValid = true;
+          // Auto-upgrade to bcrypt
+          try {
+            const upgradedHash = bcrypt.hashSync(cleanPass, 10);
+            await supabase.from('user_security').update({
+              withdrawal_password_hash: upgradedHash,
+              updated_at: new Date().toISOString(),
+            }).eq('user_id', userId);
+          } catch (upgErr) {
+            console.warn('[SERVER WITHDRAW] Auto-upgrade hash note:', upgErr);
+          }
+        }
+      }
+
+      if (!isValid) {
         return res.status(401).json({
           success: false,
-          error: 'Incorrect withdrawal password. Please enter your valid fund password.',
+          error: 'Incorrect withdrawal password.',
         });
       }
     } else {
-      // If no hash in user_security yet, backfill for future checks
+      // If no hash in user_security yet, backfill with bcrypt
       try {
+        const newHash = bcrypt.hashSync(cleanPass, 10);
         await supabase.from('user_security').upsert({
           user_id: userId,
-          withdrawal_password_hash: inputHash,
+          withdrawal_password_hash: newHash,
           updated_at: new Date().toISOString(),
         }, { onConflict: 'user_id' });
       } catch (e) {
@@ -1094,9 +1154,90 @@ app.post('/api/wallet/withdraw', async (req, res) => {
       });
 
       if (rpcErr) {
-        return res.status(400).json({
-          success: false,
-          error: rpcErr.message || 'Withdrawal failed.',
+        // Safe table-level fallback if RPC is not present in schema cache
+        const { data: userWal } = await supabase
+          .from('wallets')
+          .select('*')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        const currentBalance = Number(userWal?.withdraw_balance ?? userWal?.available_balance ?? 0);
+        if (currentBalance < numAmount) {
+          return res.status(400).json({
+            success: false,
+            error: 'Insufficient withdrawable balance.',
+          });
+        }
+
+        const feePercent = 10;
+        const feeAmount = (numAmount * feePercent) / 100;
+        const netAmount = numAmount - feeAmount;
+
+        const { data: newWth, error: wthErr } = await supabase
+          .from('withdrawals')
+          .insert({
+            user_id: userId,
+            amount: numAmount,
+            fee: feeAmount,
+            net_amount: netAmount,
+            bank_account_id: bankAccountId || null,
+            status: 'PENDING',
+            created_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
+
+        if (wthErr) {
+          return res.status(400).json({
+            success: false,
+            error: wthErr.message || 'Failed to record withdrawal request.',
+          });
+        }
+
+        // Deduct from wallet withdraw_balance and hold in pending_balance
+        const newWithdrawBal = Math.max(0, currentBalance - numAmount);
+        const newPendingBal = Number(userWal?.pending_balance || 0) + numAmount;
+        await supabase
+          .from('wallets')
+          .update({
+            withdraw_balance: newWithdrawBal,
+            pending_balance: newPendingBal,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('user_id', userId);
+
+        // Record transaction
+        try {
+          await supabase.from('wallet_transactions').insert({
+            user_id: userId,
+            amount: numAmount,
+            type: 'WITHDRAWAL',
+            status: 'PENDING',
+            description: `Withdrawal request of ₹${numAmount.toFixed(2)} (Net: ₹${netAmount.toFixed(2)})`,
+            created_at: new Date().toISOString(),
+          });
+        } catch (tErr) {
+          console.warn('[SERVER WITHDRAW] tx insert notice:', tErr);
+        }
+
+        // Send notification
+        try {
+          await supabase.from('notifications').insert({
+            user_id: userId,
+            title: 'Withdrawal Request Submitted',
+            message: `Your withdrawal request for ₹${numAmount.toFixed(2)} is pending review.`,
+            type: 'INFO',
+            read: false,
+            created_at: new Date().toISOString(),
+          });
+        } catch (nErr) {
+          console.warn('[SERVER WITHDRAW] notification insert notice:', nErr);
+        }
+
+        return res.json({
+          success: true,
+          message: 'Withdrawal submitted successfully.',
+          data: newWth,
         });
       }
 

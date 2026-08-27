@@ -44,7 +44,7 @@ type FilterCategory = 'ALL' | 'RECHARGE' | 'PURCHASE' | 'EARNINGS' | 'CLAIM' | '
 export const TransactionPage: React.FC<TransactionPageProps> = ({
   onNavigateTab,
   onShowToast,
-  userId = 'usr_demo_01',
+  userId = '',
   wallet,
   userProfile,
   onOpenRecharge,

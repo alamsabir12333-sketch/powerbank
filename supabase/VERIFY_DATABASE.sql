@@ -9,7 +9,7 @@
 SELECT table_name, 
        EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = t.table_name) AS is_present
 FROM (VALUES 
-    ('profiles'), ('wallets'), ('plans'), ('purchases'), ('wallet_transactions'),
+    ('profiles'), ('wallets'), ('user_security'), ('plans'), ('purchases'), ('wallet_transactions'),
     ('earnings'), ('payments'), ('deposit_transactions'), ('bank_accounts'),
     ('withdrawals'), ('referrals'), ('notifications'), ('news'), ('banners'),
     ('missions'), ('mission_claims'), ('gift_codes'), ('gift_code_claims'),

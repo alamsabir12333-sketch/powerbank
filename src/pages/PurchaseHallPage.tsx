@@ -500,7 +500,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-600">Category:</span>
-                  <span className="font-bold text-amber-700">{selectedProduct.category || 'HOURLY'}</span>
+                  <span className="font-bold text-amber-700">{selectedProduct.category || 'VIP'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-600">Acquisition Cost:</span>

@@ -91,10 +91,17 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       setIsReadOnlyCode(true);
     }
 
-    // Load saved phone if remembered
-    const savedLogin = localStorage.getItem('pb_remembered_phone');
-    if (savedLogin) {
-      setLoginPhone(savedLogin);
+    // Load saved phone and password if remembered
+    const isRemembered = localStorage.getItem('gp_remember_me') === 'true';
+    if (isRemembered) {
+      const savedPhone = localStorage.getItem('gp_saved_phone') || localStorage.getItem('pb_remembered_phone') || '';
+      const savedPassword = localStorage.getItem('gp_saved_password') || '';
+      if (savedPhone) setLoginPhone(savedPhone);
+      if (savedPassword) setLoginPassword(savedPassword);
+      setRememberMe(true);
+    } else {
+      const savedLogin = localStorage.getItem('pb_remembered_phone');
+      if (savedLogin) setLoginPhone(savedLogin);
     }
   }, [initialReferralCode, isReferralReadOnly]);
 
@@ -165,7 +172,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
     // Referral Validation
     const cleanRef = referralCode.trim().toUpperCase();
-    if (cleanRef && cleanRef === cleanPhone) {
+    if (!cleanRef) {
+      setError('Referral code is required.');
+      return;
+    }
+    if (cleanRef === cleanPhone) {
       setError('You cannot use your own referral code.');
       return;
     }
@@ -177,7 +188,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         username: name.trim().toLowerCase().replace(/[^a-z0-9]/g, '_') || `user_${cleanPhone.slice(-4)}`,
         phone: cleanPhone,
         whatsappNo: cleanPhone,
-        email: `${cleanPhone}@powerbank.app`,
+        email: `${cleanPhone}@gainpower.internal`,
         password,
         confirmPassword,
         withdrawalPassword: withdrawalPassword.trim(),
@@ -190,6 +201,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         sessionStorage.removeItem('pb_pending_invite_code');
         localStorage.removeItem('pb_pending_invite_code');
         if (rememberMe) {
+          localStorage.setItem('gp_saved_phone', cleanPhone);
+          localStorage.setItem('gp_saved_password', password);
+          localStorage.setItem('gp_remember_me', 'true');
           localStorage.setItem('pb_remembered_phone', cleanPhone);
         }
       }
@@ -203,7 +217,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         name: name.trim(),
         whatsappNo: cleanPhone,
         mobile: cleanPhone,
-        email: formData.email || `${cleanPhone}@powerbank.app`,
+        email: formData.email || `${cleanPhone}@gainpower.internal`,
         withdrawalPassword: withdrawalPassword.trim(),
         membershipNumber: result.membershipNumber || 'PB' + cleanPhone.slice(-6),
         referralCode: result.referralCode || result.membershipNumber || 'PB' + cleanPhone.slice(-6),
@@ -212,7 +226,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         status: 'active',
         deviceEarnings: 0,
         teamEarnings: 0,
-        walletBalance: 50.0,
+        walletBalance: 0.0,
       };
 
       onAuthSuccess(newProfile, true);
@@ -220,7 +234,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       console.error('Registration failed:', err);
       const msg = err.message || 'Failed to register account.';
       if (msg.toLowerCase().includes('already registered') || msg.toLowerCase().includes('duplicate')) {
-        setError('This phone number is already registered. Please login instead.');
+        setError('This phone number is already registered. Please log in.');
       } else {
         setError(msg);
       }
@@ -256,8 +270,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
       if (typeof window !== 'undefined') {
         if (rememberMe) {
+          localStorage.setItem('gp_saved_phone', cleanId);
+          localStorage.setItem('gp_saved_password', loginPassword);
+          localStorage.setItem('gp_remember_me', 'true');
           localStorage.setItem('pb_remembered_phone', cleanId);
         } else {
+          localStorage.removeItem('gp_saved_phone');
+          localStorage.removeItem('gp_saved_password');
+          localStorage.removeItem('gp_remember_me');
           localStorage.removeItem('pb_remembered_phone');
         }
       }
@@ -266,7 +286,16 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       onAuthSuccess(profile, false);
     } catch (err: any) {
       console.error('Login failed:', err);
-      setError(err.message || 'Invalid phone number or password. Please try again.');
+      const msg = err.message || 'Account not found or password incorrect. Please register first.';
+      if (
+        msg.toLowerCase().includes('invalid login credentials') ||
+        msg.toLowerCase().includes('invalid_grant') ||
+        msg.toLowerCase().includes('user not found')
+      ) {
+        setError('Account not found or password incorrect. Please register first.');
+      } else {
+        setError(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -622,11 +651,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                 </div>
               </div>
 
-              {/* Field 6: Referral Code (Optional) */}
+              {/* Field 6: Referral Code (Mandatory) */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-xs font-bold text-gray-700">
-                    Referral Code
+                    Referral Code <span className="text-[#FF6000]">*</span>
                   </label>
                   {isReadOnlyCode && (
                     <span className="text-[10px] text-[#FF6000] font-bold bg-orange-50 px-2 py-0.5 rounded-full border border-orange-200">
@@ -639,10 +668,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                   <input
                     id="register-referral-input"
                     type="text"
+                    required
                     readOnly={isReadOnlyCode}
                     value={referralCode}
                     onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
-                    placeholder="Enter referral code (optional)"
+                    placeholder="Enter referral code"
                     className={`w-full border rounded-2xl py-3 pl-10 pr-4 text-sm font-medium transition-all outline-hidden ${
                       isReadOnlyCode
                         ? 'bg-orange-50/50 border-orange-200 text-gray-700 font-mono font-bold cursor-not-allowed'

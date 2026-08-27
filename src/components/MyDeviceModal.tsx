@@ -41,7 +41,7 @@ interface MyDeviceModalProps {
 export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
   isOpen,
   onClose,
-  userId = 'usr_demo_01',
+  userId = '',
   purchases,
   onNavigateTab,
   onShowToast,
