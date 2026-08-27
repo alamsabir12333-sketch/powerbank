@@ -33,23 +33,29 @@ export interface UserProfile {
   deviceEarnings: number;
   teamEarnings: number;
   walletBalance: number;
+  withdrawalPassword?: string;
   avatarUrl?: string;
   createdAt?: string;
   updatedAt?: string;
 }
 
 export interface RegisterFormData {
-  username: string;
-  whatsappNo: string;
-  email: string;
+  name?: string;
+  username?: string;
+  whatsappNo?: string;
+  phone?: string;
+  email?: string;
   password: string;
   confirmPassword: string;
+  withdrawalPassword?: string;
   referralCode?: string;
+  rememberMe?: boolean;
 }
 
 export interface LoginFormData {
   identifier: string;
   password: string;
+  rememberMe?: boolean;
 }
 
 export interface Wallet {

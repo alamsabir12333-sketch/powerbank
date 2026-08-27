@@ -108,6 +108,20 @@ ALTER TABLE public.wallets ADD COLUMN IF NOT EXISTS total_withdrawn NUMERIC(14, 
 ALTER TABLE public.wallets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 ALTER TABLE public.wallets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 
+-- 3.2.1 USER SECURITY TABLE (WITHDRAWAL PASSWORD HASH)
+CREATE TABLE IF NOT EXISTS public.user_security (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL UNIQUE,
+    withdrawal_password_hash VARCHAR(255) NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.user_security ADD COLUMN IF NOT EXISTS user_id UUID;
+ALTER TABLE public.user_security ADD COLUMN IF NOT EXISTS withdrawal_password_hash VARCHAR(255) DEFAULT '';
+ALTER TABLE public.user_security ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+ALTER TABLE public.user_security ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+
 -- 3.3 HARDWARE & INVESTMENT PLANS TABLE (VIP, PRO, EVENT)
 CREATE TABLE IF NOT EXISTS public.plans (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -681,6 +695,64 @@ ALTER TABLE public.admin_audit_logs ADD COLUMN IF NOT EXISTS details JSONB DEFAU
 ALTER TABLE public.admin_audit_logs ADD COLUMN IF NOT EXISTS ip_address VARCHAR(50) DEFAULT NULL;
 ALTER TABLE public.admin_audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 
+-- 3.22 WALLET LEDGER TABLE (DETAILED AUDIT TRAIL)
+CREATE TABLE IF NOT EXISTS public.wallet_ledger (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    balance_before NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+    amount NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+    balance_after NUMERIC(14, 2) NOT NULL DEFAULT 0.00,
+    transaction_type VARCHAR(50) NOT NULL DEFAULT 'DEPOSIT_SUCCESS',
+    reference_id VARCHAR(100) DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.wallet_ledger ADD COLUMN IF NOT EXISTS user_id UUID;
+ALTER TABLE public.wallet_ledger ADD COLUMN IF NOT EXISTS balance_before NUMERIC(14, 2) DEFAULT 0.00;
+ALTER TABLE public.wallet_ledger ADD COLUMN IF NOT EXISTS amount NUMERIC(14, 2) DEFAULT 0.00;
+ALTER TABLE public.wallet_ledger ADD COLUMN IF NOT EXISTS balance_after NUMERIC(14, 2) DEFAULT 0.00;
+ALTER TABLE public.wallet_ledger ADD COLUMN IF NOT EXISTS transaction_type VARCHAR(50) DEFAULT 'DEPOSIT_SUCCESS';
+ALTER TABLE public.wallet_ledger ADD COLUMN IF NOT EXISTS reference_id VARCHAR(100) DEFAULT NULL;
+ALTER TABLE public.wallet_ledger ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+
+-- 3.23 GATEWAY SETTINGS TABLE
+CREATE TABLE IF NOT EXISTS public.gateway_settings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    merchant_no VARCHAR(100) NOT NULL DEFAULT '',
+    secret_key VARCHAR(255) NOT NULL DEFAULT '',
+    base_url TEXT NOT NULL DEFAULT 'https://api.univepay.com',
+    notify_url TEXT NOT NULL DEFAULT '',
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.gateway_settings ADD COLUMN IF NOT EXISTS merchant_no VARCHAR(100) DEFAULT '';
+ALTER TABLE public.gateway_settings ADD COLUMN IF NOT EXISTS secret_key VARCHAR(255) DEFAULT '';
+ALTER TABLE public.gateway_settings ADD COLUMN IF NOT EXISTS base_url TEXT DEFAULT 'https://api.univepay.com';
+ALTER TABLE public.gateway_settings ADD COLUMN IF NOT EXISTS notify_url TEXT DEFAULT '';
+ALTER TABLE public.gateway_settings ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+ALTER TABLE public.gateway_settings ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+ALTER TABLE public.gateway_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+
+-- 3.24 GATEWAY LOGS TABLE
+CREATE TABLE IF NOT EXISTS public.gateway_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    action VARCHAR(100) NOT NULL DEFAULT '',
+    order_id VARCHAR(100) DEFAULT NULL,
+    request_payload JSONB DEFAULT NULL,
+    response_payload JSONB DEFAULT NULL,
+    status VARCHAR(50) DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.gateway_logs ADD COLUMN IF NOT EXISTS action VARCHAR(100) DEFAULT '';
+ALTER TABLE public.gateway_logs ADD COLUMN IF NOT EXISTS order_id VARCHAR(100) DEFAULT NULL;
+ALTER TABLE public.gateway_logs ADD COLUMN IF NOT EXISTS request_payload JSONB DEFAULT NULL;
+ALTER TABLE public.gateway_logs ADD COLUMN IF NOT EXISTS response_payload JSONB DEFAULT NULL;
+ALTER TABLE public.gateway_logs ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT NULL;
+ALTER TABLE public.gateway_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+
 -- ==============================================================================
 -- 4. PERFORMANCE INDEXES (SAFE & IDEMPOTENT)
 -- ==============================================================================
@@ -704,6 +776,7 @@ CREATE INDEX IF NOT EXISTS idx_vip_levels_level ON public.vip_levels(level);
 -- ==============================================================================
 -- 5. SECURE ADMIN HELPER FUNCTION
 -- ==============================================================================
+DROP FUNCTION IF EXISTS public.is_admin() CASCADE;
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS BOOLEAN AS $$
 BEGIN
@@ -741,6 +814,14 @@ ALTER TABLE public.gift_code_claims ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vip_levels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.admin_audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_security ENABLE ROW LEVEL SECURITY;
+
+-- 6.0 USER SECURITY POLICIES (Strict: Users cannot read plain hash, service role/admin only)
+DROP POLICY IF EXISTS "Service role and admin full manage user_security" ON public.user_security;
+CREATE POLICY "Service role and admin full manage user_security" ON public.user_security FOR ALL USING (public.is_admin() OR auth.jwt() ->> 'role' = 'service_role');
+
+DROP POLICY IF EXISTS "Users can insert own security during registration" ON public.user_security;
+CREATE POLICY "Users can insert own security during registration" ON public.user_security FOR INSERT WITH CHECK (auth.uid() = user_id OR auth.uid() IS NULL OR public.is_admin());
 
 -- 6.1 PROFILES POLICIES
 DROP POLICY IF EXISTS "Anyone can view profiles for referral and leaderboard" ON public.profiles;
@@ -843,6 +924,7 @@ CREATE POLICY "Admins manage audit logs" ON public.admin_audit_logs FOR ALL USIN
 -- ==============================================================================
 -- 7. ATOMIC ONBOARDING TRIGGERS & RPCs
 -- ==============================================================================
+DROP FUNCTION IF EXISTS public.handle_new_auth_user() CASCADE;
 CREATE OR REPLACE FUNCTION public.handle_new_auth_user()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -923,6 +1005,7 @@ CREATE TRIGGER on_auth_user_created
     FOR EACH ROW EXECUTE FUNCTION public.handle_new_auth_user();
 
 -- Direct Onboarding RPC callable from client/server
+DROP FUNCTION IF EXISTS public.handle_user_onboarding CASCADE;
 CREATE OR REPLACE FUNCTION public.handle_user_onboarding(
     p_user_id UUID,
     p_username TEXT,
@@ -988,8 +1071,80 @@ GRANT EXECUTE ON FUNCTION public.handle_user_onboarding TO anon, authenticated, 
 GRANT EXECUTE ON FUNCTION public.handle_new_auth_user TO anon, authenticated, service_role;
 
 -- ==============================================================================
+-- 7.5 ATOMIC DEPOSIT TRANSACTION PROCEDURE (CHINESE GATEWAY PAYIN / WEBHOOK)
+-- ==============================================================================
+DROP FUNCTION IF EXISTS public.process_deposit_success CASCADE;
+CREATE OR REPLACE FUNCTION public.process_deposit_success(
+    p_order_id TEXT,
+    p_serial_no TEXT,
+    p_raw_callback JSONB
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_amount NUMERIC(10, 2);
+    v_status TEXT;
+    v_old_balance NUMERIC(10, 2);
+    v_new_balance NUMERIC(10, 2);
+BEGIN
+    -- 1. Lock and fetch deposit record
+    SELECT user_id, amount, status INTO v_user_id, v_amount, v_status
+    FROM public.deposit_transactions
+    WHERE order_id = p_order_id OR traceno = p_order_id
+    FOR UPDATE;
+
+    -- 2. Process only if transaction is still PENDING
+    IF v_status = 'PENDING' OR v_status IS NULL THEN
+        -- Update deposit_transactions table
+        UPDATE public.deposit_transactions
+        SET status = 'SUCCESS',
+            serial_no = p_serial_no,
+            raw_response = p_raw_callback,
+            callback_payload = p_raw_callback,
+            completed_at = now(),
+            updated_at = now()
+        WHERE order_id = p_order_id OR traceno = p_order_id;
+
+        -- Fetch and update user balance in wallets table
+        SELECT COALESCE(balance, recharge_balance, available_balance, 0) INTO v_old_balance 
+        FROM public.wallets 
+        WHERE user_id = v_user_id 
+        FOR UPDATE;
+
+        v_new_balance := COALESCE(v_old_balance, 0) + v_amount;
+
+        UPDATE public.wallets
+        SET balance = v_new_balance,
+            recharge_balance = COALESCE(recharge_balance, 0) + v_amount,
+            available_balance = COALESCE(available_balance, 0) + v_amount,
+            updated_at = now()
+        WHERE user_id = v_user_id;
+
+        -- Sync balance with profiles table if mirrored
+        UPDATE public.profiles
+        SET balance = v_new_balance,
+            updated_at = now()
+        WHERE id = v_user_id OR user_id = v_user_id;
+
+        -- Insert into wallet_transactions & wallet_ledger
+        INSERT INTO public.wallet_transactions (user_id, wallet_type, amount, type, status, reference_id, description, created_at)
+        VALUES (v_user_id, 'TOPUP', v_amount, 'DEPOSIT', 'COMPLETED', p_order_id, 'Online Gateway Recharge UPI', now());
+
+        INSERT INTO public.wallet_ledger (user_id, balance_before, amount, balance_after, transaction_type, reference_id, created_at)
+        VALUES (v_user_id, COALESCE(v_old_balance, 0), v_amount, v_new_balance, 'DEPOSIT_SUCCESS', p_order_id, now());
+    END IF;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.process_deposit_success TO anon, authenticated, service_role;
+
+-- ==============================================================================
 -- 8. HOURLY YIELD ACCRUAL & CLAIM ENGINE RPCs
 -- ==============================================================================
+DROP FUNCTION IF EXISTS public.claim_device_earnings CASCADE;
 CREATE OR REPLACE FUNCTION public.claim_device_earnings(p_user_id UUID, p_purchase_id UUID DEFAULT NULL)
 RETURNS JSONB AS $$
 DECLARE
@@ -1048,6 +1203,82 @@ BEGIN
     );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+-- ==============================================================================
+-- 8.1 ATOMIC BANK WITHDRAWAL REQUEST RPC
+-- ==============================================================================
+DROP FUNCTION IF EXISTS public.request_withdrawal CASCADE;
+DROP FUNCTION IF EXISTS public.request_withdrawal(UUID, NUMERIC, UUID, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS public.request_withdrawal(UUID, NUMERIC, UUID) CASCADE;
+DROP FUNCTION IF EXISTS public.request_withdrawal(UUID, NUMERIC, TEXT, TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION public.request_withdrawal(
+    p_user_id UUID,
+    p_amount NUMERIC(12, 2),
+    p_bank_account_id UUID,
+    p_traceno TEXT DEFAULT NULL
+)
+RETURNS JSONB AS $$
+DECLARE
+    v_wallet RECORD;
+    v_bank RECORD;
+    v_traceno TEXT;
+    v_withdrawal_id UUID;
+    v_fee_pct NUMERIC := 10.0;
+    v_fee NUMERIC;
+    v_net NUMERIC;
+BEGIN
+    IF p_amount < 100 THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Minimum withdrawal amount is ₹100.');
+    END IF;
+
+    SELECT * INTO v_bank FROM public.bank_accounts WHERE id = p_bank_account_id AND user_id = p_user_id;
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Valid bank card not found.');
+    END IF;
+
+    SELECT * INTO v_wallet FROM public.wallets WHERE user_id = p_user_id FOR UPDATE;
+    IF NOT FOUND OR COALESCE(v_wallet.withdraw_balance, 0) < p_amount THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Insufficient withdrawable balance in Withdraw Wallet.');
+    END IF;
+
+    v_fee := ROUND((p_amount * v_fee_pct) / 100.0, 2);
+    v_net := p_amount - v_fee;
+    v_traceno := COALESCE(p_traceno, 'WTH_' || EXTRACT(EPOCH FROM now())::BIGINT || '_' || FLOOR(1000 + RANDOM() * 9000)::TEXT);
+
+    -- Deduct from withdraw_balance and add to pending_balance
+    UPDATE public.wallets
+    SET withdraw_balance = withdraw_balance - p_amount,
+        available_balance = GREATEST(0, available_balance - p_amount),
+        pending_balance = COALESCE(pending_balance, 0) + p_amount,
+        updated_at = now()
+    WHERE user_id = p_user_id;
+
+    -- Record withdrawal item
+    INSERT INTO public.withdrawals (
+        user_id, amount, net_amount, fee, bank_account_id, bank_name, account_holder_name, account_number, ifsc, status, traceno
+    ) VALUES (
+        p_user_id, p_amount, v_net, v_fee, v_bank.id, v_bank.bank_name, v_bank.account_holder_name, v_bank.account_number, v_bank.ifsc_code, 'PENDING', v_traceno
+    ) RETURNING id INTO v_withdrawal_id;
+
+    -- Record wallet ledger
+    INSERT INTO public.wallet_transactions (
+        user_id, wallet_type, type, amount, balance_before, balance_after, reference_id, description
+    ) VALUES (
+        p_user_id, 'WITHDRAW', 'WITHDRAWAL_REQUEST', -p_amount, v_wallet.withdraw_balance, v_wallet.withdraw_balance - p_amount, v_traceno, 'Bank Payout Request to ' || v_bank.bank_name || ' (A/C •••• ' || RIGHT(v_bank.account_number, 4) || ')'
+    );
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'withdrawal_id', v_withdrawal_id,
+        'traceno', v_traceno,
+        'amount', p_amount,
+        'net_amount', v_net,
+        'fee', v_fee
+    );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+GRANT EXECUTE ON FUNCTION public.request_withdrawal TO anon, authenticated, service_role;
 
 -- ==============================================================================
 -- 9. SAFE SEED / BACKFILL DATA (IDEMPOTENT VIA WHERE NOT EXISTS)

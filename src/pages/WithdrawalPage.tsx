@@ -9,6 +9,9 @@ import {
   CreditCard,
   Plus,
   ChevronDown,
+  Eye,
+  EyeOff,
+  Lock,
 } from 'lucide-react';
 import { BankAccount, Wallet } from '../types';
 import {
@@ -39,6 +42,8 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
   onRefreshData,
 }) => {
   const [amount, setAmount] = useState<number>(300);
+  const [withdrawalPassword, setWithdrawalPassword] = useState<string>('');
+  const [showPassword, setShowPassword] = useState<boolean>(false);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [selectedBankId, setSelectedBankId] = useState<string>('');
   const [showBankPicker, setShowBankPicker] = useState(false);
@@ -107,6 +112,11 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
       return;
     }
 
+    if (!withdrawalPassword.trim()) {
+      setError('Please enter your Withdrawal Password.');
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
 
@@ -114,7 +124,8 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
       await submitWithdrawalRequest(
         userId,
         amount,
-        activeBank.id
+        activeBank.id,
+        withdrawalPassword.trim()
       );
 
       onShowToast(`Withdrawal request of ₹${amount} submitted successfully!`);
@@ -319,6 +330,33 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
                   Payout Mode: Bank Card
                 </span>
               </div>
+            </div>
+          </div>
+
+          {/* Withdrawal Password Input Card */}
+          <div className="space-y-1.5 pt-1">
+            <div className="flex items-center justify-between px-1">
+              <label className="text-xs font-bold text-gray-600 uppercase tracking-wider flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5 text-[#FF6000]" />
+                <span>Withdrawal Password</span>
+              </label>
+              <span className="text-[11px] text-gray-400 font-medium">Security Verification</span>
+            </div>
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={withdrawalPassword}
+                onChange={(e) => setWithdrawalPassword(e.target.value)}
+                placeholder="Enter your withdrawal password"
+                className="w-full bg-[#FAFAFA] border border-gray-200 rounded-2xl px-4 py-3.5 text-gray-900 font-medium text-sm focus:outline-none focus:border-[#FF6000] focus:bg-white transition-colors"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1"
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
           </div>
 

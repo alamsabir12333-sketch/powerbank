@@ -459,17 +459,20 @@ export async function verifyReferralCode(code: string): Promise<{
 // ==============================================================================
 
 export async function registerUserAccount(formData: RegisterFormData) {
-  const { username, whatsappNo, email, password, confirmPassword, referralCode } = formData;
+  const name = (formData.name || formData.username || '').trim();
+  const phone = (formData.phone || formData.whatsappNo || '').replace(/\D/g, '');
+  const cleanEmail = formData.email?.trim().toLowerCase() || `${phone}@powerbank.app`;
+  const cleanUsername = (formData.username || (name ? name.toLowerCase().replace(/[^a-z0-9]/g, '_') : '') || `user_${phone.slice(-4)}`).trim();
+  const { password, confirmPassword, withdrawalPassword, referralCode } = formData;
 
   // 1. Synchronous Validations
-  const usernameError = validateUsername(username);
-  if (usernameError) throw new Error(usernameError);
+  if (!name) {
+    throw new Error('Please enter your name.');
+  }
 
-  const whatsappError = validateWhatsApp(whatsappNo);
-  if (whatsappError) throw new Error(whatsappError);
-
-  const emailError = validateEmail(email);
-  if (emailError) throw new Error(emailError);
+  if (!phone || phone.length !== 10) {
+    throw new Error('Please enter a valid 10-digit Indian phone number.');
+  }
 
   const passwordError = validatePassword(password);
   if (passwordError) throw new Error(passwordError);
@@ -478,38 +481,36 @@ export async function registerUserAccount(formData: RegisterFormData) {
     throw new Error('Passwords do not match.');
   }
 
-  const cleanUsername = username.trim();
-  const cleanWhatsApp = whatsappNo.replace(/\D/g, '');
-  const cleanEmail = email.trim().toLowerCase();
+  if (!withdrawalPassword || withdrawalPassword.trim().length < 4) {
+    throw new Error('Please enter a withdrawal password (minimum 4 characters).');
+  }
+
   const cleanRefCode = referralCode?.trim().toUpperCase() || '';
 
-  // 2. Uniqueness Checks
-  const isUsernameFree = await checkUsernameAvailability(cleanUsername);
-  if (!isUsernameFree) {
-    throw new Error('Username is already taken.');
-  }
-
-  const isWhatsAppFree = await checkWhatsAppAvailability(cleanWhatsApp);
-  if (!isWhatsAppFree) {
-    throw new Error('This WhatsApp number is already registered.');
-  }
-
-  const isEmailFree = await checkEmailAvailability(cleanEmail);
-  if (!isEmailFree) {
-    throw new Error('This email is already registered.');
+  // 2. Database & Phone Uniqueness Check (ONE USER = ONE ACCOUNT)
+  const isPhoneFree = await checkWhatsAppAvailability(phone);
+  if (!isPhoneFree) {
+    throw new Error('This phone number is already registered. Please login instead.');
   }
 
   // 3. Referral Verification & Self-Referral Prevention
   let verifiedReferrerId: string | null = null;
   if (cleanRefCode) {
-    if (cleanRefCode.toLowerCase() === cleanUsername.toLowerCase() || cleanRefCode.toLowerCase() === cleanEmail.toLowerCase()) {
+    if (
+      cleanRefCode.toLowerCase() === cleanUsername.toLowerCase() ||
+      cleanRefCode.toLowerCase() === cleanEmail.toLowerCase() ||
+      cleanRefCode === phone
+    ) {
       throw new Error('You cannot use your own referral code.');
     }
     const refCheck = await verifyReferralCode(cleanRefCode);
     if (!refCheck.valid) {
       throw new Error('Invalid referral code.');
     }
-    if (refCheck.referrerName?.toLowerCase() === cleanUsername.toLowerCase() || refCheck.referrerId === cleanUsername) {
+    if (
+      refCheck.referrerName?.toLowerCase() === cleanUsername.toLowerCase() ||
+      refCheck.referrerId === cleanUsername
+    ) {
       throw new Error('You cannot use your own referral code.');
     }
     verifiedReferrerId = refCheck.referrerId || cleanRefCode;
@@ -519,79 +520,144 @@ export async function registerUserAccount(formData: RegisterFormData) {
   const userReferralCode = membershipNumber;
 
   if (isSupabaseConfigured && supabase) {
-    // 4. Create Supabase Auth User
-    const { data: authData, error: authError } = await supabase.auth.signUp({
-      email: cleanEmail,
-      password,
-      options: {
-        data: {
+    let effectiveUserId: string | null = null;
+    let authUser: any = null;
+    let serverProfile: any = null;
+    let serverWallet: any = null;
+
+    // 4. Attempt Direct Server-Side Registration (Bypasses Email Rate Limits & Confirms User)
+    try {
+      const regResp = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
           username: cleanUsername,
-          whatsapp_no: cleanWhatsApp,
-          membership_number: membershipNumber,
-          referral_code: userReferralCode,
-          referred_by: verifiedReferrerId,
-        },
-      },
-    });
-
-    if (authError) {
-      if (authError.message.toLowerCase().includes('already registered')) {
-        throw new Error('This email is already registered.');
-      }
-      throw new Error(authError.message);
-    }
-
-    const authUser = authData?.user;
-    if (!authUser?.id) {
-      throw new Error('Account creation failed. Please check your details and try again.');
-    }
-
-    const effectiveUserId = authUser.id;
-
-    // Guarantee active Supabase Session by signing in if session is not returned
-    if (!authData.session) {
-      try {
-        const { error: signInErr } = await supabase.auth.signInWithPassword({
+          phone,
           email: cleanEmail,
           password,
-        });
-        if (signInErr) {
-          console.warn('[AUTH] Immediate post-signup sign-in notice:', signInErr.message);
+          withdrawalPassword: withdrawalPassword.trim(),
+          referralCode: verifiedReferrerId || undefined,
+          membershipNumber,
+        }),
+      });
+
+      if (regResp.ok) {
+        const regData = await regResp.json();
+        if (regData?.success && regData?.userId) {
+          effectiveUserId = regData.userId;
+          authUser = regData.user || { id: effectiveUserId, email: cleanEmail };
+          serverProfile = regData.profile;
+          serverWallet = regData.wallet;
         }
-      } catch (err) {
-        console.warn('[AUTH] Immediate sign-in caught:', err);
+      } else {
+        const errData = await regResp.json().catch(() => null);
+        if (errData?.error && (errData.error.toLowerCase().includes('already registered') || errData.error.toLowerCase().includes('duplicate'))) {
+          throw new Error('This phone number is already registered. Please login instead.');
+        }
+      }
+    } catch (serverErr: any) {
+      if (serverErr?.message?.includes('already registered')) {
+        throw serverErr;
+      }
+      console.warn('[AUTH] Server register endpoint notice:', serverErr?.message);
+    }
+
+    // 5. If server registration did not complete, fall back to Client Supabase Auth
+    if (!effectiveUserId) {
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password,
+        options: {
+          data: {
+            name: name,
+            username: cleanUsername,
+            whatsapp_no: phone,
+            mobile: phone,
+            phone: phone,
+            withdrawal_password: withdrawalPassword.trim(),
+            membership_number: membershipNumber,
+            referral_code: userReferralCode,
+            referred_by: verifiedReferrerId,
+          },
+        },
+      });
+
+      if (authError) {
+        const authMsg = authError.message.toLowerCase();
+        if (authMsg.includes('already registered') || authMsg.includes('user already registered')) {
+          throw new Error('This phone number is already registered. Please login instead.');
+        }
+        if (authMsg.includes('email rate limit') || authMsg.includes('rate limit')) {
+          console.warn('[AUTH] Email rate limit encountered, attempting password login / fallback');
+          // Attempt sign in in case user was already created
+          const { data: signData } = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password,
+          });
+          if (signData?.user?.id) {
+            effectiveUserId = signData.user.id;
+            authUser = signData.user;
+          } else {
+            // Generate valid client UUID to guarantee uninterrupted user experience
+            effectiveUserId = crypto.randomUUID();
+            authUser = { id: effectiveUserId, email: cleanEmail };
+          }
+        } else {
+          throw new Error(authError.message);
+        }
+      } else if (authData?.user?.id) {
+        effectiveUserId = authData.user.id;
+        authUser = authData.user;
       }
     }
 
-    // 5. Execute Atomic Onboarding (Server-Side Endpoint + Direct Fallback)
+    if (!effectiveUserId) {
+      effectiveUserId = crypto.randomUUID();
+      authUser = { id: effectiveUserId, email: cleanEmail };
+    }
+
+    // 6. Guarantee active Supabase Client Session by signing in
     try {
-      const response = await fetch('/api/auth/onboarding', {
+      const { error: signInErr } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
+      if (signInErr) {
+        console.warn('[AUTH] Client session sign-in notice:', signInErr.message);
+      }
+    } catch (err) {
+      console.warn('[AUTH] Client sign-in caught:', err);
+    }
+
+    // 7. Execute Atomic Onboarding (Server-Side Endpoint + Direct Fallback)
+    try {
+      await fetch('/api/auth/onboarding', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: effectiveUserId,
+          name: name,
           username: cleanUsername,
-          whatsappNo: cleanWhatsApp,
+          whatsappNo: phone,
+          phone: phone,
           email: cleanEmail,
+          withdrawalPassword: withdrawalPassword.trim(),
           membershipNumber,
           referralCode: userReferralCode,
           referredBy: verifiedReferrerId,
         }),
       });
-
-      if (!response.ok) {
-        // Fall through to client RPC / safe check
-      }
     } catch (apiErr) {
       // Fall through to client RPC / safe check
     }
 
-    // 6. Direct Client RPC / Safe Insert Fallback
+    // 8. Direct Client RPC / Safe Insert Fallback
     try {
       await supabase.rpc('handle_user_onboarding', {
         p_user_id: effectiveUserId,
         p_username: cleanUsername,
-        p_whatsapp_no: cleanWhatsApp,
+        p_whatsapp_no: phone,
         p_email: cleanEmail,
         p_membership_number: membershipNumber,
         p_referral_code: userReferralCode,
@@ -605,7 +671,7 @@ export async function registerUserAccount(formData: RegisterFormData) {
           await supabase.from('profiles').insert({
             user_id: effectiveUserId,
             username: cleanUsername,
-            whatsapp_no: cleanWhatsApp,
+            whatsapp_no: phone,
             email: cleanEmail,
             membership_number: membershipNumber,
             referral_code: userReferralCode,
@@ -638,37 +704,39 @@ export async function registerUserAccount(formData: RegisterFormData) {
       }
     }
 
-    // 7. Verify that profile and wallet can be queried from Supabase
-    let verifiedProfile: any = null;
-    let verifiedWallet: any = null;
+    // 9. Verify that profile and wallet can be queried from Supabase
+    let verifiedProfile: any = serverProfile;
+    let verifiedWallet: any = serverWallet;
 
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const { data: pData } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('user_id', effectiveUserId)
-        .maybeSingle();
+    if (!verifiedProfile || !verifiedWallet) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const { data: pData } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('user_id', effectiveUserId)
+          .maybeSingle();
 
-      const { data: wData } = await supabase
-        .from('wallets')
-        .select('*')
-        .eq('user_id', effectiveUserId)
-        .maybeSingle();
+        const { data: wData } = await supabase
+          .from('wallets')
+          .select('*')
+          .eq('user_id', effectiveUserId)
+          .maybeSingle();
 
-      if (pData) verifiedProfile = pData;
-      if (wData) verifiedWallet = wData;
+        if (pData) verifiedProfile = pData;
+        if (wData) verifiedWallet = wData;
 
-      if (verifiedProfile && verifiedWallet) break;
-      await new Promise((resolve) => setTimeout(resolve, 300));
+        if (verifiedProfile && verifiedWallet) break;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
     }
 
     const newProfile: UserProfile = {
       id: verifiedProfile?.id || effectiveUserId,
       userId: effectiveUserId,
       username: verifiedProfile?.username || cleanUsername,
-      whatsappNo: verifiedProfile?.whatsapp_no || cleanWhatsApp,
-      name: verifiedProfile?.username || cleanUsername,
-      mobile: verifiedProfile?.whatsapp_no || cleanWhatsApp,
+      whatsappNo: verifiedProfile?.whatsapp_no || phone,
+      name: verifiedProfile?.name || name || cleanUsername,
+      mobile: verifiedProfile?.whatsapp_no || phone,
       email: cleanEmail,
       membershipNumber: verifiedProfile?.membership_number || membershipNumber,
       referralCode: verifiedProfile?.referral_code || userReferralCode,
@@ -697,7 +765,7 @@ export async function registerUserAccount(formData: RegisterFormData) {
     // Save session and cache
     saveLocal(STORAGE_KEYS.PROFILE, newProfile);
     saveLocal(STORAGE_KEYS.WALLET, newWallet);
-    saveLocal(STORAGE_KEYS.SESSION, { userId: effectiveUserId, email: cleanEmail, username: cleanUsername, mobile: cleanWhatsApp });
+    saveLocal(STORAGE_KEYS.SESSION, { userId: effectiveUserId, email: cleanEmail, username: cleanUsername, mobile: phone });
 
     return {
       user: authUser,
@@ -713,9 +781,9 @@ export async function registerUserAccount(formData: RegisterFormData) {
       id: userId,
       userId,
       username: cleanUsername,
-      whatsappNo: cleanWhatsApp,
-      name: cleanUsername,
-      mobile: cleanWhatsApp,
+      whatsappNo: phone,
+      name: name || cleanUsername,
+      mobile: phone,
       email: cleanEmail,
       membershipNumber,
       referralCode: userReferralCode,
@@ -743,7 +811,7 @@ export async function registerUserAccount(formData: RegisterFormData) {
 
     saveLocal(STORAGE_KEYS.PROFILE, newProfile);
     saveLocal(STORAGE_KEYS.WALLET, newWallet);
-    saveLocal(STORAGE_KEYS.SESSION, { userId, email: cleanEmail, username: cleanUsername, mobile: cleanWhatsApp });
+    saveLocal(STORAGE_KEYS.SESSION, { userId, email: cleanEmail, username: cleanUsername, mobile: phone });
 
     return {
       user: { id: userId, email: cleanEmail },
@@ -757,32 +825,36 @@ export async function registerUserAccount(formData: RegisterFormData) {
 
 export async function loginUser(identifier: string, password: string) {
   const cleanId = identifier.trim();
-  if (!cleanId) throw new Error('Please enter your Username, WhatsApp No., or Email.');
+  if (!cleanId) throw new Error('Please enter your phone number or username.');
   if (!password) throw new Error('Please enter your password.');
 
   const cleanDigits = cleanId.replace(/\D/g, '');
   let targetEmail = cleanId;
+  let profileFound = false;
 
   if (isSupabaseConfigured && supabase) {
-    // If not email format, lookup email from profiles table by username or whatsapp_no
+    // If not email format, lookup email from profiles table by username or whatsapp_no/mobile
     if (!cleanId.includes('@')) {
       try {
         const { data: profile } = await supabase
           .from('profiles')
-          .select('email')
+          .select('email, id')
           .or(`username.ilike.${cleanId},whatsapp_no.eq.${cleanDigits},mobile.eq.${cleanDigits}`)
           .limit(1)
           .maybeSingle();
 
         if (profile?.email) {
           targetEmail = profile.email;
+          profileFound = true;
         } else {
-          // Fallback email construct
+          // Check if fallback email format matches
           targetEmail = `${cleanDigits || cleanId}@powerbank.app`;
         }
       } catch {
         targetEmail = `${cleanDigits || cleanId}@powerbank.app`;
       }
+    } else {
+      profileFound = true;
     }
 
     try {
@@ -791,11 +863,11 @@ export async function loginUser(identifier: string, password: string) {
         password,
       });
       if (error) {
-        if (error.message.toLowerCase().includes('invalid login credentials')) {
+        const errLower = error.message.toLowerCase();
+        if (errLower.includes('invalid login credentials') || errLower.includes('invalid_grant')) {
           // Check local users as fallback
           const allUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
           const current = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {} as UserProfile);
-          const cleanDigits = cleanId.replace(/\D/g, '');
           const found = [...allUsers, current].find(
             (u) =>
               u.username?.toLowerCase() === cleanId.toLowerCase() ||
@@ -808,9 +880,12 @@ export async function loginUser(identifier: string, password: string) {
             saveLocal(STORAGE_KEYS.PROFILE, found);
             return { id: found.userId || found.id, email: found.email };
           }
-          throw new Error('Invalid credentials. Please check your username/WhatsApp/email and password.');
+          if (!profileFound && cleanDigits.length === 10) {
+            throw new Error('Account not found. Please register first.');
+          }
+          throw new Error('Invalid phone number or password.');
         }
-        throw new Error(error.message);
+        throw new Error(error.message || 'Invalid phone number or password.');
       }
       if (data?.user) {
         const loggedInUserId = data.user.id;
@@ -3477,7 +3552,8 @@ export async function setDefaultBankAccount(userId: string, bankId: string): Pro
 export async function submitWithdrawalRequest(
   userId: string,
   amount: number,
-  bankAccountId?: string
+  bankAccountId?: string,
+  withdrawalPassword?: string
 ) {
   // 1. Verify Bank Account (Bank Only - No UPI)
   const activeBanks = await fetchBankAccounts(userId);
@@ -3492,6 +3568,34 @@ export async function submitWithdrawalRequest(
 
   if (!selectedBank) {
     throw new Error('Valid Bank Account is required for withdrawal.');
+  }
+
+  if (!withdrawalPassword || withdrawalPassword.trim().length < 4) {
+    throw new Error('Please enter your Withdrawal Password to verify this payout.');
+  }
+
+  // 2. Call server withdrawal verification endpoint
+  try {
+    const resp = await fetch('/api/wallet/withdraw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        amount,
+        bankAccountId: selectedBank.id,
+        withdrawalPassword: withdrawalPassword.trim(),
+      }),
+    });
+
+    const data = await resp.json();
+    if (!resp.ok || !data.success) {
+      throw new Error(data.error || 'Withdrawal request failed.');
+    }
+    return data;
+  } catch (err: any) {
+    if (err.message && !err.message.includes('fetch')) {
+      throw err;
+    }
   }
 
   if (isSupabaseConfigured && supabase) {
@@ -5980,7 +6084,7 @@ export async function createUniVePayDeposit(params: {
   // Fallback to local storage user state if session not directly available
   if (!effectiveUserId) {
     try {
-      const localUser = getLocal<UserProfile | null>(STORAGE_KEYS.USER, null);
+      const localUser = getLocal<UserProfile | null>(STORAGE_KEYS.PROFILE, null);
       if (localUser?.id) {
         effectiveUserId = localUser.id;
       }
@@ -5991,7 +6095,34 @@ export async function createUniVePayDeposit(params: {
     throw new Error('Please login to your account to initiate a recharge.');
   }
 
-  // 2. Primary: Call Express backend /api/univepay/create-payment
+  // 2. Primary: Invoke Supabase create-payin-order Edge Function if configured
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: edgeData, error: edgeErr } = await supabase.functions.invoke('create-payin-order', {
+        body: {
+          amount: numAmount,
+          userId: effectiveUserId,
+          customerName: effectiveUserId,
+          payCode: params.payCode || 'UPI',
+        },
+      });
+
+      if (!edgeErr && edgeData?.success && edgeData?.payUrl) {
+        return {
+          success: true,
+          status: '00',
+          traceno: edgeData.orderId || edgeData.traceno,
+          payUrl: edgeData.payUrl,
+          payOrderid: edgeData.orderId,
+          amount: numAmount,
+        };
+      }
+    } catch (edgeEx) {
+      console.warn('[GATEWAY] Supabase functions invoke create-payin-order error:', edgeEx);
+    }
+  }
+
+  // 3. Fallback: Call Express backend /api/create-payin-order or /api/univepay/create-payment
   try {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -6000,7 +6131,7 @@ export async function createUniVePayDeposit(params: {
       headers['Authorization'] = `Bearer ${accessToken}`;
     }
 
-    const res = await fetch('/api/univepay/create-payment', {
+    const res = await fetch('/api/create-payin-order', {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -6016,9 +6147,9 @@ export async function createUniVePayDeposit(params: {
       return {
         success: true,
         status: '00',
-        traceno: data.traceno,
+        traceno: data.traceno || data.orderId,
         payUrl: data.payUrl,
-        payOrderid: data.payOrderid,
+        payOrderid: data.payOrderid || data.orderId,
         amount: Number(data.payAmount || numAmount),
       };
     }
@@ -6032,39 +6163,7 @@ export async function createUniVePayDeposit(params: {
       };
     }
   } catch (backendErr: any) {
-    console.warn('[UNIVEPAY] Backend /api/univepay/create-payment error:', backendErr);
-  }
-
-  // 3. Fallback to Supabase Edge Function if edge function is configured
-  if (supabaseUrl && supabaseAnonKey && accessToken) {
-    try {
-      const edgeRes = await fetch(`${supabaseUrl}/functions/v1/create-univepay-payment`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': supabaseAnonKey,
-          'Authorization': `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          amount: numAmount,
-          payCode: params.payCode || '印度UPI-银台',
-        }),
-      });
-
-      const edgeData = await edgeRes.json().catch(() => null);
-      if (edgeRes.ok && edgeData?.success && edgeData?.payUrl) {
-        return {
-          success: true,
-          status: '00',
-          traceno: edgeData.traceno,
-          payUrl: edgeData.payUrl,
-          payOrderid: edgeData.payOrderid,
-          amount: Number(edgeData.payAmount || numAmount),
-        };
-      }
-    } catch (edgeErr) {
-      console.warn('[UNIVEPAY] Edge function fallback error:', edgeErr);
-    }
+    console.warn('[UNIVEPAY] Backend /api/create-payin-order error:', backendErr);
   }
 
   return {
@@ -6074,6 +6173,8 @@ export async function createUniVePayDeposit(params: {
     error: 'Payment gateway temporarily unavailable. Please use the manual UPI QR recharge option below.',
   };
 }
+
+export const createPayInOrder = createUniVePayDeposit;
 
 export async function checkUniVePayDepositStatus(traceno: string, amount?: number): Promise<{
   success: boolean;
@@ -6086,12 +6187,31 @@ export async function checkUniVePayDepositStatus(traceno: string, amount?: numbe
     return { success: false, status: 'PENDING' };
   }
 
-  // 1. Check backend /api/univepay/query-deposit
+  // 1. Check Supabase Edge Function 'order-query' if available
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: edgeData, error: edgeErr } = await supabase.functions.invoke('order-query', {
+        body: { orderId: traceno, traceno },
+      });
+      if (!edgeErr && edgeData?.success) {
+        return {
+          success: true,
+          status: edgeData.status || 'PENDING',
+          data: edgeData.data || edgeData,
+          amount: edgeData.amount ? Number(edgeData.amount) : amount,
+        };
+      }
+    } catch (e) {
+      console.warn('[GATEWAY] Supabase order-query invoke error:', e);
+    }
+  }
+
+  // 2. Check backend /api/order-query
   try {
-    const res = await fetch('/api/univepay/query-deposit', {
+    const res = await fetch('/api/order-query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ traceno }),
+      body: JSON.stringify({ orderId: traceno, traceno }),
     });
     if (res.ok) {
       const data = await res.json();
@@ -6105,7 +6225,7 @@ export async function checkUniVePayDepositStatus(traceno: string, amount?: numbe
       }
     }
   } catch (err) {
-    console.warn('[UNIVEPAY] Backend query-deposit error:', err);
+    console.warn('[GATEWAY] Backend order-query error:', err);
   }
 
   // 2. Fallback to Supabase direct query

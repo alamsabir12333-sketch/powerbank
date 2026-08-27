@@ -54,6 +54,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [withdrawalPassword, setWithdrawalPassword] = useState('');
+  const [showWithdrawalPassword, setShowWithdrawalPassword] = useState(false);
   const [referralCode, setReferralCode] = useState(initialReferralCode);
   const [referralLocked, setReferralLocked] = useState(isReferralReadOnly);
 
@@ -117,6 +119,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return;
     }
 
+    if (!withdrawalPassword || withdrawalPassword.trim().length < 4) {
+      setError('Please set a Withdrawal Password (minimum 4 characters) to secure future withdrawals.');
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
@@ -127,6 +134,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         email: email.trim(),
         password,
         confirmPassword,
+        withdrawalPassword: withdrawalPassword.trim(),
         referralCode: referralCode.trim() || undefined,
       });
 
@@ -433,7 +441,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   )}
                 </div>
 
-                {/* 6. REFERRAL CODE */}
+                {/* 6. WITHDRAWAL PASSWORD */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-semibold text-gray-300">
+                      Withdrawal Password <span className="text-[#FF6000]">*</span>
+                    </label>
+                    <span className="text-[10px] text-gray-500">Min. 4 chars</span>
+                  </div>
+                  <div className="relative">
+                    <ShieldCheck className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#FF6000]" />
+                    <input
+                      type={showWithdrawalPassword ? 'text' : 'password'}
+                      required
+                      value={withdrawalPassword}
+                      onChange={(e) => setWithdrawalPassword(e.target.value)}
+                      placeholder="Set 4-12 digit fund password"
+                      className="w-full bg-[#121212] border border-[#2a2a2a] rounded-xl pl-9 pr-10 py-2.5 text-white text-sm focus:outline-none focus:border-[#FF6000] transition-colors"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowWithdrawalPassword(!showWithdrawalPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white p-1"
+                    >
+                      {showWithdrawalPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <span className="text-[10.5px] text-gray-400 mt-1 block leading-tight">
+                    Required for withdrawing wallet funds to your bank account.
+                  </span>
+                </div>
+
+                {/* 7. REFERRAL CODE */}
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <label className="block text-xs font-semibold text-gray-300">

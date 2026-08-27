@@ -10,6 +10,9 @@ import {
   CheckCircle2,
   RefreshCw,
   Building2,
+  Lock,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { BankAccount, Wallet } from '../types';
 import { fetchBankAccounts, submitWithdrawalRequest } from '../services/api';
@@ -32,6 +35,8 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
   onSuccess,
 }) => {
   const [amount, setAmount] = useState<string>('300');
+  const [withdrawalPassword, setWithdrawalPassword] = useState<string>('');
+  const [showPassword, setShowPassword] = useState<boolean>(false);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [selectedBankId, setSelectedBankId] = useState<string>('');
   const [loading, setLoading] = useState(false);
@@ -40,6 +45,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setError(null);
+      setWithdrawalPassword('');
       fetchBankAccounts(userId).then((banks) => {
         setBankAccounts(banks);
         if (banks.length > 0) {
@@ -72,6 +78,10 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
       setError('Please select or bind a bank account first.');
       return;
     }
+    if (!withdrawalPassword.trim()) {
+      setError('Please enter your withdrawal password.');
+      return;
+    }
 
     setLoading(true);
     setError(null);
@@ -80,7 +90,8 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
       await submitWithdrawalRequest(
         userId,
         numAmount,
-        selectedBankId
+        selectedBankId,
+        withdrawalPassword.trim()
       );
 
       onSuccess(`Bank withdrawal request of ₹${numAmount} submitted for processing.`);
@@ -247,6 +258,30 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                   })}
                 </div>
               )}
+            </div>
+
+            {/* Withdrawal Password Field */}
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5 text-[#FF6000]" />
+                <span>Withdrawal Password</span>
+              </label>
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={withdrawalPassword}
+                  onChange={(e) => setWithdrawalPassword(e.target.value)}
+                  placeholder="Enter 4+ digit withdrawal password"
+                  className="w-full bg-[#121212] border border-[#2a2a2a] rounded-xl px-3 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-[#FF6000]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-200"
+                >
+                  {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
             </div>
 
             {/* Summary info */}

@@ -730,6 +730,7 @@ CREATE POLICY "Admins view gateway logs" ON public.gateway_logs FOR ALL USING (p
 -- ==============================================================================
 
 -- 5.1 ATOMIC PLAN PURCHASE (USES RECHARGE BALANCE / AVAILABLE BALANCE)
+DROP FUNCTION IF EXISTS public.purchase_plan CASCADE;
 CREATE OR REPLACE FUNCTION public.purchase_plan(
     p_user_id UUID,
     p_plan_id UUID
@@ -873,6 +874,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 
 -- 5.2 UNIVEPAY CANONICAL DEPOSIT ORDER INITIALIZATION
+DROP FUNCTION IF EXISTS public.create_univepay_deposit_order CASCADE;
 CREATE OR REPLACE FUNCTION public.create_univepay_deposit_order(
     p_user_id UUID,
     p_amount NUMERIC,
@@ -919,6 +921,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 
 -- 5.3 UNIVEPAY CANONICAL DEPOSIT IDEMPOTENT SETTLEMENT (CREDITS RECHARGE BALANCE)
+DROP FUNCTION IF EXISTS public.complete_univepay_deposit_success CASCADE;
 CREATE OR REPLACE FUNCTION public.complete_univepay_deposit_success(
     p_traceno TEXT,
     p_gateway_serial_no TEXT,
@@ -1012,6 +1015,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 
 -- 5.4 ATOMIC DISCRETE HOURLY YIELD CALCULATION
+DROP FUNCTION IF EXISTS public.settle_and_calculate_earnings CASCADE;
 CREATE OR REPLACE FUNCTION public.settle_and_calculate_earnings(p_user_id UUID)
 RETURNS JSONB AS $$
 DECLARE
@@ -1067,6 +1071,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 
 -- 5.5 ATOMIC BATCH CLAIM OF ACCRUED DEVICE EARNINGS
+DROP FUNCTION IF EXISTS public.claim_user_earnings CASCADE;
 CREATE OR REPLACE FUNCTION public.claim_user_earnings(p_user_id UUID)
 RETURNS JSONB AS $$
 DECLARE
@@ -1170,6 +1175,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 
 -- 5.6 ATOMIC WITHDRAWAL CREATION (LOCKS FUNDS ATOMICALLY)
+DROP FUNCTION IF EXISTS public.create_withdrawal_order CASCADE;
 CREATE OR REPLACE FUNCTION public.create_withdrawal_order(
     p_user_id UUID,
     p_amount NUMERIC,
@@ -1276,6 +1282,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 
 -- 5.7 ATOMIC COMPLETION OF UNIVEPAY AUTO WITHDRAWAL
+DROP FUNCTION IF EXISTS public.complete_univepay_withdrawal_success CASCADE;
 CREATE OR REPLACE FUNCTION public.complete_univepay_withdrawal_success(
     p_traceno TEXT,
     p_serial_no TEXT,
@@ -1336,6 +1343,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 
 -- 5.8 ATOMIC REFUND OF FAILED WITHDRAWAL
+DROP FUNCTION IF EXISTS public.fail_univepay_withdrawal_refund CASCADE;
 CREATE OR REPLACE FUNCTION public.fail_univepay_withdrawal_refund(
     p_traceno TEXT,
     p_reason TEXT,
@@ -1412,6 +1420,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 
 -- 5.9 ATOMIC ADMIN MANUAL WALLET ADJUSTMENT
+DROP FUNCTION IF EXISTS public.admin_adjust_wallet CASCADE;
 CREATE OR REPLACE FUNCTION public.admin_adjust_wallet(
     p_user_id UUID,
     p_amount NUMERIC,
