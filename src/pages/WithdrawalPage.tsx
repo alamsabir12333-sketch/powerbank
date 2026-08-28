@@ -112,8 +112,9 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
       return;
     }
 
-    if (!withdrawalPassword.trim()) {
-      setError('Please enter your Withdrawal Password.');
+    const cleanPin = withdrawalPassword.trim();
+    if (!/^\d{4}$/.test(cleanPin)) {
+      setError('Withdrawal PIN must be exactly 4 digits.');
       return;
     }
 
@@ -333,21 +334,26 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
             </div>
           </div>
 
-          {/* Withdrawal Password Input Card */}
+          {/* Withdrawal PIN Input Card */}
           <div className="space-y-1.5 pt-1">
             <div className="flex items-center justify-between px-1">
               <label className="text-xs font-bold text-gray-600 uppercase tracking-wider flex items-center gap-1.5">
                 <Lock className="w-3.5 h-3.5 text-[#FF6000]" />
-                <span>Withdrawal Password</span>
+                <span>Withdrawal PIN</span>
               </label>
               <span className="text-[11px] text-gray-400 font-medium">Security Verification</span>
             </div>
             <div className="relative">
               <input
                 type={showPassword ? 'text' : 'password'}
+                inputMode="numeric"
+                maxLength={4}
                 value={withdrawalPassword}
-                onChange={(e) => setWithdrawalPassword(e.target.value)}
-                placeholder="Enter your withdrawal password"
+                onChange={(e) => {
+                  const digits = e.target.value.replace(/\D/g, '').slice(0, 4);
+                  setWithdrawalPassword(digits);
+                }}
+                placeholder="Enter 4-digit withdrawal PIN"
                 className="w-full bg-[#FAFAFA] border border-gray-200 rounded-2xl px-4 py-3.5 text-gray-900 font-medium text-sm focus:outline-none focus:border-[#FF6000] focus:bg-white transition-colors"
               />
               <button

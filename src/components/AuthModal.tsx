@@ -119,8 +119,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return;
     }
 
-    if (!withdrawalPassword || withdrawalPassword.trim().length < 4) {
-      setError('Please set a Withdrawal Password (minimum 4 characters) to secure future withdrawals.');
+    const cleanPin = withdrawalPassword.trim();
+    if (!/^\d{4}$/.test(cleanPin)) {
+      setError('Withdrawal PIN must be exactly 4 digits.');
       return;
     }
 
@@ -441,22 +442,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   )}
                 </div>
 
-                {/* 6. WITHDRAWAL PASSWORD */}
+                {/* 6. WITHDRAWAL PIN */}
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <label className="block text-xs font-semibold text-gray-300">
-                      Withdrawal Password <span className="text-[#FF6000]">*</span>
+                      Withdrawal PIN <span className="text-[#FF6000]">*</span>
                     </label>
-                    <span className="text-[10px] text-gray-500">Min. 4 chars</span>
+                    <span className="text-[10px] text-gray-500">For Payouts</span>
                   </div>
                   <div className="relative">
                     <ShieldCheck className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#FF6000]" />
                     <input
                       type={showWithdrawalPassword ? 'text' : 'password'}
+                      inputMode="numeric"
+                      maxLength={4}
                       required
                       value={withdrawalPassword}
-                      onChange={(e) => setWithdrawalPassword(e.target.value)}
-                      placeholder="Set 4-12 digit fund password"
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/\D/g, '').slice(0, 4);
+                        setWithdrawalPassword(digits);
+                      }}
+                      placeholder="Enter 4-digit withdrawal PIN"
                       className="w-full bg-[#121212] border border-[#2a2a2a] rounded-xl pl-9 pr-10 py-2.5 text-white text-sm focus:outline-none focus:border-[#FF6000] transition-colors"
                     />
                     <button

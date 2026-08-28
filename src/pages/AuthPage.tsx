@@ -165,8 +165,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       return;
     }
 
-    if (!withdrawalPassword.trim() || withdrawalPassword.trim().length < 4) {
-      setError('Please enter a withdrawal password (minimum 4 characters).');
+    const cleanPin = withdrawalPassword.trim();
+    if (!/^\d{4}$/.test(cleanPin)) {
+      setError('Withdrawal PIN must be exactly 4 digits.');
       return;
     }
 
@@ -622,11 +623,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                 </div>
               </div>
 
-              {/* Field 5: Withdrawal Password */}
+              {/* Field 5: Withdrawal PIN */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-xs font-bold text-gray-700">
-                    Withdrawal Password <span className="text-[#FF6000]">*</span>
+                    Withdrawal PIN <span className="text-[#FF6000]">*</span>
                   </label>
                   <span className="text-[10px] text-gray-400 font-medium">For Payouts</span>
                 </div>
@@ -635,10 +636,15 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                   <input
                     id="register-withdrawal-password-input"
                     type={showWithdrawalPassword ? 'text' : 'password'}
+                    inputMode="numeric"
+                    maxLength={4}
                     required
                     value={withdrawalPassword}
-                    onChange={(e) => setWithdrawalPassword(e.target.value)}
-                    placeholder="Enter withdrawal password"
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, '').slice(0, 4);
+                      setWithdrawalPassword(digits);
+                    }}
+                    placeholder="Enter 4-digit withdrawal PIN"
                     className="w-full bg-[#F8F9FB] border border-gray-200 focus:border-[#FF6000] focus:ring-4 focus:ring-orange-500/10 rounded-2xl py-3 pl-10 pr-11 text-sm font-medium text-gray-900 placeholder:text-gray-400 transition-all outline-hidden"
                   />
                   <button

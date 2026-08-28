@@ -78,8 +78,9 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
       setError('Please select or bind a bank account first.');
       return;
     }
-    if (!withdrawalPassword.trim()) {
-      setError('Please enter your withdrawal password.');
+    const cleanPin = withdrawalPassword.trim();
+    if (!/^\d{4}$/.test(cleanPin)) {
+      setError('Withdrawal PIN must be exactly 4 digits.');
       return;
     }
 
@@ -260,18 +261,23 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
               )}
             </div>
 
-            {/* Withdrawal Password Field */}
+            {/* Withdrawal PIN Field */}
             <div className="space-y-1">
               <label className="text-xs font-semibold text-gray-300 flex items-center gap-1.5">
                 <Lock className="w-3.5 h-3.5 text-[#FF6000]" />
-                <span>Withdrawal Password</span>
+                <span>Withdrawal PIN</span>
               </label>
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
+                  inputMode="numeric"
+                  maxLength={4}
                   value={withdrawalPassword}
-                  onChange={(e) => setWithdrawalPassword(e.target.value)}
-                  placeholder="Enter 4+ digit withdrawal password"
+                  onChange={(e) => {
+                    const digits = e.target.value.replace(/\D/g, '').slice(0, 4);
+                    setWithdrawalPassword(digits);
+                  }}
+                  placeholder="Enter 4-digit withdrawal PIN"
                   className="w-full bg-[#121212] border border-[#2a2a2a] rounded-xl px-3 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-[#FF6000]"
                 />
                 <button

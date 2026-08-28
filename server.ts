@@ -135,8 +135,9 @@ app.post('/api/auth/register', async (req, res) => {
   if (!password || password.length < 6) {
     return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
   }
-  if (!withdrawalPassword || String(withdrawalPassword).trim().length < 4) {
-    return res.status(400).json({ success: false, error: 'Withdrawal password is required (minimum 4 characters).' });
+  const cleanPin = String(withdrawalPassword || '').trim();
+  if (!/^\d{4}$/.test(cleanPin)) {
+    return res.status(400).json({ success: false, error: 'Withdrawal PIN must be exactly 4 digits.' });
   }
   if (!cleanRef) {
     return res.status(400).json({ success: false, error: 'Referral code is required.' });
@@ -1352,13 +1353,14 @@ app.post('/api/wallet/withdraw', async (req, res) => {
   if (!numAmount || numAmount < 100) {
     return res.status(400).json({ success: false, error: 'Minimum withdrawal amount is ₹100.' });
   }
-  if (!withdrawalPassword || String(withdrawalPassword).trim().length < 4) {
-    return res.status(400).json({ success: false, error: 'Withdrawal password is required.' });
+  const cleanPin = String(withdrawalPassword || '').trim();
+  if (!/^\d{4}$/.test(cleanPin)) {
+    return res.status(400).json({ success: false, error: 'Withdrawal PIN must be exactly 4 digits.' });
   }
 
   if (supabase) {
     // 1. Verify withdrawal password hash from user_security table
-    const cleanPass = String(withdrawalPassword).trim();
+    const cleanPass = cleanPin;
 
     const { data: secData } = await supabase
       .from('user_security')
@@ -1393,7 +1395,7 @@ app.post('/api/wallet/withdraw', async (req, res) => {
       if (!isValid) {
         return res.status(401).json({
           success: false,
-          error: 'Incorrect withdrawal password.',
+          error: 'Incorrect withdrawal PIN.',
         });
       }
     } else {

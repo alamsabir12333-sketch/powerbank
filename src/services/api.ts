@@ -458,8 +458,9 @@ export async function registerUserAccount(formData: RegisterFormData) {
     throw new Error('Passwords do not match.');
   }
 
-  if (!withdrawalPassword || withdrawalPassword.trim().length < 4) {
-    throw new Error('Please enter a withdrawal password (minimum 4 characters).');
+  const cleanPin = (withdrawalPassword || '').trim();
+  if (!/^\d{4}$/.test(cleanPin)) {
+    throw new Error('Withdrawal PIN must be exactly 4 digits.');
   }
 
   const cleanRefCode = referralCode?.trim().toUpperCase() || '';
@@ -505,9 +506,12 @@ export async function registerUserAccount(formData: RegisterFormData) {
 
     // 4. Attempt Direct Server-Side Registration (Bypasses Email Rate Limits & Confirms User)
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
       const regResp = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           name,
           username: cleanUsername,
@@ -519,6 +523,7 @@ export async function registerUserAccount(formData: RegisterFormData) {
           membershipNumber,
         }),
       });
+      clearTimeout(timeoutId);
 
       if (regResp.ok) {
         const regData = await regResp.json();
@@ -3812,8 +3817,9 @@ export async function submitWithdrawalRequest(
     throw new Error('Valid Bank Account is required for withdrawal.');
   }
 
-  if (!withdrawalPassword || withdrawalPassword.trim().length < 4) {
-    throw new Error('Please enter your Withdrawal Password to verify this payout.');
+  const cleanPin = (withdrawalPassword || '').trim();
+  if (!/^\d{4}$/.test(cleanPin)) {
+    throw new Error('Withdrawal PIN must be exactly 4 digits.');
   }
 
   // 2. Call server withdrawal verification endpoint
