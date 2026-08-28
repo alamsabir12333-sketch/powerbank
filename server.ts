@@ -171,11 +171,18 @@ app.post('/api/auth/register', async (req, res) => {
       // 2. Validate Referral Code against live DB
       let referrerProfile: any = null;
       if (cleanRef) {
-        const { data: refProf } = await supabase
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanRef);
+        const filterStr = isUUID
+          ? `referral_code.eq.${cleanRef},membership_number.eq.${cleanRef},user_id.eq.${cleanRef},id.eq.${cleanRef}`
+          : `referral_code.eq.${cleanRef},membership_number.eq.${cleanRef}`;
+        const { data: refProf, error: refProfErr } = await supabase
           .from('profiles')
           .select('id, user_id, referral_code, membership_number, username, phone')
-          .or(`referral_code.eq.${cleanRef},membership_number.eq.${cleanRef},user_id.eq.${cleanRef},id.eq.${cleanRef}`)
+          .or(filterStr)
           .maybeSingle();
+        if (refProfErr) {
+          console.warn('[SERVER AUTH] Referrer lookup error:', refProfErr.message);
+        }
         referrerProfile = refProf;
       }
 
@@ -922,7 +929,6 @@ async function settleDepositSuccess(
       signature_verified: true,
       raw_response: rawPayload || order.raw_response,
       completed_at: nowIso,
-      credited_at: nowIso,
       updated_at: nowIso,
     })
     .eq('id', order.id);
@@ -969,7 +975,6 @@ async function settleDepositSuccess(
         balance_before: currentRechargeBalance,
         balance_after: newRechargeBalance,
         description: `Topup Recharge of ₹${depositAmount} Credited to Recharge Wallet`,
-        updated_at: nowIso,
       })
       .eq('id', existingTx.id);
   } else {

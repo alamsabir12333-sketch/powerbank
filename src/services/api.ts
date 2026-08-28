@@ -1743,12 +1743,15 @@ export async function findUserByIdentifier(identifier: string): Promise<UserProf
   // 3. Query Supabase
   if (isSupabaseConfigured && supabase) {
     try {
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clean);
+      const filterStr = isUUID
+        ? `id.eq.${clean},user_id.eq.${clean},membership_number.eq.${clean},referral_code.eq.${clean},username.ilike.${clean},whatsapp_no.eq.${clean}`
+        : `membership_number.eq.${clean},referral_code.eq.${clean},username.ilike.${clean},whatsapp_no.eq.${clean}`;
+
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .or(
-          `id.eq.${clean},membership_number.eq.${clean},referral_code.eq.${clean},username.ilike.${clean},whatsapp_no.eq.${clean}`
-        )
+        .or(filterStr)
         .maybeSingle();
 
       if (!error && data) {
