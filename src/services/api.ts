@@ -6,6 +6,7 @@ import {
   ProductItem,
   PurchaseItem,
   PaymentItem,
+  PaymentStatus,
   BankAccount,
   WithdrawalItem,
   AppNotification,
@@ -184,6 +185,20 @@ export function clearAuthenticatedStorage() {
 
 // Initialize seed data if not present
 function initializeMockStore() {
+  try {
+    const existingTxStr = localStorage.getItem(STORAGE_KEYS.TRANSACTIONS);
+    if (
+      existingTxStr &&
+      (existingTxStr.includes('tx_seed_') ||
+        existingTxStr.includes('ORD-982187') ||
+        existingTxStr.includes('PUR-882910') ||
+        existingTxStr.includes('PUR-773829') ||
+        existingTxStr.includes('CLM-7629A1'))
+    ) {
+      localStorage.removeItem(STORAGE_KEYS.TRANSACTIONS);
+    }
+  } catch {}
+
   if (!localStorage.getItem(STORAGE_KEYS.PLANS)) {
     saveLocal(STORAGE_KEYS.PLANS, productsData);
   }
@@ -195,55 +210,6 @@ function initializeMockStore() {
   }
   if (!localStorage.getItem(STORAGE_KEYS.REFERRAL_SETTINGS)) {
     saveLocal(STORAGE_KEYS.REFERRAL_SETTINGS, defaultReferralSettings);
-  }
-  if (!localStorage.getItem(STORAGE_KEYS.NOTIFICATIONS)) {
-    const seedNotifications: NotificationItem[] = [
-      {
-        id: 'notif_welcome_01',
-        userId: 'usr_demo_01',
-        title: 'Welcome to Power Bank Network',
-        description: 'Your hardware account has been activated! Connect your first sharing economy power cabinet to start earning automatic hourly yield settled directly to your wallet balance.',
-        type: 'ANNOUNCEMENT',
-        isRead: false,
-        isHomePopup: true,
-        homePopupDismissed: false,
-        actionUrl: '/purchase',
-        actionText: 'Explore Hardware Hall',
-        status: 'active',
-        targetAudience: 'ALL_USERS',
-        createdAt: new Date(Date.now() - 3600000 * 2).toISOString(),
-      },
-      {
-        id: 'notif_promo_02',
-        userId: 'usr_demo_01',
-        title: 'Double Earnings Hardware Week',
-        description: 'Deploy any active power cabinet this week to receive double earnings acceleration and priority hourly settlements across our pan-India sharing network.',
-        type: 'PROMOTION',
-        isRead: false,
-        isHomePopup: false,
-        homePopupDismissed: true,
-        actionUrl: '/purchase',
-        actionText: 'View Equipment',
-        status: 'active',
-        targetAudience: 'ALL_USERS',
-        createdAt: new Date(Date.now() - 3600000 * 12).toISOString(),
-      },
-      {
-        id: 'notif_system_03',
-        userId: 'usr_demo_01',
-        title: 'Security & Auto-Settlement Protocol',
-        description: 'Hourly device yields are calculated dynamically every 60 minutes and aggregated for one-click claim in your My Device control center.',
-        type: 'SYSTEM',
-        isRead: true,
-        readAt: new Date(Date.now() - 3600000 * 20).toISOString(),
-        isHomePopup: false,
-        homePopupDismissed: true,
-        status: 'active',
-        targetAudience: 'ALL_USERS',
-        createdAt: new Date(Date.now() - 86400000).toISOString(),
-      },
-    ];
-    saveLocal(STORAGE_KEYS.NOTIFICATIONS, seedNotifications);
   }
 }
 
@@ -1173,164 +1139,390 @@ export async function fetchWallet(userId: string): Promise<Wallet> {
 }
 
 export async function fetchWalletTransactions(userId: string): Promise<WalletTransaction[]> {
+  if (!userId) return [];
+
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase
-        .from('wallet_transactions')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
+      const [txRes, depRes, withRes, purRes, payRes, earnRes] = await Promise.all([
+        supabase
+          .from('wallet_transactions')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('deposit_transactions')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('withdrawals')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('purchases')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('payments')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('earnings')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+      ]);
 
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase fetch transactions:', error.message);
+      const txMap = new Map<string, WalletTransaction>();
+
+      // 1. Process explicit wallet_transactions from DB
+      if (!txRes.error && txRes.data) {
+        for (const t of txRes.data) {
+          const key = t.reference_id || t.id;
+          txMap.set(key, {
+            id: t.id,
+            userId: t.user_id,
+            type: t.type,
+            amount: Number(t.amount),
+            balanceBefore: Number(t.balance_before),
+            balanceAfter: Number(t.balance_after),
+            status: t.status || 'Completed',
+            referenceId: t.reference_id || t.id,
+            description: t.description,
+            paymentMethod: t.payment_method,
+            utr: t.utr,
+            orderId: t.order_id,
+            planName: t.plan_name,
+            createdAt: t.created_at,
+          });
+        }
       }
 
-      if (data && data.length > 0) {
-        return data.map((t) => ({
-          id: t.id,
-          userId: t.user_id,
-          type: t.type,
-          amount: Number(t.amount),
-          balanceBefore: Number(t.balance_before),
-          balanceAfter: Number(t.balance_after),
-          status: t.status || (t.type === 'WITHDRAWAL' && t.amount < 0 ? 'Completed' : 'Completed'),
-          referenceId: t.reference_id,
-          description: t.description,
-          paymentMethod: t.payment_method,
-          utr: t.utr,
-          orderId: t.order_id,
-          planName: t.plan_name,
-          createdAt: t.created_at,
-        }));
+      // 2. Process deposit_transactions (Gateway Deposits)
+      if (!depRes.error && depRes.data) {
+        for (const d of depRes.data) {
+          const ref = d.traceno || d.order_id || d.id;
+          const rawStatus = (d.status || '').toUpperCase();
+          let mappedStatus: 'Completed' | 'Pending' | 'Failed' = 'Pending';
+          if (rawStatus === 'SUCCESS' || rawStatus === 'PAID' || rawStatus === 'COMPLETED') {
+            mappedStatus = 'Completed';
+          } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED' || rawStatus === 'FAILED_GATEWAY_CREATION') {
+            mappedStatus = 'Failed';
+          } else {
+            mappedStatus = 'Pending';
+          }
+
+          if (txMap.has(ref)) {
+            const existing = txMap.get(ref)!;
+            if (mappedStatus === 'Completed') {
+              existing.status = 'Completed';
+            } else if (mappedStatus === 'Failed') {
+              existing.status = 'Failed';
+            }
+            if (d.utr) existing.utr = d.utr;
+          } else {
+            txMap.set(ref, {
+              id: d.id,
+              userId: d.user_id,
+              type: 'RECHARGE',
+              amount: Number(d.amount),
+              balanceBefore: 0,
+              balanceAfter: mappedStatus === 'Completed' ? Number(d.amount) : 0,
+              status: mappedStatus,
+              referenceId: d.traceno,
+              description: `Topup Recharge Order #${d.traceno}`,
+              paymentMethod: d.channel || 'UniVePay UPI Gateway',
+              utr: d.utr || d.gateway_serial_no,
+              createdAt: d.created_at,
+            });
+          }
+        }
       }
-    } catch {
-      // Fall through to local
+
+      // 3. Process manual payments
+      if (!payRes.error && payRes.data) {
+        for (const p of payRes.data) {
+          const ref = p.order_id || p.id;
+          const rawStatus = (p.status || '').toUpperCase();
+          let mappedStatus: 'Completed' | 'Pending' | 'Failed' = 'Pending';
+          if (rawStatus === 'PAID' || rawStatus === 'APPROVED' || rawStatus === 'SUCCESS') {
+            mappedStatus = 'Completed';
+          } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED') {
+            mappedStatus = 'Failed';
+          }
+
+          if (!txMap.has(ref) && !txMap.has(p.id)) {
+            txMap.set(ref, {
+              id: p.id,
+              userId: p.user_id,
+              type: 'RECHARGE',
+              amount: Number(p.amount),
+              balanceBefore: 0,
+              balanceAfter: mappedStatus === 'Completed' ? Number(p.amount) : 0,
+              status: mappedStatus,
+              referenceId: p.order_id || p.id,
+              description: `Manual Recharge (${p.payment_type || 'UPI'})`,
+              paymentMethod: p.payment_type || 'Manual UPI',
+              utr: p.utr,
+              createdAt: p.created_at,
+            });
+          }
+        }
+      }
+
+      // 4. Process withdrawals
+      if (!withRes.error && withRes.data) {
+        for (const w of withRes.data) {
+          const ref = w.id;
+          const rawStatus = (w.status || '').toUpperCase();
+          let mappedStatus: 'Completed' | 'Pending' | 'Failed' = 'Pending';
+          if (rawStatus === 'APPROVED' || rawStatus === 'PAID' || rawStatus === 'SUCCESS' || rawStatus === 'PROCESSED') {
+            mappedStatus = 'Completed';
+          } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED') {
+            mappedStatus = 'Failed';
+          }
+
+          if (!txMap.has(ref)) {
+            txMap.set(ref, {
+              id: w.id,
+              userId: w.user_id,
+              type: 'WITHDRAWAL',
+              amount: -Math.abs(Number(w.amount)),
+              balanceBefore: 0,
+              balanceAfter: 0,
+              status: mappedStatus,
+              referenceId: w.id,
+              description: `Withdrawal Request to ${w.bank_name || 'Bank'} ${w.account_number ? `(A/C: ${w.account_number})` : ''}`,
+              paymentMethod: 'Bank Transfer',
+              utr: w.bank_ref_no,
+              createdAt: w.created_at,
+            });
+          }
+        }
+      }
+
+      // 5. Process hardware purchases
+      if (!purRes.error && purRes.data) {
+        for (const p of purRes.data) {
+          const ref = p.id;
+          if (!txMap.has(ref)) {
+            const isPro = (p.plan_category || '').toUpperCase() === 'PRO';
+            txMap.set(ref, {
+              id: p.id,
+              userId: p.user_id,
+              type: isPro ? 'PRO_PLAN_PURCHASE' : 'PLAN_PURCHASE',
+              amount: -Math.abs(Number(p.amount)),
+              balanceBefore: 0,
+              balanceAfter: 0,
+              status: 'Completed',
+              referenceId: p.id,
+              planName: p.plan_name || 'Hardware Plan',
+              description: `Hardware Activation: ${p.plan_name || 'Cabinet'} (₹${p.amount})`,
+              createdAt: p.created_at,
+            });
+          }
+        }
+      }
+
+      // 6. Process claimed earnings / yield claims
+      if (!earnRes.error && earnRes.data) {
+        for (const e of earnRes.data) {
+          const ref = e.claim_batch_id || e.id;
+          if (e.status === 'CLAIMED' && !txMap.has(ref) && !txMap.has(e.id)) {
+            txMap.set(ref, {
+              id: e.id,
+              userId: e.user_id,
+              type: e.earning_type === 'REFERRAL' ? 'REFERRAL_BONUS' : 'EARNING_CLAIM',
+              amount: Number(e.amount),
+              balanceBefore: 0,
+              balanceAfter: 0,
+              status: 'Completed',
+              referenceId: ref,
+              description: e.plan_name ? `Yield Claim: ${e.plan_name}` : 'Hardware Yield Settlement',
+              planName: e.plan_name,
+              createdAt: e.claimed_at || e.created_at,
+            });
+          }
+        }
+      }
+
+      const list = Array.from(txMap.values()).sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+
+      // ALWAYS return only real database records (returns [] if user has no transactions)
+      return list;
+    } catch (e) {
+      console.warn('Error fetching Supabase transactions for user:', e);
+      return [];
     }
   }
 
-  const list = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
-  if (list.length === 0) {
-    // Seed default representative financial transactions for local mode
-    const now = Date.now();
-    const seed: WalletTransaction[] = [
-      {
-        id: 'tx_seed_01',
-        userId,
-        type: 'RECHARGE',
-        amount: 1500,
-        balanceBefore: 0,
-        balanceAfter: 1500,
-        status: 'Completed',
-        referenceId: 'ORD-982187',
-        description: 'Manual UPI QR Recharge (UTR: 324598102938)',
-        paymentMethod: 'Manual UPI QR',
-        utr: '324598102938',
-        createdAt: new Date(now - 86400000 * 2).toISOString(),
-      },
-      {
-        id: 'tx_seed_02',
-        userId,
-        type: 'PLAN_PURCHASE',
-        amount: -500,
-        balanceBefore: 1500,
-        balanceAfter: 1000,
-        status: 'Completed',
-        referenceId: 'PUR-882910',
-        description: 'Purchase: 10000mAh Power Cabinet (HOURLY)',
-        planName: '10000mAh Power Cabinet',
-        createdAt: new Date(now - 86400000 * 2 + 1800000).toISOString(),
-      },
-      {
-        id: 'tx_seed_03',
-        userId,
-        type: 'PRO_PLAN_PURCHASE',
-        amount: -1000,
-        balanceBefore: 1000,
-        balanceAfter: 0,
-        status: 'Completed',
-        referenceId: 'PUR-773829',
-        description: 'Purchase: PRO Smart Charging Station (PRO)',
-        planName: 'PRO Smart Charging Station',
-        createdAt: new Date(now - 86400000 + 3600000).toISOString(),
-      },
-      {
-        id: 'tx_seed_04',
-        userId,
-        type: 'PRO_INSTANT_BONUS',
-        amount: 50,
-        balanceBefore: 0,
-        balanceAfter: 50,
-        status: 'Completed',
-        referenceId: 'PUR-773829',
-        description: 'PRO Instant Bonus Cashback: PRO Smart Charging Station',
-        planName: 'PRO Smart Charging Station',
-        createdAt: new Date(now - 86400000 + 3605000).toISOString(),
-      },
-      {
-        id: 'tx_seed_05',
-        userId,
-        type: 'EARNING_CLAIM',
-        amount: 60.50,
-        balanceBefore: 50,
-        balanceAfter: 110.50,
-        status: 'Completed',
-        referenceId: 'CLM-7629A1',
-        description: 'Device Yield Claim (CLM-7629A1)',
-        createdAt: new Date(now - 43200000).toISOString(),
-      },
-      {
-        id: 'tx_seed_06',
-        userId,
-        type: 'REFERRAL_BONUS',
-        amount: 50.00,
-        balanceBefore: 110.50,
-        balanceAfter: 160.50,
-        status: 'Completed',
-        referenceId: 'REF-PB901234',
-        description: 'Tier 1 Referral Commission: Friend Activation',
-        createdAt: new Date(now - 28800000).toISOString(),
-      },
-    ];
-    saveLocal(STORAGE_KEYS.TRANSACTIONS, seed);
-    return seed.filter((t) => t.userId === userId);
-  }
-  return list.filter((t) => t.userId === userId);
+  // Local storage mode without Supabase (only user-created transactions, zero mock seed)
+  const localList = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+  return localList
+    .filter((t) => t.userId === userId && !t.id.startsWith('tx_seed_'))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
 export async function fetchAdminTransactions(): Promise<WalletTransaction[]> {
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase
-        .from('wallet_transactions')
-        .select('*, profiles(username, mobile, membership_number)')
-        .order('created_at', { ascending: false })
-        .limit(200);
+      const [txRes, depRes, withRes, purRes] = await Promise.all([
+        supabase
+          .from('wallet_transactions')
+          .select('*, profiles(username, mobile, membership_number)')
+          .order('created_at', { ascending: false })
+          .limit(300),
+        supabase
+          .from('deposit_transactions')
+          .select('*, profiles(username, mobile, membership_number)')
+          .order('created_at', { ascending: false })
+          .limit(300),
+        supabase
+          .from('withdrawals')
+          .select('*, profiles(username, mobile, membership_number)')
+          .order('created_at', { ascending: false })
+          .limit(300),
+        supabase
+          .from('purchases')
+          .select('*, profiles(username, mobile, membership_number)')
+          .order('created_at', { ascending: false })
+          .limit(300),
+      ]);
 
-      if (!error && data && data.length > 0) {
-        return data.map((t: any) => ({
-          id: t.id,
-          userId: t.user_id,
-          username: t.profiles?.username,
-          userMobile: t.profiles?.mobile,
-          type: t.type,
-          amount: Number(t.amount),
-          balanceBefore: Number(t.balance_before),
-          balanceAfter: Number(t.balance_after),
-          status: t.status || 'Completed',
-          referenceId: t.reference_id,
-          description: t.description,
-          paymentMethod: t.payment_method,
-          utr: t.utr,
-          orderId: t.order_id,
-          planName: t.plan_name,
-          createdAt: t.created_at,
-        }));
+      const txMap = new Map<string, WalletTransaction>();
+
+      if (!txRes.error && txRes.data) {
+        for (const t of txRes.data) {
+          const ref = t.reference_id || t.id;
+          txMap.set(ref, {
+            id: t.id,
+            userId: t.user_id,
+            username: t.profiles?.username || 'User',
+            userMobile: t.profiles?.mobile || 'N/A',
+            type: t.type,
+            amount: Number(t.amount),
+            balanceBefore: Number(t.balance_before),
+            balanceAfter: Number(t.balance_after),
+            status: t.status || 'Completed',
+            referenceId: t.reference_id,
+            description: t.description,
+            paymentMethod: t.payment_method,
+            utr: t.utr,
+            orderId: t.order_id,
+            planName: t.plan_name,
+            createdAt: t.created_at,
+          });
+        }
       }
+
+      if (!depRes.error && depRes.data) {
+        for (const d of depRes.data) {
+          const ref = d.traceno || d.order_id || d.id;
+          const rawStatus = (d.status || '').toUpperCase();
+          let mappedStatus: 'Completed' | 'Pending' | 'Failed' = 'Pending';
+          if (rawStatus === 'SUCCESS' || rawStatus === 'PAID' || rawStatus === 'COMPLETED') {
+            mappedStatus = 'Completed';
+          } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED' || rawStatus === 'FAILED_GATEWAY_CREATION') {
+            mappedStatus = 'Failed';
+          }
+
+          if (txMap.has(ref)) {
+            const existing = txMap.get(ref)!;
+            if (mappedStatus === 'Completed') existing.status = 'Completed';
+            if (d.utr) existing.utr = d.utr;
+          } else {
+            txMap.set(ref, {
+              id: d.id,
+              userId: d.user_id,
+              username: d.profiles?.username || 'User',
+              userMobile: d.profiles?.mobile || 'N/A',
+              type: 'RECHARGE',
+              amount: Number(d.amount),
+              balanceBefore: 0,
+              balanceAfter: mappedStatus === 'Completed' ? Number(d.amount) : 0,
+              status: mappedStatus,
+              referenceId: d.traceno,
+              description: `Topup Recharge Order #${d.traceno}`,
+              paymentMethod: d.channel || 'UniVePay UPI Gateway',
+              utr: d.utr || d.gateway_serial_no,
+              createdAt: d.created_at,
+            });
+          }
+        }
+      }
+
+      if (!withRes.error && withRes.data) {
+        for (const w of withRes.data) {
+          const ref = w.id;
+          const rawStatus = (w.status || '').toUpperCase();
+          let mappedStatus: 'Completed' | 'Pending' | 'Failed' = 'Pending';
+          if (rawStatus === 'APPROVED' || rawStatus === 'PAID' || rawStatus === 'SUCCESS' || rawStatus === 'PROCESSED') {
+            mappedStatus = 'Completed';
+          } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED') {
+            mappedStatus = 'Failed';
+          }
+
+          if (!txMap.has(ref)) {
+            txMap.set(ref, {
+              id: w.id,
+              userId: w.user_id,
+              username: w.profiles?.username || 'User',
+              userMobile: w.profiles?.mobile || 'N/A',
+              type: 'WITHDRAWAL',
+              amount: -Math.abs(Number(w.amount)),
+              balanceBefore: 0,
+              balanceAfter: 0,
+              status: mappedStatus,
+              referenceId: w.id,
+              description: `Withdrawal to ${w.bank_name || 'Bank'} ${w.account_number ? `(${w.account_number})` : ''}`,
+              paymentMethod: 'Bank Transfer',
+              utr: w.bank_ref_no,
+              createdAt: w.created_at,
+            });
+          }
+        }
+      }
+
+      if (!purRes.error && purRes.data) {
+        for (const p of purRes.data) {
+          const ref = p.id;
+          if (!txMap.has(ref)) {
+            const isPro = (p.plan_category || '').toUpperCase() === 'PRO';
+            txMap.set(ref, {
+              id: p.id,
+              userId: p.user_id,
+              username: p.profiles?.username || 'User',
+              userMobile: p.profiles?.mobile || 'N/A',
+              type: isPro ? 'PRO_PLAN_PURCHASE' : 'PLAN_PURCHASE',
+              amount: -Math.abs(Number(p.amount)),
+              balanceBefore: 0,
+              balanceAfter: 0,
+              status: 'Completed',
+              referenceId: p.id,
+              planName: p.plan_name || 'Hardware Plan',
+              description: `Hardware Activation: ${p.plan_name || 'Cabinet'} (₹${p.amount})`,
+              createdAt: p.created_at,
+            });
+          }
+        }
+      }
+
+      const list = Array.from(txMap.values()).sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+
+      return list;
     } catch {
-      // Fall through to local
+      return [];
     }
   }
-  return getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+  const localList = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+  return localList.filter((t) => !t.id.startsWith('tx_seed_'));
 }
 
 // ==============================================================================
@@ -3771,27 +3963,74 @@ export async function fetchUserWithdrawals(userId: string): Promise<WithdrawalIt
 export async function fetchAdminPayments(): Promise<PaymentItem[]> {
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase
-        .from('payments')
-        .select('*, profiles(mobile)')
-        .order('created_at', { ascending: false });
+      const [manualRes, gatewayRes] = await Promise.all([
+        supabase
+          .from('payments')
+          .select('*, profiles(username, mobile, whatsapp_no)')
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('deposit_transactions')
+          .select('*, profiles(username, mobile, whatsapp_no)')
+          .order('created_at', { ascending: false })
+          .limit(200),
+      ]);
 
-      if (!error && data && data.length > 0) {
-        return data.map((p) => ({
-          id: p.id,
-          userId: p.user_id,
-          userMobile: p.profiles?.mobile || 'N/A',
-          orderId: p.order_id,
-          amount: Number(p.amount),
-          paymentType: p.payment_type,
-          utr: p.utr,
-          proofUrl: p.proof_url,
-          status: p.status,
-          adminId: p.admin_id,
-          rejectionReason: p.rejection_reason,
-          createdAt: p.created_at,
-          updatedAt: p.updated_at,
-        }));
+      const manualPayments: PaymentItem[] = (!manualRes.error && manualRes.data)
+        ? manualRes.data.map((p: any) => ({
+            id: p.id,
+            userId: p.user_id,
+            username: p.profiles?.username || 'User',
+            userMobile: p.profiles?.mobile || p.profiles?.whatsapp_no || 'N/A',
+            orderId: p.order_id || p.id,
+            amount: Number(p.amount),
+            paymentType: p.payment_type || 'MANUAL_QR',
+            utr: p.utr,
+            proofUrl: p.proof_url,
+            status: p.status as PaymentStatus,
+            adminId: p.admin_id,
+            rejectionReason: p.rejection_reason,
+            createdAt: p.created_at,
+            updatedAt: p.updated_at,
+          }))
+        : [];
+
+      const gatewayDeposits: PaymentItem[] = (!gatewayRes.error && gatewayRes.data)
+        ? gatewayRes.data.map((d: any) => {
+            const rawStatus = (d.status || '').toUpperCase();
+            let mappedStatus: PaymentStatus = 'PAYMENT_PENDING';
+            if (rawStatus === 'SUCCESS' || rawStatus === 'PAID' || rawStatus === 'COMPLETED') {
+              mappedStatus = 'PAID';
+            } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED' || rawStatus === 'FAILED_GATEWAY_CREATION') {
+              mappedStatus = 'FAILED';
+            } else {
+              mappedStatus = 'PAYMENT_PENDING';
+            }
+
+            return {
+              id: d.id,
+              userId: d.user_id,
+              username: d.profiles?.username || 'User',
+              userMobile: d.profiles?.whatsapp_no || d.profiles?.mobile || 'N/A',
+              orderId: d.traceno || d.order_id || d.id,
+              amount: Number(d.amount),
+              paymentType: d.channel || 'UNIVEPAY_GATEWAY',
+              utr: d.utr || d.gateway_serial_no || d.traceno,
+              proofUrl: d.pay_url,
+              status: mappedStatus,
+              adminId: undefined,
+              rejectionReason: d.rejection_reason,
+              createdAt: d.created_at,
+              updatedAt: d.updated_at,
+            };
+          })
+        : [];
+
+      const combined = [...manualPayments, ...gatewayDeposits].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+
+      if (combined.length > 0) {
+        return combined;
       }
     } catch {
       // Fall through to local
@@ -4934,37 +5173,35 @@ export async function fetchAdminAllTransactions(filters?: {
 }): Promise<import('../types').WalletTransaction[]> {
   if (isSupabaseConfigured && supabase) {
     try {
-      let query = supabase.from('wallet_transactions').select('*, profiles(username, whatsapp_no)').order('created_at', { ascending: false });
+      const allTx = await fetchAdminTransactions();
+      let list = allTx;
 
       if (filters?.userId) {
-        query = query.eq('user_id', filters.userId);
+        list = list.filter((t) => t.userId === filters.userId);
       }
       if (filters?.type && filters.type !== 'ALL') {
-        query = query.eq('type', filters.type);
+        list = list.filter((t) => t.type === filters.type);
       }
-
-      const { data, error } = await query.limit(300);
-      if (!error && data) {
-        return data.map((t) => ({
-          id: t.id,
-          userId: t.user_id,
-          username: t.profiles?.username || 'User',
-          userMobile: t.profiles?.whatsapp_no || 'N/A',
-          type: t.type,
-          amount: Number(t.amount),
-          balanceBefore: Number(t.balance_before),
-          balanceAfter: Number(t.balance_after),
-          referenceId: t.reference_id,
-          description: t.description,
-          createdAt: t.created_at,
-        }));
+      if (filters?.query) {
+        const q = filters.query.toLowerCase();
+        list = list.filter(
+          (t) =>
+            (t.description || '').toLowerCase().includes(q) ||
+            (t.referenceId || '').toLowerCase().includes(q) ||
+            (t.userId || '').toLowerCase().includes(q) ||
+            (t.username || '').toLowerCase().includes(q) ||
+            (t.userMobile || '').toLowerCase().includes(q)
+        );
       }
+      return list;
     } catch (e) {
       console.warn('Error fetching Supabase transactions:', e);
     }
   }
 
-  const txs = getLocal<import('../types').WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+  const txs = getLocal<import('../types').WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []).filter(
+    (t) => !t.id.startsWith('tx_seed_')
+  );
   let list = txs;
   if (filters?.userId) {
     list = list.filter((t) => t.userId === filters.userId);
@@ -4974,10 +5211,11 @@ export async function fetchAdminAllTransactions(filters?: {
   }
   if (filters?.query) {
     const q = filters.query.toLowerCase();
-    list = list.filter((t) =>
-      (t.description || '').toLowerCase().includes(q) ||
-      (t.referenceId || '').toLowerCase().includes(q) ||
-      (t.userId || '').toLowerCase().includes(q)
+    list = list.filter(
+      (t) =>
+        (t.description || '').toLowerCase().includes(q) ||
+        (t.referenceId || '').toLowerCase().includes(q) ||
+        (t.userId || '').toLowerCase().includes(q)
     );
   }
   return list;

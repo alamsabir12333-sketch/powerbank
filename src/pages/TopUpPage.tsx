@@ -148,7 +148,7 @@ export default function TopUpPage({
             const { data: order } = await supabase
               .from('deposit_transactions')
               .select('status')
-              .eq('order_id', orderId)
+              .or(`traceno.eq.${orderId},merchant_order_id.eq.${orderId}`)
               .maybeSingle();
 
             if (order?.status === 'SUCCESS') {

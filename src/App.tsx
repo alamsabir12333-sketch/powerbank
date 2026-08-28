@@ -48,6 +48,14 @@ function AppContent() {
     refreshUserData,
   } = useAuth();
 
+  // Active route path tracking
+  const [currentPath, setCurrentPath] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return window.location.pathname;
+    }
+    return '/';
+  });
+
   // Admin Route Isolation
   const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -99,11 +107,31 @@ function AppContent() {
     }, 3200);
   };
 
+  // Helper to guard protected actions for unauthenticated visitors
+  const requireAuth = useCallback(
+    (onAllowed: () => void, targetMode: 'login' | 'register' = 'login') => {
+      if (!isAuthenticated) {
+        showToast('Please sign in or create an account to access this feature.', 'info');
+        setAuthMode(targetMode);
+        if (typeof window !== 'undefined') {
+          const targetUrl = targetMode === 'register' ? '/register' : '/login';
+          window.history.pushState({}, '', targetUrl);
+          setCurrentPath(targetUrl);
+        }
+        return;
+      }
+      onAllowed();
+    },
+    [isAuthenticated]
+  );
+
   // 1. Parse URL for route, referral link, and admin route listener
   useEffect(() => {
     const handleLocationCheck = () => {
       if (typeof window === 'undefined') return;
       const path = window.location.pathname;
+      setCurrentPath(path);
+
       if (path === '/adminbank' || path.startsWith('/adminbank')) {
         setIsAdminRoute(true);
         setIsCheckoutRoute(false);
@@ -128,9 +156,11 @@ function AppContent() {
         refreshUserData();
         if (typeof window !== 'undefined') {
           window.history.replaceState({}, '', '/');
+          setCurrentPath('/');
         }
       }
 
+      // Check for /invite/:referralCode
       if (!refParam && path.includes('/invite/')) {
         const segments = path.split('/invite/');
         if (segments[1]) {
@@ -138,6 +168,7 @@ function AppContent() {
         }
       }
 
+      // Handle referral links (both /invite/:code and /register?ref=:code)
       if (refParam) {
         const cleanRef = refParam.toUpperCase();
         setInviteCode(cleanRef);
@@ -149,14 +180,33 @@ function AppContent() {
         setAuthMode('login');
       } else if (path === '/register') {
         setAuthMode('register');
+        const savedInvite =
+          sessionStorage.getItem('pb_pending_invite_code') || localStorage.getItem('pb_pending_invite_code');
+        if (savedInvite) {
+          setInviteCode(savedInvite.toUpperCase());
+          setIsInviteReadOnly(true);
+        }
       } else if (path === '/notifications') {
         setActiveTab('notifications');
       } else if (path === '/vip' || path === '/vip-levels') {
         setActiveTab('vip_levels');
-      } else if (path === '/' && sessionStorage.getItem('pb_last_auth_action') === 'logout') {
-        setAuthMode('login');
+      } else if (path === '/about-platform' || path === '/about') {
+        setActiveTab('about_platform');
+      } else if (path === '/purchase' || path === '/products') {
+        setActiveTab('purchase');
+      } else if (path === '/fortune') {
+        setActiveTab('fortune');
+      } else if (path === '/team') {
+        setActiveTab('team');
+      } else if (path === '/me' || path === '/profile') {
+        setActiveTab('me');
+      } else if (path === '/home' || path === '/') {
+        setActiveTab('home');
+      } else if (path === '/transactions') {
+        setActiveTab('transactions');
       } else {
-        const savedInvite = sessionStorage.getItem('pb_pending_invite_code') || localStorage.getItem('pb_pending_invite_code');
+        const savedInvite =
+          sessionStorage.getItem('pb_pending_invite_code') || localStorage.getItem('pb_pending_invite_code');
         if (savedInvite) {
           setInviteCode(savedInvite.toUpperCase());
           setIsInviteReadOnly(true);
@@ -177,6 +227,7 @@ function AppContent() {
       if (isAuthenticated) {
         if (path === '/register' || path === '/login' || path.startsWith('/invite/')) {
           window.history.replaceState({}, '', '/');
+          setCurrentPath('/');
         }
       } else {
         if (path === '/login' || lastAuthAction === 'logout') {
@@ -191,16 +242,24 @@ function AppContent() {
   const handleLogout = async () => {
     await signOut();
     setAuthMode('login');
+    setCurrentPath('/login');
     showToast('Logged out successfully.', 'info');
   };
 
   const handleAuthSuccess = (profile: UserProfile, isNewUser?: boolean) => {
     setActiveTab('home');
+    setCurrentPath('/');
     if (typeof window !== 'undefined') {
       window.history.replaceState({}, '', '/');
     }
     refreshUserData();
   };
+
+  // Determine whether current route should display AuthPage
+  const isAuthRoute =
+    currentPath === '/login' ||
+    currentPath === '/register' ||
+    currentPath.startsWith('/invite/');
 
   // =========================================================================
   // ADMIN PANEL ROUTE HANDLER (/adminbank)
@@ -274,6 +333,7 @@ function AppContent() {
           if (typeof window !== 'undefined') {
             window.history.pushState({}, '', '/');
             setIsCheckoutRoute(false);
+            setCurrentPath('/');
           }
         }}
       />
@@ -298,8 +358,8 @@ function AppContent() {
     );
   }
 
-  // 2. Unauthenticated User Flow: FIRST SHOW REGISTER PAGE (or Login if selected/logout)
-  if (!isAuthenticated) {
+  // 2. Explicit Auth Routes: /login, /register, /register?ref=..., /invite/:code
+  if (!isAuthenticated && isAuthRoute) {
     return (
       <>
         <AuthPage
@@ -308,14 +368,21 @@ function AppContent() {
           isReferralReadOnly={isInviteReadOnly}
           onAuthSuccess={handleAuthSuccess}
           onShowToast={showToast}
-          onModeChange={(mode) => setAuthMode(mode)}
+          onModeChange={(mode) => {
+            setAuthMode(mode);
+            if (typeof window !== 'undefined') {
+              const newUrl = mode === 'login' ? '/login' : '/register';
+              window.history.replaceState({}, '', newUrl);
+              setCurrentPath(newUrl);
+            }
+          }}
         />
         <Toast message={toastMessage} type={toastType} />
       </>
     );
   }
 
-  // 3. Authenticated User Flow
+  // 3. Main Application Flow (Home, Tabs, Modals)
   const activeUserId = userProfile?.userId || userProfile?.id || user?.id || '';
   const isDarkTab = activeTab === 'home';
 
@@ -332,18 +399,31 @@ function AppContent() {
           {activeTab === 'home' && (
             <HomePage
               onNavigateTab={(tab) => {
-                setActiveTab(tab);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                if (tab === 'home' || tab === 'about_platform') {
+                  setActiveTab(tab);
+                  window.scrollTo({ top: 0, behavior: 'instant' });
+                  return;
+                }
+                requireAuth(() => {
+                  setActiveTab(tab);
+                  window.scrollTo({ top: 0, behavior: 'instant' });
+                });
               }}
               onShowToast={showToast}
               userProfile={userProfile}
               wallet={wallet}
               purchases={purchases}
               onOpenRecharge={() => {
-                setActiveTab('recharge');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                requireAuth(() => {
+                  setActiveTab('recharge');
+                  window.scrollTo({ top: 0, behavior: 'instant' });
+                });
               }}
-              onOpenMyDevice={() => setIsMyDeviceOpen(true)}
+              onOpenMyDevice={() => {
+                requireAuth(() => {
+                  setIsMyDeviceOpen(true);
+                });
+              }}
             />
           )}
 
@@ -592,8 +672,15 @@ function AppContent() {
           <BottomNav
             activeTab={activeTab}
             onTabChange={(tab) => {
-              setActiveTab(tab);
-              window.scrollTo({ top: 0, behavior: 'instant' });
+              if (tab === 'home' || tab === 'about_platform') {
+                setActiveTab(tab);
+                window.scrollTo({ top: 0, behavior: 'instant' });
+                return;
+              }
+              requireAuth(() => {
+                setActiveTab(tab);
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              });
             }}
             isDark={isDarkTab}
           />
