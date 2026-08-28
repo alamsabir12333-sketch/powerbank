@@ -150,386 +150,344 @@ app.post('/api/auth/register', async (req, res) => {
     return res.status(400).json({ success: false, error: 'You cannot use your own referral code.' });
   }
 
+  if (!supabase || !hasServiceRoleKey) {
+    return res.status(500).json({
+      success: false,
+      error: 'Supabase server client or service role key is not configured.',
+    });
+  }
+
   try {
     let createdUserId: string | null = null;
     let authUserObj: any = null;
 
-    if (supabase) {
-      // 1. Check if phone is already registered in profiles
-      const { data: existingProfile } = await supabase
-        .from('profiles')
-        .select('id, user_id, whatsapp_no, username')
-        .or(`phone.eq.${cleanPhone},whatsapp_no.eq.${cleanPhone},mobile.eq.${cleanPhone}`)
-        .maybeSingle();
+    // 1. Check if phone is already registered in profiles
+    const { data: existingProfile } = await supabase
+      .from('profiles')
+      .select('id, user_id, whatsapp_no, username')
+      .or(`phone.eq.${cleanPhone},whatsapp_no.eq.${cleanPhone},mobile.eq.${cleanPhone}`)
+      .maybeSingle();
 
-      if (existingProfile) {
+    if (existingProfile) {
+      return res.status(400).json({
+        success: false,
+        error: 'This phone number is already registered. Please login instead.',
+      });
+    }
+
+    // 2. Validate Referral Code against live DB
+    let referrerProfile: any = null;
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanRef);
+    const filterStr = isUUID
+      ? `referral_code.eq.${cleanRef},membership_number.eq.${cleanRef},user_id.eq.${cleanRef},id.eq.${cleanRef}`
+      : `referral_code.eq.${cleanRef},membership_number.eq.${cleanRef}`;
+    const { data: refProf, error: refProfErr } = await supabase
+      .from('profiles')
+      .select('id, user_id, referral_code, membership_number, username, phone')
+      .or(filterStr)
+      .maybeSingle();
+    if (refProfErr) {
+      console.warn('[SERVER AUTH] Referrer lookup error:', refProfErr.message);
+    }
+    referrerProfile = refProf;
+
+    if (!referrerProfile) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid referral code. Please provide a valid inviter code.',
+      });
+    }
+
+    const referrerUserId = referrerProfile.user_id || referrerProfile.id;
+    const referrerDisplayCode = referrerProfile.referral_code || referrerProfile.membership_number || cleanRef;
+
+    // 3. Create user via Admin API (bypasses email rate limits and sets email confirmed)
+    const { data: adminUser, error: adminErr } = await supabase.auth.admin.createUser({
+      email: cleanEmail,
+      password,
+      email_confirm: true,
+      user_metadata: {
+        name: name || cleanUsername,
+        full_name: name || cleanUsername,
+        username: cleanUsername,
+        whatsapp_no: cleanPhone,
+        mobile: cleanPhone,
+        phone: cleanPhone,
+        membership_number: memNum,
+        referral_code: memNum,
+        referred_by: referrerDisplayCode,
+      },
+    });
+
+    if (adminErr || !adminUser?.user?.id) {
+      console.warn('[SERVER AUTH] admin.createUser error:', adminErr?.message);
+      const msg = (adminErr?.message || '').toLowerCase();
+      if (msg.includes('already registered') || msg.includes('user already registered') || msg.includes('duplicate')) {
         return res.status(400).json({
           success: false,
           error: 'This phone number is already registered. Please login instead.',
         });
       }
-
-      // 2. Validate Referral Code against live DB
-      let referrerProfile: any = null;
-      if (cleanRef) {
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanRef);
-        const filterStr = isUUID
-          ? `referral_code.eq.${cleanRef},membership_number.eq.${cleanRef},user_id.eq.${cleanRef},id.eq.${cleanRef}`
-          : `referral_code.eq.${cleanRef},membership_number.eq.${cleanRef}`;
-        const { data: refProf, error: refProfErr } = await supabase
-          .from('profiles')
-          .select('id, user_id, referral_code, membership_number, username, phone')
-          .or(filterStr)
-          .maybeSingle();
-        if (refProfErr) {
-          console.warn('[SERVER AUTH] Referrer lookup error:', refProfErr.message);
-        }
-        referrerProfile = refProf;
-      }
-
-      if (!referrerProfile) {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid referral code. Please provide a valid inviter code.',
-        });
-      }
-
-      const referrerUserId = referrerProfile.user_id || referrerProfile.id;
-      const referrerDisplayCode = referrerProfile.referral_code || referrerProfile.membership_number || cleanRef;
-
-      // 3. Create user via Admin API (bypasses rate limits) or standard signUp
-      if (hasServiceRoleKey && supabase.auth?.admin?.createUser) {
-        const { data: adminUser, error: adminErr } = await supabase.auth.admin.createUser({
-          email: cleanEmail,
-          password,
-          email_confirm: true,
-          user_metadata: {
-            name: name || cleanUsername,
-            full_name: name || cleanUsername,
-            username: cleanUsername,
-            whatsapp_no: cleanPhone,
-            mobile: cleanPhone,
-            phone: cleanPhone,
-            withdrawal_password: withdrawalPassword,
-            membership_number: memNum,
-            referral_code: memNum,
-            referred_by: referrerDisplayCode,
-          },
-        });
-
-        if (adminUser?.user?.id) {
-          createdUserId = adminUser.user.id;
-          authUserObj = adminUser.user;
-        } else if (adminErr) {
-          console.warn('[SERVER AUTH] admin.createUser notice:', adminErr.message);
-          const msg = adminErr.message.toLowerCase();
-          if (msg.includes('already registered') || msg.includes('user already registered')) {
-            return res.status(400).json({
-              success: false,
-              error: 'This phone number is already registered. Please login instead.',
-            });
-          }
-        }
-      }
-
-      // If admin.createUser was not available or not permitted, use standard signUp
-      if (!createdUserId) {
-        const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
-          email: cleanEmail,
-          password,
-          options: {
-            data: {
-              name: name || cleanUsername,
-              full_name: name || cleanUsername,
-              username: cleanUsername,
-              whatsapp_no: cleanPhone,
-              mobile: cleanPhone,
-              phone: cleanPhone,
-              withdrawal_password: withdrawalPassword,
-              membership_number: memNum,
-              referral_code: memNum,
-              referred_by: referrerDisplayCode,
-            },
-          },
-        });
-
-        if (signUpData?.user?.id) {
-          createdUserId = signUpData.user.id;
-          authUserObj = signUpData.user;
-        } else if (signUpErr) {
-          console.warn('[SERVER AUTH] signUp notice:', signUpErr.message);
-          const msg = signUpErr.message.toLowerCase();
-          if (msg.includes('already registered') || msg.includes('user already registered')) {
-            return res.status(400).json({
-              success: false,
-              error: 'This phone number or email is already registered. Please login instead.',
-            });
-          }
-        }
-      }
-
-      // Fallback: If auth creation was rate limited, create UUID
-      if (!createdUserId) {
-        createdUserId = crypto.randomUUID();
-        authUserObj = { id: createdUserId, email: cleanEmail };
-      }
-
-      const now = new Date().toISOString();
-
-      // 4. Perform atomic user onboarding in Database via RPC if available
-      try {
-        await supabase.rpc('handle_user_onboarding', {
-          p_user_id: createdUserId,
-          p_username: cleanUsername,
-          p_whatsapp_no: cleanPhone,
-          p_email: cleanEmail,
-          p_membership_number: memNum,
-          p_referral_code: memNum,
-          p_referred_by: referrerDisplayCode,
-        });
-      } catch (rpcErr) {
-        console.warn('[SERVER AUTH] RPC onboarding fallback:', rpcErr);
-      }
-
-      // 5. Ensure profile row exists in profiles table
-      const { data: profExist } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('user_id', createdUserId)
-        .maybeSingle();
-
-      let finalProfile = profExist;
-      if (!finalProfile) {
-        const { data: insertedProf, error: insProfErr } = await supabase
-          .from('profiles')
-          .insert({
-            id: createdUserId,
-            user_id: createdUserId,
-            name: name || cleanUsername,
-            full_name: name || cleanUsername,
-            phone: cleanPhone,
-            phone_number: cleanPhone,
-            mobile: cleanPhone,
-            username: cleanUsername,
-            whatsapp_no: cleanPhone,
-            email: cleanEmail,
-            membership_number: memNum,
-            referral_code: memNum,
-            referred_by: referrerDisplayCode,
-            role: 'user',
-            status: 'active',
-            created_at: now,
-            updated_at: now,
-          })
-          .select()
-          .single();
-        if (insProfErr) {
-          console.warn('[SERVER AUTH] profiles insert warning:', insProfErr.message);
-        }
-        finalProfile = insertedProf;
-      } else {
-        const { data: updatedProf } = await supabase
-          .from('profiles')
-          .update({
-            name: name || cleanUsername,
-            full_name: name || cleanUsername,
-            phone: cleanPhone,
-            phone_number: cleanPhone,
-            mobile: cleanPhone,
-            username: cleanUsername,
-            whatsapp_no: cleanPhone,
-            referred_by: referrerDisplayCode,
-            updated_at: now,
-          })
-          .eq('user_id', createdUserId)
-          .select()
-          .single();
-        if (updatedProf) finalProfile = updatedProf;
-      }
-
-      // 6. Ensure wallet row exists with ₹50 Sign-up Bonus
-      const { data: walExist } = await supabase
-        .from('wallets')
-        .select('*')
-        .eq('user_id', createdUserId)
-        .maybeSingle();
-
-      let finalWallet = walExist;
-      if (!finalWallet) {
-        const { data: insertedWal, error: insWalErr } = await supabase
-          .from('wallets')
-          .insert({
-            id: crypto.randomUUID(),
-            user_id: createdUserId,
-            available_balance: 50.0,
-            recharge_balance: 50.0,
-            withdraw_balance: 0.0,
-            pending_balance: 0.0,
-            total_earned: 0.0,
-            total_withdrawn: 0.0,
-            created_at: now,
-            updated_at: now,
-          })
-          .select()
-          .single();
-        if (insWalErr) {
-          console.warn('[SERVER AUTH] wallets insert warning:', insWalErr.message);
-        }
-        finalWallet = insertedWal;
-      }
-
-      // 7. Securely hash and store withdrawal password in user_security table using bcrypt
-      if (withdrawalPassword) {
-        const cleanPass = String(withdrawalPassword).trim();
-        const wthPassHash = bcrypt.hashSync(cleanPass, 10);
-        try {
-          await supabase
-            .from('user_security')
-            .upsert(
-              {
-                user_id: createdUserId,
-                withdrawal_password_hash: wthPassHash,
-                created_at: now,
-                updated_at: now,
-              },
-              { onConflict: 'user_id' }
-            );
-        } catch (secErr) {
-          console.warn('[SERVER AUTH] user_security upsert notice:', secErr);
-        }
-      }
-
-      // 8. Insert referral link in referrals table
-      if (referrerUserId) {
-        try {
-          const { data: refLinkExist } = await supabase
-            .from('referrals')
-            .select('id')
-            .eq('referee_id', createdUserId)
-            .maybeSingle();
-
-          if (!refLinkExist) {
-            await supabase.from('referrals').insert({
-              referrer_id: referrerUserId,
-              referee_id: createdUserId,
-              level: 1,
-              bonus_amount: 0,
-              status: 'ACTIVE',
-              qualifying_recharge_done: false,
-              commission_earned: 0,
-              created_at: now,
-              updated_at: now,
-            });
-          }
-        } catch (refLinkErr) {
-          console.warn('[SERVER AUTH] referrals insert notice:', refLinkErr);
-        }
-      }
-
-      // 9. Record Signup Bonus transaction in wallet_transactions
-      try {
-        await supabase.from('wallet_transactions').insert({
-          user_id: createdUserId,
-          type: 'SIGNUP_BONUS',
-          amount: 50.0,
-          balance_before: 0.0,
-          balance_after: 50.0,
-          balance_type: 'RECHARGE_WALLET',
-          status: 'Completed',
-          description: '🎁 Welcome Signup Bonus credited to Recharge Wallet',
-          created_at: now,
-        });
-      } catch (txErr) {
-        console.warn('[SERVER AUTH] wallet_transactions insert notice:', txErr);
-      }
-
-      // 10. Create Welcome Notification
-      try {
-        await supabase.from('notifications').insert({
-          user_id: createdUserId,
-          title: 'Welcome to Power Bank! ⚡',
-          message: 'Your account has been activated with ₹50 Signup Bonus in your Recharge Wallet. Deploy your first power bank device to start earning daily income.',
-          type: 'ANNOUNCEMENT',
-          read: false,
-          created_at: now,
-        });
-      } catch (notifErr) {
-        console.warn('[SERVER AUTH] notifications insert notice:', notifErr);
-      }
-
-      // 11. Final verification: Check profiles and wallets rows exist
-      const { data: chkProf } = await supabase.from('profiles').select('*').eq('user_id', createdUserId).maybeSingle();
-      const { data: chkWal } = await supabase.from('wallets').select('*').eq('user_id', createdUserId).maybeSingle();
-
-      return res.json({
-        success: true,
-        user: authUserObj,
-        userId: createdUserId,
-        email: cleanEmail,
-        profile: chkProf || finalProfile || {
-          id: createdUserId,
-          userId: createdUserId,
-          username: cleanUsername,
-          whatsappNo: cleanPhone,
-          name: name || cleanUsername,
-          mobile: cleanPhone,
-          email: cleanEmail,
-          membershipNumber: memNum,
-          referralCode: memNum,
-          referredBy: referrerDisplayCode,
-          role: 'user',
-          status: 'active',
-          walletBalance: 50.0,
-        },
-        wallet: chkWal || finalWallet || {
-          id: 'wal_' + createdUserId,
-          userId: createdUserId,
-          topupBalance: 50.0,
-          withdrawBalance: 0.0,
-          availableBalance: 50.0,
-          rechargeBalance: 50.0,
-          earnedBalance: 0.0,
-          pendingBalance: 0.0,
-          totalEarned: 0.0,
-          totalWithdrawn: 0.0,
-        },
+      return res.status(500).json({
+        success: false,
+        error: adminErr?.message || 'Failed to create user authentication record.',
       });
     }
 
-    // No supabase server client fallback
-    const fallbackId = 'usr_' + Date.now();
+    createdUserId = adminUser.user.id;
+    authUserObj = adminUser.user;
+    const now = new Date().toISOString();
+
+    // Helper for transactional rollback of partial registration
+    const rollbackPartialRegistration = async (uid: string) => {
+      try {
+        console.warn(`[SERVER AUTH] Rolling back partial registration for uid: ${uid}`);
+        await supabase.from('wallet_transactions').delete().eq('user_id', uid);
+        await supabase.from('notifications').delete().eq('user_id', uid);
+        await supabase.from('referrals').delete().eq('referee_id', uid);
+        await supabase.from('user_security').delete().eq('user_id', uid);
+        await supabase.from('wallets').delete().eq('user_id', uid);
+        await supabase.from('profiles').delete().eq('user_id', uid);
+        await supabase.auth.admin.deleteUser(uid);
+        console.log(`[SERVER AUTH] Rollback completed for uid: ${uid}`);
+      } catch (rbErr) {
+        console.error('[SERVER AUTH] Rollback error:', rbErr);
+      }
+    };
+
+    // 4. Perform atomic user onboarding via RPC if present
+    try {
+      await supabase.rpc('handle_user_onboarding', {
+        p_user_id: createdUserId,
+        p_username: cleanUsername,
+        p_whatsapp_no: cleanPhone,
+        p_email: cleanEmail,
+        p_membership_number: memNum,
+        p_referral_code: memNum,
+        p_referred_by: referrerDisplayCode,
+      });
+    } catch (rpcErr) {
+      console.warn('[SERVER AUTH] RPC onboarding notice:', rpcErr);
+    }
+
+    // 5. Ensure profile row exists in profiles table
+    const { data: profExist } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('user_id', createdUserId)
+      .maybeSingle();
+
+    let finalProfile = profExist;
+    if (!finalProfile) {
+      const { data: insertedProf, error: insProfErr } = await supabase
+        .from('profiles')
+        .insert({
+          id: createdUserId,
+          user_id: createdUserId,
+          name: name || cleanUsername,
+          full_name: name || cleanUsername,
+          phone: cleanPhone,
+          phone_number: cleanPhone,
+          mobile: cleanPhone,
+          username: cleanUsername,
+          whatsapp_no: cleanPhone,
+          email: cleanEmail,
+          membership_number: memNum,
+          referral_code: memNum,
+          referred_by: referrerDisplayCode,
+          role: 'user',
+          status: 'active',
+          created_at: now,
+          updated_at: now,
+        })
+        .select()
+        .single();
+
+      if (insProfErr) {
+        console.error('[SERVER AUTH] profiles insert failure:', insProfErr.message);
+        await rollbackPartialRegistration(createdUserId);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to create user profile in database: ' + insProfErr.message,
+        });
+      }
+      finalProfile = insertedProf;
+    } else {
+      const { data: updatedProf } = await supabase
+        .from('profiles')
+        .update({
+          name: name || cleanUsername,
+          full_name: name || cleanUsername,
+          phone: cleanPhone,
+          phone_number: cleanPhone,
+          mobile: cleanPhone,
+          username: cleanUsername,
+          whatsapp_no: cleanPhone,
+          referred_by: referrerDisplayCode,
+          updated_at: now,
+        })
+        .eq('user_id', createdUserId)
+        .select()
+        .single();
+      if (updatedProf) finalProfile = updatedProf;
+    }
+
+    // 6. Ensure wallet row exists with configured Sign-up Bonus (default ₹50.0)
+    let signupBonus = 50.0;
+    try {
+      const { data: sysSet } = await supabase.from('admin_settings').select('value').eq('key', 'system_settings').maybeSingle();
+      if (sysSet?.value && typeof sysSet.value === 'object' && sysSet.value.signUpBonusAmount !== undefined) {
+        signupBonus = Number(sysSet.value.signUpBonusAmount);
+      }
+    } catch (_sErr) {}
+
+    const { data: walExist } = await supabase
+      .from('wallets')
+      .select('*')
+      .eq('user_id', createdUserId)
+      .maybeSingle();
+
+    let finalWallet = walExist;
+    if (!finalWallet) {
+      const { data: insertedWal, error: insWalErr } = await supabase
+        .from('wallets')
+        .insert({
+          user_id: createdUserId,
+          available_balance: signupBonus,
+          recharge_balance: signupBonus,
+          withdraw_balance: 0.0,
+          pending_balance: 0.0,
+          total_earned: 0.0,
+          total_withdrawn: 0.0,
+          created_at: now,
+          updated_at: now,
+        })
+        .select()
+        .single();
+
+      if (insWalErr) {
+        console.error('[SERVER AUTH] wallets insert failure:', insWalErr.message);
+        await rollbackPartialRegistration(createdUserId);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to create user wallet in database: ' + insWalErr.message,
+        });
+      }
+      finalWallet = insertedWal;
+    }
+
+    // 7. Securely hash and store withdrawal PIN in user_security table using bcrypt
+    const wthPassHash = bcrypt.hashSync(cleanPin, 10);
+    const { error: secErr } = await supabase
+      .from('user_security')
+      .upsert(
+        {
+          user_id: createdUserId,
+          withdrawal_password_hash: wthPassHash,
+          created_at: now,
+          updated_at: now,
+        },
+        { onConflict: 'user_id' }
+      );
+
+    if (secErr) {
+      console.error('[SERVER AUTH] user_security upsert error:', secErr.message);
+      await rollbackPartialRegistration(createdUserId);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to record user security credentials: ' + secErr.message,
+      });
+    }
+
+    // 8. Insert referral link in referrals table
+    if (referrerUserId) {
+      const { data: refLinkExist } = await supabase
+        .from('referrals')
+        .select('id')
+        .eq('referee_id', createdUserId)
+        .maybeSingle();
+
+      if (!refLinkExist) {
+        const { error: refInsErr } = await supabase.from('referrals').insert({
+          referrer_id: referrerUserId,
+          referee_id: createdUserId,
+          level: 1,
+          bonus_amount: 0,
+          status: 'ACTIVE',
+          qualifying_recharge_done: false,
+          commission_earned: 0,
+          created_at: now,
+          updated_at: now,
+        });
+        if (refInsErr) {
+          console.warn('[SERVER AUTH] referrals insert warning:', refInsErr.message);
+        }
+      }
+    }
+
+    // 9. Record Signup Bonus transaction in wallet_transactions
+    try {
+      await supabase.from('wallet_transactions').insert({
+        user_id: createdUserId,
+        type: 'ADMIN_ADJUSTMENT',
+        amount: signupBonus,
+        balance_before: 0.0,
+        balance_after: signupBonus,
+        balance_type: 'RECHARGE_WALLET',
+        wallet_type: 'TOPUP',
+        status: 'COMPLETED',
+        reference_id: `SIGNUP-BONUS-${createdUserId}`,
+        description: '🎁 Welcome Signup Bonus credited to Recharge Wallet',
+        created_at: now,
+      });
+    } catch (txErr) {
+      console.warn('[SERVER AUTH] wallet_transactions insert notice:', txErr);
+    }
+
+    // 10. Create Welcome Notification
+    try {
+      await supabase.from('notifications').insert({
+        user_id: createdUserId,
+        title: 'Welcome to Power Bank! ⚡',
+        message: `Your account has been activated with ₹${signupBonus} Signup Bonus in your Recharge Wallet. Deploy your first power bank device to start earning daily income.`,
+        type: 'ANNOUNCEMENT',
+        read: false,
+        created_at: now,
+      });
+    } catch (notifErr) {
+      console.warn('[SERVER AUTH] notifications insert notice:', notifErr);
+    }
+
+    // 11. Fresh database read verification of all required records
+    const { data: verifiedProf } = await supabase.from('profiles').select('*').eq('user_id', createdUserId).maybeSingle();
+    const { data: verifiedWal } = await supabase.from('wallets').select('*').eq('user_id', createdUserId).maybeSingle();
+    const { data: verifiedSec } = await supabase.from('user_security').select('*').eq('user_id', createdUserId).maybeSingle();
+    const { data: verifiedRef } = await supabase.from('referrals').select('*').eq('referee_id', createdUserId).maybeSingle();
+
+    if (!verifiedProf) {
+      await rollbackPartialRegistration(createdUserId);
+      return res.status(500).json({ success: false, error: 'Database onboarding verification failed: profile record missing.' });
+    }
+    if (!verifiedWal) {
+      await rollbackPartialRegistration(createdUserId);
+      return res.status(500).json({ success: false, error: 'Database onboarding verification failed: wallet record missing.' });
+    }
+    if (!verifiedSec) {
+      await rollbackPartialRegistration(createdUserId);
+      return res.status(500).json({ success: false, error: 'Database onboarding verification failed: security record missing.' });
+    }
+    if (referrerUserId && !verifiedRef) {
+      await rollbackPartialRegistration(createdUserId);
+      return res.status(500).json({ success: false, error: 'Database onboarding verification failed: referral record missing.' });
+    }
+
     return res.json({
       success: true,
-      user: { id: fallbackId, email: cleanEmail },
-      userId: fallbackId,
+      user: authUserObj,
+      userId: createdUserId,
       email: cleanEmail,
-      profile: {
-        id: fallbackId,
-        userId: fallbackId,
-        username: cleanUsername,
-        whatsappNo: cleanPhone,
-        name: name || cleanUsername,
-        mobile: cleanPhone,
-        email: cleanEmail,
-        membershipNumber: memNum,
-        referralCode: memNum,
-        referredBy: cleanRef || undefined,
-        role: 'user',
-        status: 'active',
-        walletBalance: 50.0,
-      },
-      wallet: {
-        id: 'wal_' + fallbackId,
-        userId: fallbackId,
-        topupBalance: 50.0,
-        withdrawBalance: 0.0,
-        availableBalance: 50.0,
-        rechargeBalance: 50.0,
-        earnedBalance: 0.0,
-        pendingBalance: 0.0,
-        totalEarned: 0.0,
-        totalWithdrawn: 0.0,
-      },
+      profile: verifiedProf,
+      wallet: verifiedWal,
     });
   } catch (err: any) {
     console.error('[SERVER AUTH] Registration error:', err);
@@ -1479,6 +1437,9 @@ app.post('/api/wallet/withdraw', async (req, res) => {
             user_id: userId,
             amount: numAmount,
             type: 'WITHDRAWAL',
+            balance_before: currentBalance,
+            balance_after: newWithdrawBal,
+            wallet_type: 'WITHDRAWABLE',
             status: 'PENDING',
             description: `Withdrawal request of ₹${numAmount.toFixed(2)} (Net: ₹${netAmount.toFixed(2)})`,
             created_at: new Date().toISOString(),
@@ -1765,10 +1726,12 @@ app.post('/api/auth/onboarding', async (req, res) => {
     try {
       await supabase.from('wallet_transactions').insert({
         user_id: userId,
-        type: 'SIGNUP_BONUS',
+        type: 'ADMIN_ADJUSTMENT',
         amount: 50.0,
         balance_before: 0.0,
         balance_after: 50.0,
+        wallet_type: 'TOPUP',
+        status: 'COMPLETED',
         reference_id: `WELCOME-${userId}`,
         description: '🎁 Welcome Sign-up Bonus: ₹50.00 (Topup Wallet)',
         created_at: new Date().toISOString(),
@@ -1819,6 +1782,334 @@ app.post('/api/auth/onboarding', async (req, res) => {
   } catch (err: any) {
     console.error('Onboarding exception:', err);
     return res.status(500).json({ success: false, error: err.message || 'Onboarding failed.' });
+  }
+});
+
+// ==============================================================================
+// 5.5 DYNAMIC DAILY CHECK-IN & REWARDS BACKEND API
+// ==============================================================================
+app.get('/api/fortune/checkin-status', async (req, res) => {
+  if (!supabase) {
+    return res.json({ success: false, error: 'Database service unavailable' });
+  }
+  const userId = (req.query.userId || req.headers['x-user-id'] || '').toString().trim();
+  if (!userId) {
+    return res.status(400).json({ success: false, error: 'User ID is required' });
+  }
+
+  try {
+    // 1. Fetch Dynamic Admin Settings from admin_settings
+    let dailyCheckInAmount = 5.00;
+    let dailyCheckInDay7Bonus = 100.00;
+    let isDailyCheckInEnabled = true;
+
+    try {
+      const { data: setRow } = await supabase.from('admin_settings').select('value').eq('id', 'system').maybeSingle();
+      if (setRow?.value) {
+        if (typeof setRow.value.dailyCheckInAmount === 'number') dailyCheckInAmount = setRow.value.dailyCheckInAmount;
+        if (typeof setRow.value.dailyCheckInDay7Bonus === 'number') dailyCheckInDay7Bonus = setRow.value.dailyCheckInDay7Bonus;
+        if (typeof setRow.value.isDailyCheckInEnabled === 'boolean') isDailyCheckInEnabled = setRow.value.isDailyCheckInEnabled;
+      }
+    } catch (e) {
+      console.warn('Error reading system settings for checkin:', e);
+    }
+
+    // 2. Fetch Check-in Transactions from wallet_ledger & wallet_transactions
+    let checkIns: any[] = [];
+    const { data: ledgerRows, error: legErr } = await supabase
+      .from('wallet_ledger')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('transaction_type', 'DAILY_CHECKIN')
+      .order('created_at', { ascending: false });
+
+    if (ledgerRows && ledgerRows.length > 0) {
+      checkIns = ledgerRows;
+    } else {
+      const { data: txRows } = await supabase
+        .from('wallet_transactions')
+        .select('*')
+        .eq('user_id', userId)
+        .or('reference_id.ilike.CHECKIN-%,type.eq.ADMIN_ADJUSTMENT')
+        .order('created_at', { ascending: false });
+      checkIns = (txRows || []).filter((t: any) => (t.reference_id || '').toUpperCase().startsWith('CHECKIN'));
+    }
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    // Gather unique check-in dates (sorted newest to oldest)
+    const dateMap = new Map<string, any>();
+    for (const tx of checkIns) {
+      const datePart = (tx.created_at || '').split('T')[0];
+      if (datePart && !dateMap.has(datePart)) {
+        dateMap.set(datePart, tx);
+      }
+    }
+
+    const hasCheckedInToday = dateMap.has(todayStr);
+
+    // Calculate consecutive streak
+    let streak = 0;
+    let checkDate = new Date();
+    if (!hasCheckedInToday) {
+      // If not today, check if user checked in yesterday to maintain streak
+      checkDate.setDate(checkDate.getDate() - 1);
+    }
+
+    while (true) {
+      const checkStr = checkDate.toISOString().split('T')[0];
+      if (dateMap.has(checkStr)) {
+        streak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+
+    // Calculate current cycle day number (1 to 7)
+    let todayDayNumber = 1;
+    if (hasCheckedInToday) {
+      todayDayNumber = streak > 0 ? ((streak - 1) % 7) + 1 : 1;
+    } else {
+      todayDayNumber = (streak % 7) + 1;
+    }
+
+    const todayReward = todayDayNumber === 7 ? dailyCheckInDay7Bonus : dailyCheckInAmount;
+    const totalClaimed = checkIns.reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+
+    const history = checkIns.map((tx: any, idx: number) => {
+      const dateStr = (tx.created_at || '').split('T')[0];
+      const match = (tx.reference_id || '').match(/DAY-(\d+)/i);
+      const dayNum = match ? parseInt(match[1], 10) : ((checkIns.length - idx - 1) % 7) + 1;
+      return {
+        id: tx.id,
+        date: dateStr,
+        dayNumber: dayNum,
+        amount: Number(tx.amount || 0),
+        status: tx.status || 'Completed',
+        claimedAt: tx.created_at,
+        txId: tx.id,
+      };
+    });
+
+    return res.json({
+      success: true,
+      lastCheckInDate: hasCheckedInToday ? todayStr : (dateMap.keys().next().value || null),
+      currentStreak: streak,
+      hasCheckedInToday,
+      todayDayNumber,
+      todayReward,
+      day7Bonus: dailyCheckInDay7Bonus,
+      dailyReward: dailyCheckInAmount,
+      isDailyCheckInEnabled,
+      totalClaimed: +totalClaimed.toFixed(2),
+      history,
+    });
+  } catch (err: any) {
+    console.error('Check-in status error:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to fetch check-in status' });
+  }
+});
+
+app.post('/api/fortune/checkin', async (req, res) => {
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database service unavailable' });
+  }
+
+  const userId = (req.body?.userId || req.headers['x-user-id'] || '').toString().trim();
+  if (!userId) {
+    return res.status(400).json({ success: false, error: 'User ID is required' });
+  }
+
+  try {
+    // 1. Fetch Dynamic Admin Settings
+    let dailyCheckInAmount = 5.00;
+    let dailyCheckInDay7Bonus = 100.00;
+    let isDailyCheckInEnabled = true;
+
+    try {
+      const { data: setRow } = await supabase.from('admin_settings').select('value').eq('id', 'system').maybeSingle();
+      if (setRow?.value) {
+        if (typeof setRow.value.dailyCheckInAmount === 'number') dailyCheckInAmount = setRow.value.dailyCheckInAmount;
+        if (typeof setRow.value.dailyCheckInDay7Bonus === 'number') dailyCheckInDay7Bonus = setRow.value.dailyCheckInDay7Bonus;
+        if (typeof setRow.value.isDailyCheckInEnabled === 'boolean') isDailyCheckInEnabled = setRow.value.isDailyCheckInEnabled;
+      }
+    } catch (e) {
+      console.warn('Error reading system settings for checkin:', e);
+    }
+
+    if (!isDailyCheckInEnabled) {
+      return res.status(400).json({
+        success: false,
+        error: 'Daily check-in is currently disabled by platform administrator.',
+      });
+    }
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStart = todayStr + 'T00:00:00.000Z';
+    const todayEnd = todayStr + 'T23:59:59.999Z';
+
+    // 2. Atomic Duplicate / Idempotency Check: check if checked in today via wallet_ledger
+    const { data: existingToday, error: exErr } = await supabase
+      .from('wallet_ledger')
+      .select('id, created_at')
+      .eq('user_id', userId)
+      .eq('transaction_type', 'DAILY_CHECKIN')
+      .gte('created_at', todayStart)
+      .lte('created_at', todayEnd)
+      .limit(1);
+
+    if (existingToday && existingToday.length > 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'You have already checked in today! Please return tomorrow.',
+      });
+    }
+
+    // 3. Fetch past check-in records to compute new streak
+    const { data: pastTx } = await supabase
+      .from('wallet_ledger')
+      .select('created_at')
+      .eq('user_id', userId)
+      .eq('transaction_type', 'DAILY_CHECKIN')
+      .order('created_at', { ascending: false });
+
+    const pastDateSet = new Set<string>();
+    for (const tx of pastTx || []) {
+      const dp = (tx.created_at || '').split('T')[0];
+      if (dp) pastDateSet.add(dp);
+    }
+
+    // Calculate streak from yesterday backwards
+    let prevStreak = 0;
+    let prevDate = new Date();
+    prevDate.setDate(prevDate.getDate() - 1);
+    while (true) {
+      const dateStr = prevDate.toISOString().split('T')[0];
+      if (pastDateSet.has(dateStr)) {
+        prevStreak++;
+        prevDate.setDate(prevDate.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+
+    const newStreak = prevStreak + 1;
+    const cycleDay = ((newStreak - 1) % 7) + 1;
+    const reward = cycleDay === 7 ? Number(dailyCheckInDay7Bonus) : Number(dailyCheckInAmount);
+
+    // 4. Fetch User Wallet
+    const { data: walletData, error: walErr } = await supabase
+      .from('wallets')
+      .select('*')
+      .eq('user_id', userId)
+      .single();
+
+    if (walErr || !walletData) {
+      return res.status(404).json({ success: false, error: 'User wallet not found in database.' });
+    }
+
+    const curRecharge = Number(walletData.recharge_balance || 0);
+    const curAvailable = Number(walletData.available_balance || 0);
+    const newRecharge = +(curRecharge + reward).toFixed(2);
+    const newAvailable = +(curAvailable + reward).toFixed(2);
+
+    const txId = crypto.randomUUID();
+    const nowIso = new Date().toISOString();
+
+    // 5. Atomic Update: Credit Topup / Recharge Wallet
+    const { error: updErr } = await supabase
+      .from('wallets')
+      .update({
+        recharge_balance: newRecharge,
+        available_balance: newAvailable,
+        updated_at: nowIso,
+      })
+      .eq('user_id', userId);
+
+    if (updErr) {
+      console.error('Failed to update wallet balance on checkin:', updErr);
+      return res.status(500).json({ success: false, error: 'Failed to credit Topup wallet: ' + updErr.message });
+    }
+
+    // 6. Insert into wallet_transactions (with valid DB constraint type ADMIN_ADJUSTMENT)
+    const { error: txInsErr } = await supabase.from('wallet_transactions').insert({
+      id: txId,
+      user_id: userId,
+      type: 'ADMIN_ADJUSTMENT',
+      amount: reward,
+      balance_before: curRecharge,
+      balance_after: newRecharge,
+      wallet_type: 'TOPUP',
+      status: 'COMPLETED',
+      reference_id: `CHECKIN-DAY-${cycleDay}-${todayStr}`,
+      description: `📅 Daily Check-in (Day ${cycleDay}) Reward: ₹${reward.toFixed(2)} credited to Topup Wallet`,
+      created_at: nowIso,
+    });
+
+    if (txInsErr) {
+      console.warn('Warning: transaction log insert error:', txInsErr);
+    }
+
+    // 7. Insert into wallet_ledger
+    try {
+      await supabase.from('wallet_ledger').insert({
+        user_id: userId,
+        wallet_type: 'RECHARGE',
+        transaction_type: 'DAILY_CHECKIN',
+        amount: reward,
+        direction: 'CREDIT',
+        reference_type: 'DAILY_CHECKIN',
+        reference_id: `CHECKIN-DAY-${cycleDay}-${todayStr}`,
+        balance_before: curRecharge,
+        balance_after: newRecharge,
+        description: `Daily Check-in (Day ${cycleDay}) Reward`,
+        created_at: nowIso,
+      });
+    } catch (ledErr) {
+      console.warn('Warning: wallet ledger insert error:', ledErr);
+    }
+
+    // 8. Insert Notification
+    try {
+      await supabase.from('notifications').insert({
+        user_id: userId,
+        title: 'Daily Check-in Reward 🎉',
+        message: `₹${reward.toFixed(2)} has been added to your Topup Wallet for leasing power bank devices. (Day ${cycleDay} • Streak: ${newStreak} day${newStreak === 1 ? '' : 's'})`,
+        type: 'SUCCESS',
+        read: false,
+        created_at: nowIso,
+      });
+    } catch (notifErr) {
+      console.warn('Warning: notification insert error:', notifErr);
+    }
+
+    // 9. Update user checkin summary in admin_settings
+    try {
+      await supabase.from('admin_settings').upsert({
+        id: 'checkin_' + userId,
+        value: {
+          lastCheckInDate: todayStr,
+          currentStreak: newStreak,
+          updatedAt: nowIso,
+        },
+        updated_at: nowIso,
+      });
+    } catch {}
+
+    return res.json({
+      success: true,
+      reward,
+      streak: newStreak,
+      dayNumber: cycleDay,
+      newBalance: newRecharge,
+      newRechargeBalance: newRecharge,
+      newAvailableBalance: newAvailable,
+      txId,
+      message: `🎉 Daily Check-in Successful! Credited ₹${reward.toFixed(2)} to your Topup Wallet.`,
+    });
+  } catch (err: any) {
+    console.error('Check-in claim exception:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Check-in claim failed.' });
   }
 });
 
@@ -2079,10 +2370,12 @@ app.post('/api/admin/approve-recharge', async (req, res) => {
     // Insert wallet transaction
     await supabase.from('wallet_transactions').insert({
       user_id: payment.user_id,
-      type: 'RECHARGE_APPROVED',
+      type: 'RECHARGE',
       amount: Number(payment.amount),
       balance_before: currentBal,
       balance_after: newBal,
+      wallet_type: 'TOPUP',
+      status: 'COMPLETED',
       reference_id: payment.utr_number || payment.id,
       description: `⚡ Admin Approved Topup: ₹${payment.amount} (UTR: ${payment.utr_number || 'N/A'})`,
       created_at: new Date().toISOString(),
@@ -2170,10 +2463,12 @@ app.post('/api/admin/approve-withdrawal', async (req, res) => {
     // Insert wallet transaction
     await supabase.from('wallet_transactions').insert({
       user_id: w.user_id,
-      type: 'WITHDRAWAL_PAID',
+      type: 'WITHDRAWAL',
       amount: Number(w.amount),
       balance_before: Number(wallet?.available_balance || 0),
       balance_after: Number(wallet?.available_balance || 0),
+      wallet_type: 'WITHDRAWABLE',
+      status: 'COMPLETED',
       reference_id: bankRefNo || w.id,
       description: `🏦 Withdrawal Paid: ₹${w.amount} to A/C ${w.account_number} (Ref: ${bankRefNo || 'COMPLETED'})`,
       created_at: new Date().toISOString(),

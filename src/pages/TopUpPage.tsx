@@ -1,7 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { Wallet } from '../types';
-import { ChevronLeft, FileText, Loader2, Sparkles } from 'lucide-react';
+import { Wallet, DepositTransaction } from '../types';
+import { fetchDepositTransactions } from '../services/api';
+import {
+  ChevronLeft,
+  FileText,
+  Loader2,
+  Sparkles,
+  Clock,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+  Copy,
+  Check,
+  RefreshCw,
+  ArrowDownLeft,
+} from 'lucide-react';
 
 interface TopUpPageProps {
   userId?: string;
@@ -22,41 +36,122 @@ export default function TopUpPage({
   onShowToast,
   onRefreshData,
 }: TopUpPageProps) {
-  const [selectedAmount, setSelectedAmount] = useState<number>(500);
-  const [customAmount, setCustomAmount] = useState<string>('');
-  const [balance, setBalance] = useState<number>(() => propWallet?.rechargeBalance ?? propWallet?.availableBalance ?? 0.0);
+  // Single authoritative amount state (defaults to "500")
+  const [amount, setAmount] = useState<string>('500');
+  const [balance, setBalance] = useState<number>(
+    () => propWallet?.rechargeBalance ?? propWallet?.availableBalance ?? 0.0
+  );
   const [loading, setLoading] = useState<boolean>(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [userProfile, setUserProfile] = useState<any>(null);
+  const [currentAuthUserId, setCurrentAuthUserId] = useState<string>(propUserId || '');
+  
+  // Recharge History states
+  const [rechargeHistory, setRechargeHistory] = useState<DepositTransaction[]>([]);
+  const [historyLoading, setHistoryLoading] = useState<boolean>(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
   const pollingRef = useRef<any>(null);
 
   const fetchWallet = async (uid: string) => {
-    if (!supabase) return;
+    if (!supabase || !uid) return;
     try {
-      const { data: wallet } = await supabase.from('wallets').select('balance, recharge_balance, available_balance').eq('user_id', uid).maybeSingle();
+      const { data: wallet } = await supabase
+        .from('wallets')
+        .select('balance, recharge_balance, available_balance')
+        .eq('user_id', uid)
+        .maybeSingle();
       if (wallet) {
-        setBalance(wallet.balance ?? wallet.recharge_balance ?? wallet.available_balance ?? 0);
+        setBalance(wallet.recharge_balance ?? wallet.available_balance ?? wallet.balance ?? 0);
       }
     } catch (_e) {}
   };
 
+  const loadHistory = async (uid: string) => {
+    if (!uid) {
+      setHistoryLoading(false);
+      return;
+    }
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const data = await fetchDepositTransactions(uid);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[TopUp Recharge Query]', {
+          userId: uid,
+          table: 'deposit_transactions + wallet_transactions + payments',
+          resultCount: data ? data.length : 0,
+        });
+      }
+      setRechargeHistory(data || []);
+    } catch (e: any) {
+      console.error('[TopUp Recharge Query] Error:', e);
+      setHistoryError('Unable to load recharge history.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   useEffect(() => {
-    async function loadUserData() {
+    let channel: any = null;
+
+    async function initUser() {
       try {
-        if (!supabase) return;
-        const { data: { user } } = await supabase.auth.getUser();
-        const effectiveId = user?.id || propUserId;
+        let effectiveId = propUserId;
+        if (supabase) {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user?.id) {
+            effectiveId = user.id;
+            setCurrentAuthUserId(user.id);
+          }
+        }
         if (effectiveId) {
           await fetchWallet(effectiveId);
-          const { data: profile } = await supabase.from('profiles').select('*').eq('id', effectiveId).maybeSingle();
-          if (profile) setUserProfile(profile);
+          await loadHistory(effectiveId);
+
+          if (supabase) {
+            const { data: profile } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', effectiveId)
+              .maybeSingle();
+            if (profile) setUserProfile(profile);
+
+            // Subscribe to real-time deposit updates
+            channel = supabase
+              .channel(`user-deposits-${effectiveId}`)
+              .on(
+                'postgres_changes',
+                {
+                  event: '*',
+                  schema: 'public',
+                  table: 'deposit_transactions',
+                  filter: `user_id=eq.${effectiveId}`,
+                },
+                () => {
+                  loadHistory(effectiveId!);
+                  fetchWallet(effectiveId!);
+                  if (onRefreshData) onRefreshData();
+                }
+              )
+              .subscribe();
+          }
         }
       } catch (e) {
         console.warn('Error loading user profile in TopUpPage:', e);
       }
     }
-    loadUserData();
+
+    initUser();
+
     return () => {
-      if (pollingRef.current) clearInterval(pollingRef.current);
+      if (channel && supabase) {
+        supabase.removeChannel(channel);
+      }
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+      }
     };
   }, [propUserId]);
 
@@ -67,25 +162,36 @@ export default function TopUpPage({
     }
   }, [propWallet]);
 
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(text);
+    if (onShowToast) onShowToast('Order ID copied');
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
   const handleTopUp = async () => {
-    const finalAmount = customAmount ? parseFloat(customAmount) : selectedAmount;
-    if (!finalAmount || finalAmount < 100) {
-      const msg = 'Minimum recharge is ₹100';
+    setErrorMsg(null);
+    const numAmount = parseInt(amount, 10);
+
+    if (isNaN(numAmount) || numAmount < 100) {
+      const msg = 'Minimum recharge amount is ₹100';
+      setErrorMsg(msg);
       if (onShowToast) onShowToast(msg);
-      else alert(msg);
       return;
     }
 
     setLoading(true);
+
     try {
-      let currentUserId = propUserId;
+      // 1. Authenticate user
+      let effectiveUserId = currentAuthUserId || propUserId;
       let currentUserEmail = '';
       let currentUserPhone = userProfile?.phone || userProfile?.whatsapp_no || userProfile?.mobile || '';
 
       if (supabase) {
         const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          currentUserId = user.id;
+        if (user?.id) {
+          effectiveUserId = user.id;
           currentUserEmail = user.email || '';
           if (!currentUserPhone && user.user_metadata?.phone) {
             currentUserPhone = user.user_metadata.phone;
@@ -93,20 +199,79 @@ export default function TopUpPage({
         }
       }
 
-      if (!currentUserId) {
-        throw new Error('Please log in first');
+      if (!effectiveUserId) {
+        throw new Error('Please log in first to proceed with recharge.');
       }
 
       const effectivePhone = currentUserPhone || userProfile?.phone || userProfile?.whatsapp_no || '9999999999';
       const effectiveEmail = currentUserEmail || `${effectivePhone}@gainpower.internal`;
 
+      // 2. Generate unique application order ID
+      const timestamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+      const randomSuffix = Math.floor(100000 + Math.random() * 900000);
+      const traceno = `DEP${timestamp}${randomSuffix}`;
+
+      // 3. Create PENDING order in Supabase BEFORE opening gateway
+      if (supabase) {
+        const { error: insertErr } = await supabase.from('deposit_transactions').insert({
+          traceno: traceno,
+          merchant_order_id: traceno,
+          user_id: effectiveUserId,
+          amount: numAmount,
+          currency: 'INR',
+          pay_code: '印度UPI-银台',
+          status: 'PENDING',
+          channel: 'UNIVEPAY',
+        });
+
+        if (insertErr) {
+          console.error('[TOPUP] Insert deposit_transactions failed:', insertErr);
+          throw new Error('Unable to create recharge order. Please try again.');
+        }
+
+        // 4. Verify database insert succeeded
+        const { data: verifiedOrder, error: verifyErr } = await supabase
+          .from('deposit_transactions')
+          .select('id, traceno, status, amount, user_id')
+          .eq('traceno', traceno)
+          .maybeSingle();
+
+        if (verifyErr || !verifiedOrder || verifiedOrder.status !== 'PENDING') {
+          console.error('[TOPUP] Order verification failed:', verifyErr);
+          throw new Error('Unable to create recharge order. Please try again.');
+        }
+
+        // Create pending record in wallet_transactions
+        try {
+          await supabase.from('wallet_transactions').insert({
+            user_id: effectiveUserId,
+            type: 'RECHARGE',
+            amount: numAmount,
+            balance_before: balance,
+            balance_after: balance,
+            reference_id: traceno,
+            description: `Recharge Order #${traceno}`,
+            wallet_type: 'TOPUP',
+            status: 'Pending',
+          });
+        } catch (wErr) {
+          console.warn('[TOPUP] Pending wallet_transaction insert warning:', wErr);
+        }
+
+        // Refresh recharge history in UI immediately so PENDING order appears below button
+        loadHistory(effectiveUserId);
+      }
+
+      // 5. ONLY AFTER PENDING order exists: invoke the existing payment gateway
       let response: any = null;
       if (supabase) {
         try {
           response = await supabase.functions.invoke('create-payin-order', {
             body: {
-              amount: finalAmount,
-              userId: currentUserId,
+              amount: numAmount,
+              userId: effectiveUserId,
+              orderId: traceno,
+              traceno: traceno,
               customerName: userProfile?.full_name || userProfile?.username || userProfile?.name || 'Customer',
               customerEmail: effectiveEmail,
               customerPhone: effectivePhone,
@@ -122,25 +287,28 @@ export default function TopUpPage({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            amount: finalAmount,
-            userId: currentUserId,
+            amount: numAmount,
+            userId: effectiveUserId,
+            orderId: traceno,
+            traceno: traceno,
             customerName: userProfile?.full_name || userProfile?.username || userProfile?.name || 'Customer',
             customerEmail: effectiveEmail,
             customerPhone: effectivePhone,
           }),
         });
-        const backendData = await res.json();
+        const backendData = await res.json().catch(() => null);
         response = { data: backendData, error: null };
       }
 
       if (response?.error || !response?.data?.success || !response?.data?.payUrl) {
-        throw new Error(response?.error?.message || response?.data?.msg || response?.data?.error || 'Payment initiation failed');
+        const errorDetail = response?.data?.error || response?.error?.message || 'Payment initiation failed';
+        throw new Error(errorDetail);
       }
 
-      const { payUrl, orderId } = response.data;
+      const { payUrl } = response.data;
 
-      // Start fallback status polling in background
-      if (supabase && orderId) {
+      // Start status polling in background
+      if (supabase && traceno) {
         let attempts = 0;
         pollingRef.current = setInterval(async () => {
           attempts++;
@@ -148,16 +316,16 @@ export default function TopUpPage({
             const { data: order } = await supabase
               .from('deposit_transactions')
               .select('status')
-              .or(`traceno.eq.${orderId},merchant_order_id.eq.${orderId}`)
+              .eq('traceno', traceno)
               .maybeSingle();
 
-            if (order?.status === 'SUCCESS') {
+            if (order?.status === 'SUCCESS' || order?.status === 'PAID' || order?.status === 'COMPLETED') {
               clearInterval(pollingRef.current);
-              await fetchWallet(currentUserId!);
+              await fetchWallet(effectiveUserId!);
+              await loadHistory(effectiveUserId!);
               if (onRefreshData) onRefreshData();
-              const successMsg = 'Deposit successful! Balance updated.';
+              const successMsg = 'Deposit successful! Recharge wallet credited.';
               if (onShowToast) onShowToast(successMsg);
-              else alert(successMsg);
             }
           } catch (_err) {}
 
@@ -168,19 +336,55 @@ export default function TopUpPage({
       }
 
       if (onShowToast) {
-        onShowToast(`Redirecting to payment gateway for ₹${finalAmount}...`);
+        onShowToast(`Redirecting to payment gateway for ₹${numAmount}...`);
       }
 
-      // Open Payment Page
+      // Open existing gateway payment page
       window.location.href = payUrl;
     } catch (err: any) {
-      const errText = err.message || 'Payment failed';
+      const errText = err.message || 'Unable to create recharge order. Please try again.';
+      setErrorMsg(errText);
       if (onShowToast) onShowToast(errText);
-      else alert(errText);
     } finally {
       setLoading(false);
     }
   };
+
+  const getStatusBadge = (status?: string) => {
+    const s = (status || '').toUpperCase();
+    if (s === 'SUCCESS' || s === 'PAID' || s === 'COMPLETED') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/60">
+          <CheckCircle2 className="w-3.5 h-3.5" />
+          <span>PAID</span>
+        </span>
+      );
+    }
+    if (s === 'FAILED' || s === 'REJECTED' || s === 'FAILED_GATEWAY_CREATION') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200/60">
+          <XCircle className="w-3.5 h-3.5" />
+          <span>FAILED</span>
+        </span>
+      );
+    }
+    if (s === 'CANCELLED' || s === 'EXPIRED') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 border border-gray-200/60">
+          <AlertCircle className="w-3.5 h-3.5" />
+          <span>CANCELLED</span>
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200/60">
+        <Clock className="w-3.5 h-3.5 animate-spin text-amber-600" />
+        <span>PENDING</span>
+      </span>
+    );
+  };
+
+  const currentDisplayAmount = amount ? Number(amount).toLocaleString('en-IN') : '0';
 
   return (
     <div className="flex flex-col min-h-screen bg-[#F8F9FA] text-[#1A202C]">
@@ -190,6 +394,7 @@ export default function TopUpPage({
           <button
             onClick={() => (onBack ? onBack() : window.history.back())}
             className="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center transition-colors cursor-pointer"
+            aria-label="Back"
           >
             <ChevronLeft className="w-5 h-5 text-white" />
           </button>
@@ -197,6 +402,8 @@ export default function TopUpPage({
           <button
             onClick={() => onNavigateTab && onNavigateTab('transactions')}
             className="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center transition-colors cursor-pointer"
+            title="Transactions"
+            aria-label="Transactions"
           >
             <FileText className="w-4 h-4 text-white" />
           </button>
@@ -204,32 +411,30 @@ export default function TopUpPage({
       </div>
 
       {/* Amount Selector Card */}
-      <div className="px-4 -mt-8 flex-1 max-w-lg mx-auto w-full pb-10">
+      <div className="px-4 -mt-8 flex-1 max-w-lg mx-auto w-full pb-10 space-y-6">
         <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col items-center">
           <h2 className="text-4xl font-black text-[#1A202C]">
-            ₹{customAmount || selectedAmount.toLocaleString('en-IN')}
+            ₹{currentDisplayAmount}
           </h2>
           <p className="text-gray-400 text-sm mt-1">
-            Available balance: ₹{balance.toFixed(2)}
+            Topup Wallet Balance: ₹{balance.toFixed(2)}
           </p>
 
+          {/* Preset Buttons */}
           <div className="grid grid-cols-3 gap-3 w-full mt-6">
             {PRESET_AMOUNTS.map((amt) => {
-              const isSelected = selectedAmount === amt && !customAmount;
+              const isSelected = amount === String(amt);
               const isRecommended = [1500, 3500, 5000].includes(amt);
 
               return (
                 <button
                   key={amt}
                   type="button"
-                  onClick={() => {
-                    setSelectedAmount(amt);
-                    setCustomAmount('');
-                  }}
+                  onClick={() => setAmount(String(amt))}
                   className={`py-3 rounded-xl font-bold relative border transition-all cursor-pointer ${
                     isSelected
-                      ? 'border-[#FF5500] text-[#FF5500] bg-[#FFF5F0]'
-                      : 'border-gray-100 text-gray-800 bg-gray-50/50 hover:bg-gray-100'
+                      ? 'border-[#FF5500] text-[#FF5500] bg-[#FFF5F0] shadow-sm'
+                      : 'border-gray-100 text-gray-800 bg-gray-50/60 hover:bg-gray-100'
                   }`}
                 >
                   ₹{amt}
@@ -243,31 +448,169 @@ export default function TopUpPage({
             })}
           </div>
 
+          {/* Custom Amount Input Field */}
           <div className="w-full mt-6">
             <input
-              type="number"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
               placeholder="₹ Or enter other amount (Min ₹100)"
-              value={customAmount}
-              onChange={(e) => setCustomAmount(e.target.value)}
-              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-[#FF5500] text-gray-900 font-medium"
+              value={amount}
+              onChange={(e) => {
+                const cleanDigits = e.target.value.replace(/\D/g, '');
+                setAmount(cleanDigits);
+                if (errorMsg) setErrorMsg(null);
+              }}
+              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-[#FF5500] focus:bg-white text-gray-900 font-semibold transition-colors"
             />
           </div>
 
+          {errorMsg && (
+            <div className="w-full mt-3 p-3 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between gap-2 text-xs text-red-700">
+              <span className="font-medium">{errorMsg}</span>
+              <button
+                type="button"
+                onClick={handleTopUp}
+                className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold text-[11px] shrink-0"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {/* Top Up Button */}
           <button
             type="button"
             onClick={handleTopUp}
             disabled={loading}
-            className="w-full mt-8 bg-[#FF5500] hover:bg-[#E04B00] text-white font-bold py-4 rounded-2xl shadow-lg shadow-[#FF5500]/30 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer text-base"
+            className="w-full mt-6 bg-[#FF5500] hover:bg-[#E04B00] text-white font-bold py-4 rounded-2xl shadow-lg shadow-[#FF5500]/25 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer text-base"
           >
             {loading ? (
               <>
                 <Loader2 className="w-5 h-5 animate-spin" />
-                <span>Processing...</span>
+                <span>Creating order & opening gateway...</span>
               </>
             ) : (
               <span>Top Up</span>
             )}
           </button>
+        </div>
+
+        {/* RECHARGE HISTORY SECTION DIRECTLY BELOW THE TOP UP BUTTON */}
+        <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <ArrowDownLeft className="w-4 h-4 text-[#FF5500]" />
+              <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
+                Recharge History
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (currentAuthUserId || propUserId) {
+                  loadHistory(currentAuthUserId || propUserId!);
+                }
+              }}
+              disabled={historyLoading}
+              className="text-xs text-gray-500 hover:text-[#FF5500] flex items-center gap-1 font-medium cursor-pointer transition-colors"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${historyLoading ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
+          </div>
+
+          {historyLoading ? (
+            <div className="space-y-3">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="p-3.5 bg-gray-50/80 rounded-xl animate-pulse flex items-center justify-between">
+                  <div className="space-y-2">
+                    <div className="h-4 w-20 bg-gray-200 rounded" />
+                    <div className="h-3 w-32 bg-gray-200 rounded" />
+                  </div>
+                  <div className="h-6 w-16 bg-gray-200 rounded-full" />
+                </div>
+              ))}
+            </div>
+          ) : historyError ? (
+            <div className="py-8 text-center text-gray-500 space-y-3">
+              <AlertCircle className="w-8 h-8 mx-auto text-rose-500 opacity-80" />
+              <p className="text-xs font-semibold text-rose-500">{historyError}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  const targetId = currentAuthUserId || propUserId;
+                  if (targetId) loadHistory(targetId);
+                }}
+                className="px-4 py-1.5 rounded-xl bg-orange-50 hover:bg-orange-100 text-[#FF5500] font-bold text-xs cursor-pointer transition-colors inline-flex items-center gap-1.5 border border-orange-200/60"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Retry</span>
+              </button>
+            </div>
+          ) : rechargeHistory.length === 0 ? (
+            <div className="py-8 text-center text-gray-400">
+              <FileText className="w-8 h-8 mx-auto mb-2 opacity-30" />
+              <p className="text-xs font-medium">No recharge orders yet</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">
+                Your recharge history will appear here immediately upon creating a top up.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-100">
+              {rechargeHistory.map((item) => {
+                const formattedDate = item.createdAt
+                  ? new Date(item.createdAt).toLocaleString('en-IN', {
+                      day: '2-digit',
+                      month: 'short',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : 'N/A';
+
+                return (
+                  <div
+                    key={item.id || item.traceno}
+                    className="py-3.5 first:pt-0 last:pb-0 flex items-center justify-between gap-3"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-gray-900">
+                          +₹{item.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </span>
+                        {getStatusBadge(item.status)}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 text-[11px] text-gray-400 font-medium">
+                        <span>{formattedDate}</span>
+                        <span>•</span>
+                        <span className="font-mono text-gray-500">#{item.traceno}</span>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(item.traceno)}
+                          className="hover:text-gray-700 cursor-pointer p-0.5"
+                          title="Copy order ID"
+                        >
+                          {copiedId === item.traceno ? (
+                            <Check className="w-3 h-3 text-emerald-600" />
+                          ) : (
+                            <Copy className="w-3 h-3" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      <span className="text-[11px] text-gray-400 block font-medium">
+                        {item.paymentMethod || 'UPI Gateway'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>

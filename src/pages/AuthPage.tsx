@@ -211,26 +211,11 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
       onShowToast?.('Account created successfully! Welcome to Power Bank.');
 
-      const newProfile: UserProfile = result.profile || {
-        id: result.user?.id || 'usr_' + Date.now(),
-        userId: result.user?.id || 'usr_' + Date.now(),
-        username: formData.username || name.trim(),
-        name: name.trim(),
-        whatsappNo: cleanPhone,
-        mobile: cleanPhone,
-        email: formData.email || `${cleanPhone}@gainpower.internal`,
-        withdrawalPassword: withdrawalPassword.trim(),
-        membershipNumber: result.membershipNumber || 'PB' + cleanPhone.slice(-6),
-        referralCode: result.referralCode || result.membershipNumber || 'PB' + cleanPhone.slice(-6),
-        referredBy: cleanRef || undefined,
-        role: 'user',
-        status: 'active',
-        deviceEarnings: 0,
-        teamEarnings: 0,
-        walletBalance: 0.0,
-      };
+      if (!result?.profile) {
+        throw new Error('User profile was not returned from database.');
+      }
 
-      onAuthSuccess(newProfile, true);
+      onAuthSuccess(result.profile, true);
     } catch (err: any) {
       console.error('Registration failed:', err);
       const msg = err.message || 'Failed to register account.';

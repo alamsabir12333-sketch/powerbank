@@ -125,6 +125,51 @@ function AppContent() {
     [isAuthenticated]
   );
 
+  const getPathForTab = (tab: TabType): string => {
+    switch (tab) {
+      case 'home':
+        return '/home';
+      case 'fortune':
+        return '/fortune';
+      case 'purchase':
+        return '/purchase';
+      case 'team':
+        return '/team';
+      case 'me':
+        return '/me';
+      case 'transactions':
+        return '/transactions';
+      case 'recharge':
+        return '/recharge';
+      case 'withdrawal':
+        return '/withdrawal';
+      case 'notifications':
+        return '/notifications';
+      case 'vip_levels':
+        return '/vip';
+      case 'about_platform':
+        return '/about-platform';
+      case 'mission_bonus':
+        return '/mission-bonus';
+      default:
+        return '/home';
+    }
+  };
+
+  const navigateTab = useCallback((tab: TabType, push = true) => {
+    setActiveTab(tab);
+    const targetPath = getPathForTab(tab);
+    setCurrentPath(targetPath);
+    if (push && typeof window !== 'undefined') {
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState({}, '', targetPath);
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    }
+  }, []);
+
   // 1. Parse URL for route, referral link, and admin route listener
   useEffect(() => {
     const handleLocationCheck = () => {
@@ -151,12 +196,12 @@ function AppContent() {
       const paymentStatus = searchParams.get('status');
 
       if (paymentStatus === 'success' || path === '/wallet' || path === '/wallet/success') {
-        setActiveTab('recharge');
+        navigateTab('recharge', false);
         showToast('Payment successful! Your wallet has been credited.', 'success');
         refreshUserData();
         if (typeof window !== 'undefined') {
-          window.history.replaceState({}, '', '/');
-          setCurrentPath('/');
+          window.history.replaceState({}, '', '/recharge');
+          setCurrentPath('/recharge');
         }
       }
 
@@ -187,23 +232,29 @@ function AppContent() {
           setIsInviteReadOnly(true);
         }
       } else if (path === '/notifications') {
-        setActiveTab('notifications');
+        navigateTab('notifications', false);
       } else if (path === '/vip' || path === '/vip-levels') {
-        setActiveTab('vip_levels');
+        navigateTab('vip_levels', false);
       } else if (path === '/about-platform' || path === '/about') {
-        setActiveTab('about_platform');
+        navigateTab('about_platform', false);
+      } else if (path === '/mission-bonus') {
+        navigateTab('mission_bonus', false);
       } else if (path === '/purchase' || path === '/products') {
-        setActiveTab('purchase');
+        navigateTab('purchase', false);
       } else if (path === '/fortune') {
-        setActiveTab('fortune');
+        navigateTab('fortune', false);
       } else if (path === '/team') {
-        setActiveTab('team');
+        navigateTab('team', false);
       } else if (path === '/me' || path === '/profile') {
-        setActiveTab('me');
+        navigateTab('me', false);
       } else if (path === '/home' || path === '/') {
-        setActiveTab('home');
+        navigateTab('home', false);
       } else if (path === '/transactions') {
-        setActiveTab('transactions');
+        navigateTab('transactions', false);
+      } else if (path === '/recharge' || path === '/topup') {
+        navigateTab('recharge', false);
+      } else if (path === '/withdrawal' || path === '/withdraw') {
+        navigateTab('withdrawal', false);
       } else {
         const savedInvite =
           sessionStorage.getItem('pb_pending_invite_code') || localStorage.getItem('pb_pending_invite_code');
@@ -217,7 +268,7 @@ function AppContent() {
     handleLocationCheck();
     window.addEventListener('popstate', handleLocationCheck);
     return () => window.removeEventListener('popstate', handleLocationCheck);
-  }, []);
+  }, [navigateTab]);
 
   // Sync auth mode based on location or explicit logout
   useEffect(() => {
@@ -400,13 +451,11 @@ function AppContent() {
             <HomePage
               onNavigateTab={(tab) => {
                 if (tab === 'home' || tab === 'about_platform') {
-                  setActiveTab(tab);
-                  window.scrollTo({ top: 0, behavior: 'instant' });
+                  navigateTab(tab);
                   return;
                 }
                 requireAuth(() => {
-                  setActiveTab(tab);
-                  window.scrollTo({ top: 0, behavior: 'instant' });
+                  navigateTab(tab);
                 });
               }}
               onShowToast={showToast}
@@ -415,8 +464,7 @@ function AppContent() {
               purchases={purchases}
               onOpenRecharge={() => {
                 requireAuth(() => {
-                  setActiveTab('recharge');
-                  window.scrollTo({ top: 0, behavior: 'instant' });
+                  navigateTab('recharge');
                 });
               }}
               onOpenMyDevice={() => {
@@ -430,20 +478,17 @@ function AppContent() {
           {activeTab === 'fortune' && (
             <FortunePage
               onNavigateTab={(tab) => {
-                setActiveTab(tab);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab);
               }}
               onShowToast={showToast}
               userProfile={userProfile}
               wallet={wallet}
               purchases={purchases}
               onOpenRecharge={() => {
-                setActiveTab('recharge');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('recharge');
               }}
               onOpenWithdrawal={() => {
-                setActiveTab('withdrawal');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('withdrawal');
               }}
               onRefreshData={() => refreshUserData()}
             />
@@ -452,15 +497,13 @@ function AppContent() {
           {activeTab === 'purchase' && (
             <PurchaseHallPage
               onNavigateTab={(tab) => {
-                setActiveTab(tab);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab);
               }}
               onShowToast={showToast}
               userId={activeUserId}
               wallet={wallet}
               onOpenRecharge={() => {
-                setActiveTab('recharge');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('recharge');
               }}
               onPurchaseSuccess={() => {
                 refreshUserData();
@@ -473,8 +516,7 @@ function AppContent() {
               userId={activeUserId}
               userProfile={userProfile}
               onNavigateTab={(tab) => {
-                setActiveTab(tab);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab);
               }}
               onShowToast={showToast}
             />
@@ -483,20 +525,17 @@ function AppContent() {
           {activeTab === 'me' && (
             <MePage
               onNavigateTab={(tab) => {
-                setActiveTab(tab);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab);
               }}
               onShowToast={showToast}
               userProfile={userProfile}
               wallet={wallet}
               purchases={purchases}
               onOpenRecharge={() => {
-                setActiveTab('recharge');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('recharge');
               }}
               onOpenWithdrawal={() => {
-                setActiveTab('withdrawal');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('withdrawal');
               }}
               onOpenMyDevice={() => setIsMyDeviceOpen(true)}
               onLogout={handleLogout}
@@ -507,8 +546,7 @@ function AppContent() {
           {activeTab === 'transactions' && (
             <TransactionPage
               onNavigateTab={(tab) => {
-                setActiveTab(tab);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab);
               }}
               onShowToast={showToast}
               userId={activeUserId}
@@ -516,8 +554,7 @@ function AppContent() {
               userProfile={userProfile}
               onOpenRecharge={() => setIsRechargeOpen(true)}
               onOpenWithdrawal={() => {
-                setActiveTab('withdrawal');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('withdrawal');
               }}
             />
           )}
@@ -526,12 +563,10 @@ function AppContent() {
             <NotificationsPage
               userId={activeUserId}
               onBack={() => {
-                setActiveTab('home');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('home');
               }}
               onNavigate={(tab) => {
-                setActiveTab(tab as TabType);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab as TabType);
               }}
             />
           )}
@@ -541,17 +576,14 @@ function AppContent() {
               userId={activeUserId}
               wallet={wallet}
               onBack={() => {
-                setActiveTab('me');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('me');
               }}
               onNavigateTab={(tab) => {
-                setActiveTab(tab as TabType);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab as TabType);
               }}
               onShowToast={showToast}
               onOpenBindCard={() => {
-                setActiveTab('bank_card');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('bank_card');
               }}
               onRefreshData={() => refreshUserData()}
             />
@@ -562,12 +594,10 @@ function AppContent() {
               userId={activeUserId}
               wallet={wallet}
               onBack={() => {
-                setActiveTab('home');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('home');
               }}
               onNavigateTab={(tab) => {
-                setActiveTab(tab as TabType);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab as TabType);
               }}
               onShowToast={showToast}
               onRefreshData={() => refreshUserData()}
@@ -578,16 +608,13 @@ function AppContent() {
             <BankCardPage
               userId={activeUserId}
               onBack={() => {
-                setActiveTab('me');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('me');
               }}
               onNavigateTab={(tab) => {
-                setActiveTab(tab as TabType);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab as TabType);
               }}
               onOpenAddCard={() => {
-                setActiveTab('add_bank_card');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('add_bank_card');
               }}
             />
           )}
@@ -596,13 +623,11 @@ function AppContent() {
             <AddBankCardPage
               userId={activeUserId}
               onBack={() => {
-                setActiveTab('bank_card');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('bank_card');
               }}
               onSuccess={() => {
                 refreshUserData();
-                setActiveTab('bank_card');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('bank_card');
               }}
               onShowToast={showToast}
             />
@@ -613,17 +638,14 @@ function AppContent() {
               userId={activeUserId}
               userProfile={userProfile}
               onBack={() => {
-                setActiveTab('me');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('me');
               }}
               onNavigateTab={(tab) => {
-                setActiveTab(tab as TabType);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab as TabType);
               }}
               onShowToast={showToast}
               onOpenRecharge={() => {
-                setActiveTab('recharge');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('recharge');
               }}
             />
           )}
@@ -631,12 +653,10 @@ function AppContent() {
           {activeTab === 'about_platform' && (
             <AboutPlatformPage
               onBack={() => {
-                setActiveTab('me');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('me');
               }}
               onNavigateTab={(tab) => {
-                setActiveTab(tab as TabType);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab as TabType);
               }}
               onShowToast={showToast}
             />
@@ -647,12 +667,10 @@ function AppContent() {
               userId={activeUserId}
               userProfile={userProfile}
               onBack={() => {
-                setActiveTab('me');
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab('me');
               }}
               onNavigateTab={(tab) => {
-                setActiveTab(tab as TabType);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab as TabType);
               }}
               onShowToast={showToast}
             />
@@ -673,13 +691,11 @@ function AppContent() {
             activeTab={activeTab}
             onTabChange={(tab) => {
               if (tab === 'home' || tab === 'about_platform') {
-                setActiveTab(tab);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab);
                 return;
               }
               requireAuth(() => {
-                setActiveTab(tab);
-                window.scrollTo({ top: 0, behavior: 'instant' });
+                navigateTab(tab);
               });
             }}
             isDark={isDarkTab}

@@ -292,7 +292,25 @@ export const TeamPage: React.FC<TeamPageProps> = ({
           </div>
 
           <div className="bg-white rounded-2xl shadow-xs border border-gray-100 divide-y divide-gray-100 overflow-hidden">
-            {currentTierList.length === 0 ? (
+            {loading ? (
+              <div className="p-4 space-y-3">
+                {[1, 2, 3].map((idx) => (
+                  <div key={idx} className="flex items-center justify-between animate-pulse">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-gray-200" />
+                      <div className="space-y-1.5">
+                        <div className="h-3.5 bg-gray-200 rounded w-28" />
+                        <div className="h-2.5 bg-gray-100 rounded w-20" />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5 text-right">
+                      <div className="h-3.5 bg-gray-200 rounded w-16 ml-auto" />
+                      <div className="h-2.5 bg-gray-100 rounded w-24 ml-auto" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : currentTierList.length === 0 ? (
               <div className="p-8 text-center">
                 <Users className="w-8 h-8 text-gray-300 mx-auto mb-2" />
                 <p className="text-xs text-gray-500 font-medium">

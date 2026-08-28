@@ -504,10 +504,10 @@ export async function registerUserAccount(formData: RegisterFormData) {
     let serverProfile: any = null;
     let serverWallet: any = null;
 
-    // 4. Attempt Direct Server-Side Registration (Bypasses Email Rate Limits & Confirms User)
+    // 4. Authoritative Server-Side Registration (Atomic Supabase Admin Creation & DB Onboarding)
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
       const regResp = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -519,180 +519,48 @@ export async function registerUserAccount(formData: RegisterFormData) {
           email: cleanEmail,
           password,
           withdrawalPassword: withdrawalPassword.trim(),
-          referralCode: verifiedReferrerId || undefined,
+          referralCode: cleanRefCode,
           membershipNumber,
         }),
       });
       clearTimeout(timeoutId);
 
-      if (regResp.ok) {
-        const regData = await regResp.json();
-        if (regData?.success && regData?.userId) {
-          effectiveUserId = regData.userId;
-          authUser = regData.user || { id: effectiveUserId, email: cleanEmail };
-          serverProfile = regData.profile;
-          serverWallet = regData.wallet;
-        }
-      } else {
-        const errData = await regResp.json().catch(() => null);
-        if (errData?.error && (errData.error.toLowerCase().includes('already registered') || errData.error.toLowerCase().includes('duplicate'))) {
+      const regData = await regResp.json().catch(() => null);
+
+      if (!regResp.ok || !regData?.success || !regData?.userId) {
+        const errorMsg = regData?.error || 'Registration failed on server.';
+        if (errorMsg.toLowerCase().includes('already registered') || errorMsg.toLowerCase().includes('duplicate')) {
           throw new Error('This phone number is already registered. Please login instead.');
         }
+        throw new Error(errorMsg);
       }
+
+      effectiveUserId = regData.userId;
+      authUser = regData.user || { id: effectiveUserId, email: cleanEmail };
+      serverProfile = regData.profile;
+      serverWallet = regData.wallet;
     } catch (serverErr: any) {
-      if (serverErr?.message?.includes('already registered')) {
-        throw serverErr;
-      }
-      console.warn('[AUTH] Server register endpoint notice:', serverErr?.message);
-    }
-
-    // 5. If server registration did not complete, fall back to Client Supabase Auth
-    if (!effectiveUserId) {
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password,
-        options: {
-          data: {
-            name: name,
-            username: cleanUsername,
-            whatsapp_no: phone,
-            mobile: phone,
-            phone: phone,
-            full_name: name,
-            withdrawal_password: withdrawalPassword.trim(),
-            membership_number: membershipNumber,
-            referral_code: userReferralCode,
-            referred_by: verifiedReferrerId,
-          },
-        },
-      });
-
-      if (authError) {
-        const authMsg = authError.message.toLowerCase();
-        if (authMsg.includes('already registered') || authMsg.includes('user already registered')) {
-          throw new Error('This phone number is already registered. Please login instead.');
-        }
-        if (authMsg.includes('email rate limit') || authMsg.includes('rate limit')) {
-          console.warn('[AUTH] Email rate limit encountered, attempting password login / fallback');
-          // Attempt sign in in case user was already created
-          const { data: signData } = await supabase.auth.signInWithPassword({
-            email: cleanEmail,
-            password,
-          });
-          if (signData?.user?.id) {
-            effectiveUserId = signData.user.id;
-            authUser = signData.user;
-          } else {
-            // Generate valid client UUID to guarantee uninterrupted user experience
-            effectiveUserId = crypto.randomUUID();
-            authUser = { id: effectiveUserId, email: cleanEmail };
-          }
-        } else {
-          throw new Error(authError.message);
-        }
-      } else if (authData?.user?.id) {
-        effectiveUserId = authData.user.id;
-        authUser = authData.user;
-      }
+      throw serverErr;
     }
 
     if (!effectiveUserId) {
-      effectiveUserId = crypto.randomUUID();
-      authUser = { id: effectiveUserId, email: cleanEmail };
+      throw new Error('Registration failed: no valid user ID returned from database.');
     }
 
-    // 6. Guarantee active Supabase Client Session by signing in
+    // 5. Establish client Supabase Auth session with credentials
     try {
-      const { error: signInErr } = await supabase.auth.signInWithPassword({
+      const { data: signData, error: signInErr } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
         password,
       });
-      if (signInErr) {
-        console.warn('[AUTH] Client session sign-in notice:', signInErr.message);
+      if (!signInErr && signData?.user) {
+        authUser = signData.user;
       }
     } catch (err) {
-      console.warn('[AUTH] Client sign-in caught:', err);
+      console.warn('[AUTH] Client sign-in after register caught:', err);
     }
 
-    // 7. Execute Atomic Onboarding (Server-Side Endpoint + Direct Fallback)
-    try {
-      await fetch('/api/auth/onboarding', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: effectiveUserId,
-          name: name,
-          username: cleanUsername,
-          whatsappNo: phone,
-          phone: phone,
-          email: cleanEmail,
-          withdrawalPassword: withdrawalPassword.trim(),
-          membershipNumber,
-          referralCode: userReferralCode,
-          referredBy: verifiedReferrerId,
-        }),
-      });
-    } catch (_apiErr) {
-      // Fall through to client RPC / safe check
-    }
-
-    // 8. Direct Client RPC / Safe Insert Fallback
-    try {
-      await supabase.rpc('handle_user_onboarding', {
-        p_user_id: effectiveUserId,
-        p_username: cleanUsername,
-        p_whatsapp_no: phone,
-        p_email: cleanEmail,
-        p_membership_number: membershipNumber,
-        p_referral_code: userReferralCode,
-        p_referred_by: verifiedReferrerId || null,
-      });
-    } catch (_rpcErr) {
-      // If RPC is unavailable, perform conditional insert
-      try {
-        const { data: pExist } = await supabase.from('profiles').select('id').or(`id.eq.${effectiveUserId},user_id.eq.${effectiveUserId}`).maybeSingle();
-        if (!pExist) {
-          await supabase.from('profiles').insert({
-            id: effectiveUserId,
-            user_id: effectiveUserId,
-            username: cleanUsername,
-            phone: phone,
-            whatsapp_no: phone,
-            full_name: name,
-            email: cleanEmail,
-            membership_number: membershipNumber,
-            referral_code: userReferralCode,
-            referred_by: verifiedReferrerId,
-            role: 'user',
-            status: 'active',
-            updated_at: new Date().toISOString(),
-          });
-        }
-      } catch (_profErr) {
-        // Ignore duplicate or existing
-      }
-
-      try {
-        const { data: wExist } = await supabase.from('wallets').select('id').or(`id.eq.${effectiveUserId},user_id.eq.${effectiveUserId}`).maybeSingle();
-        if (!wExist) {
-          await supabase.from('wallets').insert({
-            id: effectiveUserId,
-            user_id: effectiveUserId,
-            available_balance: 0.0,
-            recharge_balance: 0.0,
-            withdraw_balance: 0.0,
-            pending_balance: 0.0,
-            total_earned: 0.0,
-            total_withdrawn: 0.0,
-            updated_at: new Date().toISOString(),
-          });
-        }
-      } catch (_walErr) {
-        // Ignore duplicate or existing
-      }
-    }
-
-    // 9. Verify that profile and wallet can be queried from Supabase
+    // 6. Post-registration verification: verify that profile and wallet exist in Supabase
     let verifiedProfile: any = serverProfile;
     let verifiedWallet: any = serverWallet;
 
@@ -718,23 +586,27 @@ export async function registerUserAccount(formData: RegisterFormData) {
       }
     }
 
+    if (!verifiedProfile) {
+      throw new Error('Database onboarding failed: user profile was not saved to database.');
+    }
+
     const newProfile: UserProfile = {
-      id: verifiedProfile?.id || effectiveUserId,
-      userId: effectiveUserId,
-      username: verifiedProfile?.username || cleanUsername,
-      whatsappNo: verifiedProfile?.whatsapp_no || phone,
-      name: verifiedProfile?.name || name || cleanUsername,
-      mobile: verifiedProfile?.whatsapp_no || phone,
-      email: cleanEmail,
-      membershipNumber: verifiedProfile?.membership_number || membershipNumber,
-      referralCode: verifiedProfile?.referral_code || userReferralCode,
-      referredBy: verifiedProfile?.referred_by || verifiedReferrerId || undefined,
-      role: verifiedProfile?.role || 'user',
-      status: verifiedProfile?.status || 'active',
+      id: verifiedProfile.id || effectiveUserId,
+      userId: verifiedProfile.user_id || effectiveUserId,
+      username: verifiedProfile.username || cleanUsername,
+      whatsappNo: verifiedProfile.whatsapp_no || verifiedProfile.phone || phone,
+      name: verifiedProfile.name || verifiedProfile.full_name || name || cleanUsername,
+      mobile: verifiedProfile.whatsapp_no || verifiedProfile.phone || phone,
+      email: verifiedProfile.email || cleanEmail,
+      membershipNumber: verifiedProfile.membership_number || membershipNumber,
+      referralCode: verifiedProfile.referral_code || userReferralCode,
+      referredBy: verifiedProfile.referred_by || verifiedReferrerId || undefined,
+      role: verifiedProfile.role || 'user',
+      status: verifiedProfile.status || 'active',
       deviceEarnings: 0,
       teamEarnings: 0,
-      walletBalance: Number(verifiedWallet?.available_balance || 0),
-      createdAt: verifiedProfile?.created_at || new Date().toISOString(),
+      walletBalance: Number(verifiedWallet?.available_balance ?? 50.0),
+      createdAt: verifiedProfile.created_at || new Date().toISOString(),
     };
 
     const newWallet: Wallet = {
@@ -750,7 +622,7 @@ export async function registerUserAccount(formData: RegisterFormData) {
       totalWithdrawn: Number(verifiedWallet?.total_withdrawn ?? 0.0),
     };
 
-    // Save session and cache
+    // Save session and local cache
     saveLocal(STORAGE_KEYS.PROFILE, newProfile);
     saveLocal(STORAGE_KEYS.WALLET, newWallet);
     saveLocal(STORAGE_KEYS.SESSION, { userId: effectiveUserId, email: cleanEmail, username: cleanUsername, mobile: phone });
@@ -762,54 +634,10 @@ export async function registerUserAccount(formData: RegisterFormData) {
       membershipNumber: newProfile.membershipNumber,
       referralCode: newProfile.referralCode,
     };
-  } else {
-    // Local Simulation
-    const userId = 'usr_' + Date.now();
-    const newProfile: UserProfile = {
-      id: userId,
-      userId,
-      username: cleanUsername,
-      whatsappNo: phone,
-      name: name || cleanUsername,
-      mobile: phone,
-      email: cleanEmail,
-      membershipNumber,
-      referralCode: userReferralCode,
-      referredBy: verifiedReferrerId || undefined,
-      role: 'user',
-      status: 'active',
-      deviceEarnings: 0,
-      teamEarnings: 0,
-      walletBalance: 50.0,
-      createdAt: new Date().toISOString(),
-    };
-
-    const newWallet: Wallet = {
-      id: 'wal_' + userId,
-      userId,
-      topupBalance: 50.0,
-      withdrawBalance: 0.00,
-      availableBalance: 50.00,
-      rechargeBalance: 50.00,
-      earnedBalance: 0.00,
-      pendingBalance: 0.00,
-      totalEarned: 0.00,
-      totalWithdrawn: 0.00,
-    };
-
-    saveLocal(STORAGE_KEYS.PROFILE, newProfile);
-    saveLocal(STORAGE_KEYS.WALLET, newWallet);
-    saveLocal(STORAGE_KEYS.SESSION, { userId, email: cleanEmail, username: cleanUsername, mobile: phone });
-
-    return {
-      user: { id: userId, email: cleanEmail },
-      profile: newProfile,
-      wallet: newWallet,
-      membershipNumber,
-      referralCode: userReferralCode,
-    };
   }
-}
+
+  throw new Error('Supabase backend database is not configured. Registration cannot proceed.');
+};
 
 export async function loginUser(identifier: string, password: string) {
   const cleanId = identifier.trim();
@@ -1831,12 +1659,13 @@ async function creditReferrerWallet(
 
         await supabase.from('wallet_transactions').insert({
           user_id: referrerUserId,
-          type: 'REFERRAL_REWARD',
+          type: 'REFERRAL_BONUS',
           amount: roundedAmount,
           balance_before: balBefore,
           balance_after: newAvail,
           balance_type: 'DEVICE_EARNING_BALANCE',
-          status: 'Completed',
+          wallet_type: 'WITHDRAWABLE',
+          status: 'COMPLETED',
           reference_id: referenceId,
           description: rewardDescription,
           created_at: new Date().toISOString(),
@@ -6748,26 +6577,172 @@ export async function updateGatewaySettings(
 export async function fetchDepositTransactions(userId?: string): Promise<import('../types').DepositTransaction[]> {
   if (isSupabaseConfigured && supabase) {
     try {
-      let query = supabase.from('deposit_transactions').select('*, profiles(username, whatsapp_no)').order('created_at', { ascending: false });
-      if (userId) query = query.eq('user_id', userId);
-      const { data, error } = await query.limit(200);
-      if (!error && data) {
+      if (userId) {
+        // Query deposit_transactions, wallet_transactions (RECHARGE), and payments in parallel
+        const [depRes, walRes, payRes] = await Promise.all([
+          supabase
+            .from('deposit_transactions')
+            .select('*')
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('wallet_transactions')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('type', 'RECHARGE')
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('payments')
+            .select('*')
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false }),
+        ]);
+
+        if (depRes.error && walRes.error && payRes.error) {
+          console.error('[fetchDepositTransactions] DB error:', depRes.error || walRes.error || payRes.error);
+          throw new Error(depRes.error?.message || walRes.error?.message || 'Database query failed');
+        }
+
+        const map = new Map<string, import('../types').DepositTransaction>();
+
+        // 1. Process deposit_transactions (Gateway Deposits)
+        if (depRes.data) {
+          for (const d of depRes.data) {
+            const key = d.traceno || d.merchant_order_id || d.id;
+            map.set(key, {
+              id: d.id,
+              userId: d.user_id,
+              username: 'User',
+              traceno: d.traceno || d.merchant_order_id || d.id,
+              amount: Number(d.amount),
+              currency: d.currency || 'INR',
+              payCode: d.pay_code || '101',
+              status: (d.status || 'PENDING').toUpperCase() as any,
+              gatewayStatus: d.gateway_status,
+              payUrl: d.pay_url,
+              gatewayOrderId: d.gateway_order_id,
+              gatewaySerialNo: d.gateway_serial_no,
+              paymentMethod: d.payment_method || d.channel || 'UniVePay UPI Gateway',
+              channel: d.channel || 'UNIVEPAY',
+              utr: d.utr || d.gateway_serial_no,
+              proofUrl: d.proof_url,
+              rejectionReason: d.rejection_reason,
+              adminNote: d.admin_note,
+              createdAt: d.created_at,
+              updatedAt: d.updated_at,
+              creditedAt: d.credited_at,
+            });
+          }
+        }
+
+        // 2. Process wallet_transactions (Recharge entries)
+        if (walRes.data) {
+          for (const w of walRes.data) {
+            const key = w.reference_id || w.order_id || w.id;
+            const rawStatus = (w.status || '').toUpperCase();
+            let statusMapped: any = 'PENDING';
+            if (rawStatus === 'COMPLETED' || rawStatus === 'SUCCESS' || rawStatus === 'PAID') {
+              statusMapped = 'PAID';
+            } else if (rawStatus === 'FAILED' || rawStatus === 'REJECTED') {
+              statusMapped = 'FAILED';
+            } else {
+              statusMapped = 'PENDING';
+            }
+
+            if (map.has(key)) {
+              const existing = map.get(key)!;
+              if (statusMapped === 'PAID') existing.status = 'PAID';
+              if (w.utr && !existing.utr) existing.utr = w.utr;
+            } else {
+              map.set(key, {
+                id: w.id,
+                userId: w.user_id,
+                username: 'User',
+                traceno: w.reference_id || w.id,
+                amount: Number(w.amount),
+                currency: 'INR',
+                payCode: '101',
+                status: statusMapped,
+                paymentMethod: w.payment_method || 'UPI Recharge',
+                channel: 'WALLET',
+                utr: w.utr,
+                createdAt: w.created_at,
+                updatedAt: w.created_at,
+              });
+            }
+          }
+        }
+
+        // 3. Process payments (Manual / UPI deposits)
+        if (payRes.data) {
+          for (const p of payRes.data) {
+            const key = p.order_id || p.id;
+            const rawStatus = (p.status || '').toUpperCase();
+            let statusMapped: any = 'PENDING';
+            if (rawStatus === 'PAID' || rawStatus === 'APPROVED' || rawStatus === 'SUCCESS') {
+              statusMapped = 'PAID';
+            } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED') {
+              statusMapped = 'FAILED';
+            }
+
+            if (map.has(key)) {
+              const existing = map.get(key)!;
+              if (statusMapped === 'PAID') existing.status = 'PAID';
+            } else {
+              map.set(key, {
+                id: p.id,
+                userId: p.user_id,
+                username: 'User',
+                traceno: p.order_id || p.id,
+                amount: Number(p.amount),
+                currency: 'INR',
+                payCode: '101',
+                status: statusMapped,
+                paymentMethod: p.method || 'Manual UPI',
+                channel: 'PAYMENT',
+                utr: p.utr,
+                createdAt: p.created_at,
+                updatedAt: p.created_at,
+              });
+            }
+          }
+        }
+
+        const sorted = Array.from(map.values()).sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        return sorted;
+      }
+
+      // Admin or general fetch: query deposit_transactions directly without joining profiles
+      const { data, error } = await supabase
+        .from('deposit_transactions')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200);
+
+      if (error) {
+        console.error('[fetchDepositTransactions] query error:', error);
+        throw error;
+      }
+
+      if (data) {
         return data.map((d: any) => ({
           id: d.id,
           userId: d.user_id,
-          username: d.profiles?.username || 'User',
-          userMobile: d.profiles?.whatsapp_no,
-          traceno: d.traceno,
+          username: 'User',
+          traceno: d.traceno || d.merchant_order_id || d.id,
           amount: Number(d.amount),
           currency: d.currency || 'INR',
           payCode: d.pay_code || '101',
-          status: d.status,
+          status: (d.status || 'PENDING').toUpperCase() as any,
           gatewayStatus: d.gateway_status,
           payUrl: d.pay_url,
           gatewayOrderId: d.gateway_order_id,
           gatewaySerialNo: d.gateway_serial_no,
-          paymentMethod: d.payment_method || 'UniVePay UPI Gateway',
-          utr: d.utr,
+          paymentMethod: d.payment_method || d.channel || 'UniVePay UPI Gateway',
+          channel: d.channel || 'UNIVEPAY',
+          utr: d.utr || d.gateway_serial_no,
           proofUrl: d.proof_url,
           rejectionReason: d.rejection_reason,
           adminNote: d.admin_note,
@@ -6776,8 +6751,9 @@ export async function fetchDepositTransactions(userId?: string): Promise<import(
           creditedAt: d.credited_at,
         }));
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Error fetching deposit transactions:', e);
+      throw e;
     }
   }
   return [];
@@ -6786,15 +6762,18 @@ export async function fetchDepositTransactions(userId?: string): Promise<import(
 export async function fetchWithdrawalTransactions(userId?: string): Promise<import('../types').WithdrawalTransaction[]> {
   if (isSupabaseConfigured && supabase) {
     try {
-      let query = supabase.from('withdrawal_transactions').select('*, profiles(username, whatsapp_no)').order('created_at', { ascending: false });
+      let query = supabase.from('withdrawal_transactions').select('*').order('created_at', { ascending: false });
       if (userId) query = query.eq('user_id', userId);
       const { data, error } = await query.limit(200);
-      if (!error && data) {
+      if (error) {
+        console.error('[fetchWithdrawalTransactions] error:', error);
+        throw error;
+      }
+      if (data) {
         return data.map((w: any) => ({
           id: w.id,
           userId: w.user_id,
-          username: w.profiles?.username || 'User',
-          userMobile: w.profiles?.whatsapp_no,
+          username: 'User',
           traceno: w.traceno,
           gatewaySerialNo: w.gateway_serial_no,
           amount: Number(w.amount),
@@ -6820,6 +6799,7 @@ export async function fetchWithdrawalTransactions(userId?: string): Promise<impo
       }
     } catch (e) {
       console.warn('Error fetching withdrawal transactions:', e);
+      throw e;
     }
   }
   return [];
@@ -7908,6 +7888,40 @@ export async function fetchDailyCheckInStatus(userId: string): Promise<import('.
   const day7Bonus = typeof sysSettings.dailyCheckInDay7Bonus === 'number' ? sysSettings.dailyCheckInDay7Bonus : 100.00;
 
   const storageKey = `${STORAGE_KEYS.DAILY_CHECKIN}_${userId}`;
+
+  // Try backend API first for database-persistent status
+  if (userId) {
+    try {
+      const resp = await fetch(`/api/fortune/checkin-status?userId=${encodeURIComponent(userId)}`);
+      if (resp.ok) {
+        const json = await resp.json();
+        if (json.success) {
+          const statusResult: import('../types').DailyCheckInStatus = {
+            lastCheckInDate: json.lastCheckInDate,
+            currentStreak: json.currentStreak || 0,
+            hasCheckedInToday: !!json.hasCheckedInToday,
+            todayDayNumber: json.todayDayNumber || 1,
+            todayReward: json.todayReward !== undefined ? json.todayReward : (json.todayDayNumber === 7 ? day7Bonus : baseReward),
+            day7Bonus: json.day7Bonus !== undefined ? json.day7Bonus : day7Bonus,
+            dailyReward: json.dailyReward !== undefined ? json.dailyReward : baseReward,
+            isDailyCheckInEnabled: json.isDailyCheckInEnabled !== undefined ? json.isDailyCheckInEnabled : isEnabled,
+            totalClaimed: json.totalClaimed || 0,
+            history: json.history || [],
+          };
+          saveLocal(storageKey, {
+            lastCheckInDate: json.lastCheckInDate,
+            currentStreak: json.currentStreak || 0,
+            totalClaimed: json.totalClaimed || 0,
+            history: json.history || [],
+          });
+          return statusResult;
+        }
+      }
+    } catch (apiErr) {
+      console.warn('Backend check-in status fetch failed, checking local state:', apiErr);
+    }
+  }
+
   const checkInData = getLocal<{
     lastCheckInDate?: string;
     currentStreak: number;
@@ -7924,19 +7938,16 @@ export async function fetchDailyCheckInStatus(userId: string): Promise<import('.
   const hasCheckedInToday = checkInData.lastCheckInDate === todayStr;
 
   let streak = checkInData.currentStreak || 0;
-  // If not checked in today, verify if streak was broken (missed yesterday)
   if (!hasCheckedInToday && checkInData.lastCheckInDate) {
     const lastDate = new Date(checkInData.lastCheckInDate);
     const today = new Date(todayStr);
     const diffTime = Math.abs(today.getTime() - lastDate.getTime());
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     if (diffDays > 1) {
-      // Streak broken, user missed at least 1 whole day
       streak = 0;
     }
   }
 
-  // Calculate today's day number (1 to 7)
   let todayDayNumber = 1;
   if (hasCheckedInToday) {
     todayDayNumber = streak > 0 ? ((streak - 1) % 7) + 1 : 1;
@@ -7970,156 +7981,90 @@ export async function performDailyCheckIn(userId: string): Promise<{
   message: string;
   newBalance: number;
 }> {
-  const sysSettings = await fetchSystemSettings();
-  if (sysSettings.isDailyCheckInEnabled === false) {
-    throw new Error('Daily check-in is currently disabled by platform administrator.');
+  if (!userId) {
+    throw new Error('User authentication required for daily check-in.');
   }
-
-  const baseReward = typeof sysSettings.dailyCheckInAmount === 'number' ? sysSettings.dailyCheckInAmount : 5.00;
-  const day7Bonus = typeof sysSettings.dailyCheckInDay7Bonus === 'number' ? sysSettings.dailyCheckInDay7Bonus : 100.00;
 
   const storageKey = `${STORAGE_KEYS.DAILY_CHECKIN}_${userId}`;
-  const checkInData = getLocal<{
-    lastCheckInDate?: string;
-    currentStreak: number;
-    totalClaimed: number;
-    history: import('../types').DailyCheckInHistoryItem[];
-  }>(storageKey, {
-    lastCheckInDate: undefined,
-    currentStreak: 0,
-    totalClaimed: 0,
-    history: [],
-  });
 
-  const todayStr = new Date().toISOString().split('T')[0];
-  if (checkInData.lastCheckInDate === todayStr) {
-    throw new Error('You have already checked in today! Please return tomorrow.');
-  }
+  // Call Server-Side Supabase Admin Backend API
+  try {
+    const resp = await fetch('/api/fortune/checkin', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-id': userId,
+      },
+      body: JSON.stringify({ userId }),
+    });
 
-  // Compute new streak
-  let newStreak = 1;
-  if (checkInData.lastCheckInDate) {
-    const lastDate = new Date(checkInData.lastCheckInDate);
-    const today = new Date(todayStr);
-    const diffTime = Math.abs(today.getTime() - lastDate.getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    if (diffDays === 1) {
-      newStreak = (checkInData.currentStreak % 7) + 1;
-    } else {
-      newStreak = 1;
+    const json = await resp.json();
+    if (!resp.ok || !json.success) {
+      throw new Error(json.error || 'Failed to claim daily check-in reward.');
     }
-  }
 
-  const reward = newStreak === 7 ? day7Bonus : baseReward;
-  const txId = 'tx_checkin_' + Date.now();
+    const reward = Number(json.reward || 5.00);
+    const streak = Number(json.streak || 1);
+    const newBal = Number(json.newRechargeBalance !== undefined ? json.newRechargeBalance : (json.newBalance || 0));
+    const todayStr = new Date().toISOString().split('T')[0];
 
-  // Credit user wallet in Supabase if active
-  let finalBalance = 0;
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const { data: walData } = await supabase.from('wallets').select('*').eq('user_id', userId).maybeSingle();
-      if (walData) {
-        const curTopup = Number(walData.topup_balance !== undefined ? walData.topup_balance : (walData.recharge_balance || 0));
-        const newTopup = +(curTopup + reward).toFixed(2);
-        await supabase.from('wallets').update({
-          topup_balance: newTopup,
-          recharge_balance: newTopup,
-          updated_at: new Date().toISOString(),
-        }).eq('user_id', userId);
-        finalBalance = newTopup;
-
-        await supabase.from('wallet_transactions').insert({
-          id: txId,
-          user_id: userId,
-          type: 'DAILY_CHECKIN',
-          amount: reward,
-          balance_before: curTopup,
-          balance_after: newTopup,
-          balance_type: 'TOPUP_WALLET',
-          status: 'Completed',
-          reference_id: 'CHECKIN-DAY-' + newStreak,
-          description: `📅 Daily Check-in (Day ${newStreak}) Reward: ₹${reward.toFixed(2)} (Topup Wallet)`,
-          created_at: new Date().toISOString(),
-        });
-      }
-    } catch (sbErr) {
-      console.warn('Supabase checkin wallet credit error:', sbErr);
+    // Sync Local Wallet & Storage
+    const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+      id: 'wal_' + userId,
+      userId,
+      topupBalance: 0,
+      withdrawBalance: 0,
+      availableBalance: 0,
+      rechargeBalance: 0,
+      earnedBalance: 0,
+      pendingBalance: 0,
+      totalEarned: 0,
+      totalWithdrawn: 0,
+    });
+    wallet.rechargeBalance = newBal;
+    wallet.topupBalance = newBal;
+    if (json.newAvailableBalance !== undefined) {
+      wallet.availableBalance = Number(json.newAvailableBalance);
     }
+    saveLocal(STORAGE_KEYS.WALLET, wallet);
+
+    // Sync Local Checkin State
+    const checkInData = getLocal<{
+      lastCheckInDate?: string;
+      currentStreak: number;
+      totalClaimed: number;
+      history: import('../types').DailyCheckInHistoryItem[];
+    }>(storageKey, {
+      lastCheckInDate: undefined,
+      currentStreak: 0,
+      totalClaimed: 0,
+      history: [],
+    });
+
+    const historyItem: import('../types').DailyCheckInHistoryItem = {
+      date: todayStr,
+      dayNumber: json.dayNumber || ((streak - 1) % 7) + 1,
+      amount: reward,
+      claimedAt: new Date().toISOString(),
+      txId: json.txId || 'tx_' + Date.now(),
+    };
+    checkInData.lastCheckInDate = todayStr;
+    checkInData.currentStreak = streak;
+    checkInData.totalClaimed = +((checkInData.totalClaimed || 0) + reward).toFixed(2);
+    checkInData.history = [historyItem, ...(checkInData.history || [])];
+    saveLocal(storageKey, checkInData);
+
+    return {
+      success: true,
+      reward,
+      streak,
+      message: json.message || `🎉 Daily Check-in Successful! Credited ₹${reward.toFixed(2)} to your Topup Wallet.`,
+      newBalance: newBal,
+    };
+  } catch (err: any) {
+    console.error('Check-in error:', err);
+    throw err;
   }
-
-  // Credit local wallet storage strictly into Topup Wallet
-  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
-    id: 'wal_' + userId,
-    userId,
-    topupBalance: 0,
-    withdrawBalance: 0,
-    availableBalance: 0,
-    rechargeBalance: 0,
-    earnedBalance: 0,
-    pendingBalance: 0,
-    totalEarned: 0,
-    totalWithdrawn: 0,
-  });
-
-  const curTopup = wallet.topupBalance !== undefined ? wallet.topupBalance : (wallet.rechargeBalance || 0);
-  const balBefore = curTopup;
-  const balAfter = +(curTopup + reward).toFixed(2);
-  wallet.topupBalance = balAfter;
-  wallet.rechargeBalance = balAfter;
-  saveLocal(STORAGE_KEYS.WALLET, wallet);
-  if (!finalBalance) finalBalance = balAfter;
-
-  // Record Transaction with balanceType TOPUP_WALLET
-  const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
-  txs.unshift({
-    id: txId,
-    userId,
-    type: 'DAILY_CHECKIN',
-    amount: reward,
-    balanceBefore: balBefore,
-    balanceAfter: balAfter,
-    balanceType: 'TOPUP_WALLET',
-    status: 'Completed',
-    referenceId: 'CHECKIN-DAY-' + newStreak,
-    description: `📅 Daily Check-in (Day ${newStreak}) Reward: ₹${reward.toFixed(2)} (Topup Wallet)`,
-    createdAt: new Date().toISOString(),
-  });
-  saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
-
-  // Notification
-  const notifs = getLocal<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []);
-  notifs.unshift({
-    id: 'notif_' + Date.now(),
-    userId,
-    title: 'Daily Check-in Claimed! 🎉',
-    message: `Congratulations! Day ${newStreak} check-in reward of ₹${reward.toFixed(2)} has been credited to your Topup Wallet (for plan purchases).`,
-    type: 'SUCCESS',
-    read: false,
-    createdAt: new Date().toISOString(),
-  });
-  saveLocal(STORAGE_KEYS.NOTIFICATIONS, notifs);
-
-  // Update check-in record
-  const historyItem: import('../types').DailyCheckInHistoryItem = {
-    date: todayStr,
-    dayNumber: newStreak,
-    amount: reward,
-    claimedAt: new Date().toISOString(),
-    txId,
-  };
-  checkInData.lastCheckInDate = todayStr;
-  checkInData.currentStreak = newStreak;
-  checkInData.totalClaimed = +((checkInData.totalClaimed || 0) + reward).toFixed(2);
-  checkInData.history = [historyItem, ...(checkInData.history || [])];
-  saveLocal(storageKey, checkInData);
-
-  return {
-    success: true,
-    reward,
-    streak: newStreak,
-    message: `Day ${newStreak} check-in completed! ₹${reward.toFixed(2)} credited.`,
-    newBalance: finalBalance,
-  };
 }
 
 // ==============================================================================
@@ -8791,12 +8736,13 @@ export async function claimMissionReward(
         await supabase.from('wallet_transactions').insert({
           id: txId,
           user_id: userId,
-          type: 'MISSION_BONUS',
+          type: 'ADMIN_ADJUSTMENT',
           amount: reward,
           balance_before: curWithdraw,
           balance_after: newWithdraw,
           balance_type: 'WITHDRAW_WALLET',
-          status: 'Completed',
+          wallet_type: 'WITHDRAWABLE',
+          status: 'COMPLETED',
           reference_id: mission.id,
           description: `Mission completed: ${mission.title}`,
           created_at: nowStr,

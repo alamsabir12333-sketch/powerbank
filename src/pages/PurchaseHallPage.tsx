@@ -46,8 +46,12 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
     reason?: string;
     activeHourlyCount: number;
   }>({ eligible: true, activeHourlyCount: 0 });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadData = async () => {
+    setLoading(true);
+    setLoadError(null);
     try {
       const [fetchedPlans, eligibility] = await Promise.all([
         fetchPlans(),
@@ -65,8 +69,11 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
         });
       setPlans(validPlans);
       setProEligibility(eligibility);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Error loading plans/eligibility:', e);
+      setLoadError('Failed to load investment plans.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -304,7 +311,48 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
 
       {/* Product List matching Gain Power UI */}
       <div className="px-3.5 pt-3 space-y-3.5">
-        {filteredPlans.length === 0 ? (
+        {loading ? (
+          <div className="space-y-3.5">
+            {[1, 2, 3].map((idx) => (
+              <div
+                key={idx}
+                className="w-full bg-white rounded-2xl border border-gray-200/70 p-3.5 shadow-xs flex flex-col gap-3 animate-pulse"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="w-16 h-16 rounded-xl bg-gray-200 shrink-0" />
+                  <div className="flex-1 space-y-2">
+                    <div className="h-4 bg-gray-200 rounded w-3/4" />
+                    <div className="h-3 bg-gray-100 rounded w-1/2" />
+                    <div className="flex gap-2 pt-1">
+                      <div className="h-4 bg-gray-100 rounded w-16" />
+                      <div className="h-4 bg-gray-100 rounded w-16" />
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 bg-gray-50/80 rounded-xl p-2.5">
+                  <div className="h-8 bg-gray-200/60 rounded" />
+                  <div className="h-8 bg-gray-200/60 rounded" />
+                  <div className="h-8 bg-gray-200/60 rounded" />
+                </div>
+                <div className="flex items-center justify-between pt-1">
+                  <div className="h-6 bg-gray-200 rounded w-24" />
+                  <div className="h-9 bg-gray-200 rounded-xl w-28" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : loadError ? (
+          <div className="bg-white rounded-2xl border border-rose-200 p-8 text-center space-y-3">
+            <p className="text-sm font-bold text-rose-600">{loadError}</p>
+            <button
+              type="button"
+              onClick={loadData}
+              className="px-4 py-2 bg-[#FF6000] text-white rounded-xl font-bold text-xs shadow-sm hover:bg-[#E65100] transition-colors"
+            >
+              Retry Loading Plans
+            </button>
+          </div>
+        ) : filteredPlans.length === 0 ? (
           <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center space-y-2">
             <p className="text-sm font-bold text-gray-700">No devices available in this category</p>
             <p className="text-xs text-gray-500">Please check back soon or browse other plan categories.</p>

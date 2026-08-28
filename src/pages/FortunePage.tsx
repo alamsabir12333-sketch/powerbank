@@ -208,7 +208,7 @@ export const FortunePage: React.FC<FortunePageProps> = ({
                   <Flame className="w-5 h-5 text-amber-200 fill-amber-200" />
                   Daily Check-in
                 </h3>
-                {hasCheckedInToday && (
+                {!loadingCheckIn && hasCheckedInToday && (
                   <span className="bg-white/20 text-white text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-xs">
                     Claimed Today
                   </span>
@@ -224,136 +224,158 @@ export const FortunePage: React.FC<FortunePageProps> = ({
             </div>
           </div>
 
-          {/* 7-Day Cycle Grid */}
-          <div className="grid grid-cols-7 gap-1.5 sm:gap-2 mb-4 relative z-10">
-            {[1, 2, 3, 4, 5, 6, 7].map((dayNum) => {
-              const isChecked = dayNum <= completedDaysCount;
-              const isTargetToday = !hasCheckedInToday && dayNum === nextTargetDay;
-              const isDay7 = dayNum === 7;
-              const amount = isDay7 ? day7Bonus : dailyReward;
+          {/* Loading Skeleton or 7-Day Cycle Grid */}
+          {loadingCheckIn ? (
+            <div className="space-y-4 animate-pulse relative z-10">
+              <div className="grid grid-cols-7 gap-1.5 sm:gap-2 mb-4">
+                {[1, 2, 3, 4, 5, 6, 7].map((n) => (
+                  <div key={n} className="flex flex-col items-center gap-1.5">
+                    <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-white/20" />
+                    <div className="w-8 h-2.5 bg-white/20 rounded-full" />
+                    <div className="w-6 h-2 bg-white/15 rounded-full" />
+                  </div>
+                ))}
+              </div>
+              <div className="h-14 bg-black/15 rounded-2xl border border-white/10" />
+            </div>
+          ) : (
+            <>
+              {/* 7-Day Cycle Grid */}
+              <div className="grid grid-cols-7 gap-1.5 sm:gap-2 mb-4 relative z-10">
+                {[1, 2, 3, 4, 5, 6, 7].map((dayNum) => {
+                  const isChecked = dayNum <= completedDaysCount;
+                  const isTargetToday = !hasCheckedInToday && dayNum === nextTargetDay;
+                  const isDay7 = dayNum === 7;
+                  const amount = isDay7 ? day7Bonus : dailyReward;
 
-              return (
-                <div
-                  key={dayNum}
-                  className={`flex flex-col items-center justify-center text-center transition-all ${
-                    isTargetToday ? 'scale-105' : ''
-                  }`}
-                >
-                  {/* Day Circle */}
-                  <div
-                    className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold text-xs sm:text-sm transition-all relative ${
-                      isChecked
-                        ? 'bg-white text-[#FF6B00] shadow-sm ring-2 ring-white/60'
-                        : isTargetToday
-                        ? 'bg-white text-[#FF6B00] shadow-lg ring-3 ring-amber-300 animate-pulse font-extrabold'
-                        : 'bg-white/20 border border-white/30 text-white'
+                  return (
+                    <div
+                      key={dayNum}
+                      className={`flex flex-col items-center justify-center text-center transition-all ${
+                        isTargetToday ? 'scale-105' : ''
+                      }`}
+                    >
+                      {/* Day Circle */}
+                      <div
+                        className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold text-xs sm:text-sm transition-all relative ${
+                          isChecked
+                            ? 'bg-white text-[#FF6B00] shadow-sm ring-2 ring-white/60'
+                            : isTargetToday
+                            ? 'bg-white text-[#FF6B00] shadow-lg ring-3 ring-amber-300 animate-pulse font-extrabold'
+                            : 'bg-white/20 border border-white/30 text-white'
+                        }`}
+                      >
+                        {isChecked ? (
+                          <Check className="w-4 h-4 sm:w-5 sm:h-5 stroke-[3] text-[#FF6B00]" />
+                        ) : isDay7 ? (
+                          <Gift className="w-4 h-4 sm:w-5 sm:h-5 text-amber-200" />
+                        ) : (
+                          <span>{dayNum}</span>
+                        )}
+
+                        {isDay7 && (
+                          <span className="absolute -top-1.5 -right-1 bg-amber-300 text-amber-950 text-[8px] font-black px-1 py-0.2 rounded-full uppercase leading-none shadow-xs">
+                            MAX
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Reward Text */}
+                      <span
+                        className={`text-[10px] sm:text-[11px] font-bold mt-1.5 whitespace-nowrap leading-tight ${
+                          isChecked
+                            ? 'text-white font-extrabold'
+                            : isTargetToday
+                            ? 'text-amber-200 font-extrabold'
+                            : 'text-white/80'
+                        }`}
+                      >
+                        Rs {amount.toFixed(0)}
+                      </span>
+                      <span className="text-[9px] text-white/60 font-medium">
+                        Day {dayNum}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Card Bottom Bar (Streak Info & Action Button) */}
+              <div className="bg-black/15 backdrop-blur-xs rounded-2xl p-3 flex items-center justify-between gap-3 relative z-10 border border-white/10">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-white">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                    <span className="truncate">
+                      Current Streak: <strong className="text-amber-200 font-extrabold">{streak}</strong> day{streak === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-white/80 mt-0.5 truncate">
+                    Day 7 mega bonus: <strong className="text-white font-bold">Rs {day7Bonus.toFixed(2)}</strong>
+                  </div>
+                </div>
+
+                <div className="shrink-0 flex items-center gap-2">
+                  <button
+                    onClick={handleDailyCheckIn}
+                    disabled={hasCheckedInToday || claiming || loadingCheckIn}
+                    className={`px-4 sm:px-5 py-2.5 rounded-xl font-black text-xs transition-all shadow-md flex items-center gap-1.5 cursor-pointer ${
+                      hasCheckedInToday
+                        ? 'bg-white/25 text-white/90 cursor-not-allowed border border-white/20'
+                        : 'bg-white text-[#FF6B00] hover:bg-orange-50 active:scale-95 hover:shadow-lg'
                     }`}
                   >
-                    {isChecked ? (
-                      <Check className="w-4 h-4 sm:w-5 sm:h-5 stroke-[3] text-[#FF6B00]" />
-                    ) : isDay7 ? (
-                      <Gift className="w-4 h-4 sm:w-5 sm:h-5 text-amber-200" />
+                    {claiming ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Claiming...</span>
+                      </>
+                    ) : hasCheckedInToday ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                        <span>Checked In</span>
+                      </>
                     ) : (
-                      <span>{dayNum}</span>
+                      <>
+                        <Gift className="w-3.5 h-3.5" />
+                        <span>Check In</span>
+                      </>
                     )}
+                  </button>
+                </div>
+              </div>
 
-                    {isDay7 && (
-                      <span className="absolute -top-1.5 -right-1 bg-amber-300 text-amber-950 text-[8px] font-black px-1 py-0.2 rounded-full uppercase leading-none shadow-xs">
-                        MAX
-                      </span>
+              {/* Quick History Toggle */}
+              <div className="mt-3 text-center">
+                <button
+                  onClick={() => setShowHistory(!showHistory)}
+                  className="text-[11px] text-white/80 hover:text-white font-semibold flex items-center justify-center gap-1 mx-auto transition-colors cursor-pointer"
+                >
+                  <History className="w-3 h-3" />
+                  <span>{showHistory ? 'Hide Check-in Logs' : 'View Check-in History'}</span>
+                </button>
+
+                {showHistory && (
+                  <div className="mt-2.5 bg-black/20 rounded-2xl p-3 text-left max-h-44 overflow-y-auto space-y-1.5 border border-white/10 text-xs">
+                    {checkInStatus?.history && checkInStatus.history.length > 0 ? (
+                      checkInStatus.history.map((h, i) => (
+                        <div key={i} className="flex items-center justify-between text-[11px] py-1 border-b border-white/10 last:border-0">
+                          <div className="flex items-center gap-1.5 text-white/90">
+                            <Check className="w-3 h-3 text-amber-300" />
+                            <span>Day {h.dayNumber} Check-in</span>
+                            <span className="text-white/60 text-[10px]">({h.date})</span>
+                          </div>
+                          <span className="font-bold text-amber-200">+₹{h.amount.toFixed(2)}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center py-2 text-[11px] text-white/70">
+                        No check-in history found yet. Check in today to start your streak!
+                      </div>
                     )}
                   </div>
-
-                  {/* Reward Text */}
-                  <span
-                    className={`text-[10px] sm:text-[11px] font-bold mt-1.5 whitespace-nowrap leading-tight ${
-                      isChecked
-                        ? 'text-white font-extrabold'
-                        : isTargetToday
-                        ? 'text-amber-200 font-extrabold'
-                        : 'text-white/80'
-                    }`}
-                  >
-                    Rs {amount.toFixed(0)}
-                  </span>
-                  <span className="text-[9px] text-white/60 font-medium">
-                    Day {dayNum}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Card Bottom Bar (Streak Info & Action Button) */}
-          <div className="bg-black/15 backdrop-blur-xs rounded-2xl p-3 flex items-center justify-between gap-3 relative z-10 border border-white/10">
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5 text-xs font-bold text-white">
-                <Sparkles className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-                <span className="truncate">
-                  Current Streak: <strong className="text-amber-200 font-extrabold">{streak}</strong> day{streak === 1 ? '' : 's'}
-                </span>
-              </div>
-              <div className="text-[11px] text-white/80 mt-0.5 truncate">
-                Day 7 mega bonus: <strong className="text-white font-bold">Rs {day7Bonus.toFixed(2)}</strong>
-              </div>
-            </div>
-
-            <div className="shrink-0 flex items-center gap-2">
-              <button
-                onClick={handleDailyCheckIn}
-                disabled={hasCheckedInToday || claiming || loadingCheckIn}
-                className={`px-4 sm:px-5 py-2.5 rounded-xl font-black text-xs transition-all shadow-md flex items-center gap-1.5 cursor-pointer ${
-                  hasCheckedInToday
-                    ? 'bg-white/25 text-white/90 cursor-not-allowed border border-white/20'
-                    : 'bg-white text-[#FF6B00] hover:bg-orange-50 active:scale-95 hover:shadow-lg'
-                }`}
-              >
-                {claiming ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Claiming...</span>
-                  </>
-                ) : hasCheckedInToday ? (
-                  <>
-                    <Check className="w-3.5 h-3.5 stroke-[3]" />
-                    <span>Checked In</span>
-                  </>
-                ) : (
-                  <>
-                    <Gift className="w-3.5 h-3.5" />
-                    <span>Check In</span>
-                  </>
                 )}
-              </button>
-            </div>
-          </div>
-
-          {/* Quick History Toggle */}
-          {checkInStatus?.history && checkInStatus.history.length > 0 && (
-            <div className="mt-3 text-center">
-              <button
-                onClick={() => setShowHistory(!showHistory)}
-                className="text-[11px] text-white/80 hover:text-white font-semibold flex items-center justify-center gap-1 mx-auto transition-colors cursor-pointer"
-              >
-                <History className="w-3 h-3" />
-                <span>{showHistory ? 'Hide Check-in Logs' : 'View Check-in History'}</span>
-              </button>
-
-              {showHistory && (
-                <div className="mt-2.5 bg-black/20 rounded-2xl p-3 text-left max-h-44 overflow-y-auto space-y-1.5 border border-white/10 text-xs">
-                  {checkInStatus.history.map((h, i) => (
-                    <div key={i} className="flex items-center justify-between text-[11px] py-1 border-b border-white/10 last:border-0">
-                      <div className="flex items-center gap-1.5 text-white/90">
-                        <Check className="w-3 h-3 text-amber-300" />
-                        <span>Day {h.dayNumber} Check-in</span>
-                        <span className="text-white/60 text-[10px]">({h.date})</span>
-                      </div>
-                      <span className="font-bold text-amber-200">+₹{h.amount.toFixed(2)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+              </div>
+            </>
           )}
         </div>
       </div>

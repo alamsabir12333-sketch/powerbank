@@ -566,7 +566,7 @@ export interface DailyCheckInStatus {
   history?: DailyCheckInHistoryItem[];
 }
 
-export type DepositStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'EXPIRED';
+export type DepositStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'EXPIRED' | 'PAID' | 'COMPLETED';
 
 export interface DepositTransaction {
   id: string;
@@ -585,8 +585,14 @@ export interface DepositTransaction {
   callbackReceived?: boolean;
   signatureVerified?: boolean;
   utr?: string;
+  proofUrl?: string;
+  rejectionReason?: string;
+  adminNote?: string;
+  creditedAt?: string;
   callbackPayload?: any;
   gatewayResponse?: any;
+  paymentMethod?: string;
+  channel?: string;
   createdAt: string;
   updatedAt: string;
 }
