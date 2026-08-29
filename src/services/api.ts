@@ -48,6 +48,10 @@ import {
   MissionClaim,
   AdminMissionStats,
   CreateMissionPayload,
+  SiteSettings,
+  RechargeSettings,
+  UsdtSettings,
+  UsdtDepositItem,
 } from '../types';
 import {
   productsData,
@@ -1204,39 +1208,51 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
 export async function fetchAdminTransactions(): Promise<WalletTransaction[]> {
   if (isSupabaseConfigured && supabase) {
     try {
-      const [txRes, depRes, withRes, purRes] = await Promise.all([
+      const [txRes, depRes, withRes, purRes, profRes] = await Promise.all([
         supabase
           .from('wallet_transactions')
-          .select('*, profiles(username, mobile, membership_number)')
+          .select('*')
           .order('created_at', { ascending: false })
           .limit(300),
         supabase
           .from('deposit_transactions')
-          .select('*, profiles(username, mobile, membership_number)')
+          .select('*')
           .order('created_at', { ascending: false })
           .limit(300),
         supabase
           .from('withdrawals')
-          .select('*, profiles(username, mobile, membership_number)')
+          .select('*')
           .order('created_at', { ascending: false })
           .limit(300),
         supabase
           .from('purchases')
-          .select('*, profiles(username, mobile, membership_number)')
+          .select('*')
           .order('created_at', { ascending: false })
           .limit(300),
+        supabase
+          .from('profiles')
+          .select('id, user_id, username, mobile, whatsapp_no, membership_number'),
       ]);
+
+      const profileMap = new Map<string, any>();
+      if (profRes.data) {
+        profRes.data.forEach((p: any) => {
+          if (p.user_id) profileMap.set(p.user_id, p);
+          if (p.id) profileMap.set(p.id, p);
+        });
+      }
 
       const txMap = new Map<string, WalletTransaction>();
 
       if (!txRes.error && txRes.data) {
         for (const t of txRes.data) {
           const ref = t.reference_id || t.id;
+          const prof = profileMap.get(t.user_id) || {};
           txMap.set(ref, {
             id: t.id,
             userId: t.user_id,
-            username: t.profiles?.username || 'User',
-            userMobile: t.profiles?.mobile || 'N/A',
+            username: prof.username || 'User',
+            userMobile: prof.mobile || prof.whatsapp_no || 'N/A',
             type: t.type,
             amount: Number(t.amount),
             balanceBefore: Number(t.balance_before),
@@ -1264,6 +1280,7 @@ export async function fetchAdminTransactions(): Promise<WalletTransaction[]> {
             mappedStatus = 'Failed';
           }
 
+          const prof = profileMap.get(d.user_id) || {};
           if (txMap.has(ref)) {
             const existing = txMap.get(ref)!;
             if (mappedStatus === 'Completed') existing.status = 'Completed';
@@ -1272,8 +1289,8 @@ export async function fetchAdminTransactions(): Promise<WalletTransaction[]> {
             txMap.set(ref, {
               id: d.id,
               userId: d.user_id,
-              username: d.profiles?.username || 'User',
-              userMobile: d.profiles?.mobile || 'N/A',
+              username: prof.username || 'User',
+              userMobile: prof.whatsapp_no || prof.mobile || 'N/A',
               type: 'RECHARGE',
               amount: Number(d.amount),
               balanceBefore: 0,
@@ -1294,18 +1311,19 @@ export async function fetchAdminTransactions(): Promise<WalletTransaction[]> {
           const ref = w.id;
           const rawStatus = (w.status || '').toUpperCase();
           let mappedStatus: 'Completed' | 'Pending' | 'Failed' = 'Pending';
-          if (rawStatus === 'APPROVED' || rawStatus === 'PAID' || rawStatus === 'SUCCESS' || rawStatus === 'PROCESSED') {
+          if (rawStatus === 'APPROVED' || rawStatus === 'PAID' || rawStatus === 'SUCCESS' || rawStatus === 'PROCESSED' || rawStatus === 'COMPLETED') {
             mappedStatus = 'Completed';
           } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED') {
             mappedStatus = 'Failed';
           }
 
+          const prof = profileMap.get(w.user_id) || {};
           if (!txMap.has(ref)) {
             txMap.set(ref, {
               id: w.id,
               userId: w.user_id,
-              username: w.profiles?.username || 'User',
-              userMobile: w.profiles?.mobile || 'N/A',
+              username: prof.username || 'User',
+              userMobile: prof.whatsapp_no || prof.mobile || 'N/A',
               type: 'WITHDRAWAL',
               amount: -Math.abs(Number(w.amount)),
               balanceBefore: 0,
@@ -1324,13 +1342,14 @@ export async function fetchAdminTransactions(): Promise<WalletTransaction[]> {
       if (!purRes.error && purRes.data) {
         for (const p of purRes.data) {
           const ref = p.id;
+          const prof = profileMap.get(p.user_id) || {};
           if (!txMap.has(ref)) {
             const isPro = (p.plan_category || '').toUpperCase() === 'PRO';
             txMap.set(ref, {
               id: p.id,
               userId: p.user_id,
-              username: p.profiles?.username || 'User',
-              userMobile: p.profiles?.mobile || 'N/A',
+              username: prof.username || 'User',
+              userMobile: prof.whatsapp_no || prof.mobile || 'N/A',
               type: isPro ? 'PRO_PLAN_PURCHASE' : 'PLAN_PURCHASE',
               amount: -Math.abs(Number(p.amount)),
               balanceBefore: 0,
@@ -2169,6 +2188,77 @@ export async function fetchAdminReferralData(): Promise<{
   rewardsHistory: ReferralRewardLog[];
 }> {
   const settings = await fetchReferralSettings();
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const [profilesRes, referralsRes, earningsRes] = await Promise.all([
+        supabase.from('profiles').select('*').order('created_at', { ascending: false }),
+        supabase.from('referrals').select('*'),
+        supabase.from('earnings').select('*').like('earning_type', '%REFERRAL%'),
+      ]);
+
+      const profiles = profilesRes.data || [];
+      const referrals = referralsRes.data || [];
+      const earnings = earningsRes.data || [];
+
+      if (profiles.length > 0) {
+        const totalCommissionsPaid = +earnings.reduce((sum, e) => sum + Number(e.amount || 0), 0).toFixed(2);
+        const uniqueReferrers = new Set(referrals.map((r: any) => r.referrer_id).filter(Boolean));
+
+        const members = profiles.map((p: any) => {
+          const myId = p.user_id || p.id;
+          const myCode = p.referral_code || p.membership_number || '';
+          
+          const directs = referrals.filter(
+            (r: any) => r.referrer_id === myId || (r.metadata && r.metadata.referrer_code === myCode)
+          ).length;
+
+          const myEarnings = earnings
+            .filter((e: any) => e.user_id === myId)
+            .reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
+
+          return {
+            userId: myId,
+            username: p.username || 'User',
+            mobile: p.whatsapp_no || p.mobile || 'N/A',
+            referralCode: myCode || 'N/A',
+            referredBy: p.referred_by || 'None (Direct)',
+            directInvites: directs,
+            totalTeamSize: directs,
+            totalCommissionEarned: +myEarnings.toFixed(2),
+            status: p.status || 'active',
+            joined: p.created_at ? p.created_at.split('T')[0] : '2026-08-20',
+          };
+        });
+
+        const history: ReferralRewardLog[] = earnings.map((e: any) => ({
+          id: e.id,
+          referrerUserId: e.user_id,
+          rewardType: (e.earning_type || 'TOPUP_COMMISSION') as any,
+          amount: Number(e.amount || 0),
+          claimedAt: e.created_at,
+          status: 'CREDITED',
+        }));
+
+        return {
+          settings,
+          stats: {
+            totalReferrals: referrals.length || profiles.filter((p: any) => !!p.referred_by).length,
+            totalCommissionsPaid,
+            registrationRewardsPaid: 0,
+            streakRewardsPaid: 0,
+            topupCommissionsPaid: totalCommissionsPaid,
+            activeReferrersCount: uniqueReferrers.size,
+          },
+          members,
+          rewardsHistory: history,
+        };
+      }
+    } catch (e) {
+      console.warn('Error fetching Supabase admin referral data:', e);
+    }
+  }
+
   const allUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
   const currentProfile = getLocal<UserProfile | null>(STORAGE_KEYS.PROFILE, null);
   if (currentProfile && !allUsers.some((u) => u.userId === currentProfile.userId)) {
@@ -2301,14 +2391,14 @@ export async function createPlan(planData: Omit<ProductItem, 'id'>): Promise<Pro
       .insert({
         name: newPlan.name,
         category: newPlan.category,
-        description: newPlan.description,
+        description: newPlan.description || newPlan.name,
         price: newPlan.price,
         earning_rate: newPlan.hourlyEarnings,
         daily_earnings: newPlan.dailyEarnings,
-        instant_bonus: newPlan.instantBonus,
-        earning_type: newPlan.earningType,
-        duration: newPlan.duration || 365,
-        duration_days: newPlan.durationDays || newPlan.duration || 365,
+        instant_bonus: newPlan.instantBonus || 0,
+        earning_type: newPlan.category === 'PRO' ? 'DAILY' : (newPlan.earningType || 'HOURLY'),
+        duration: newPlan.duration || newPlan.durationDays || 365,
+        limit_per_user: newPlan.limit || 5,
         tags: newPlan.tags,
         image_type: newPlan.imageType,
         status: newPlan.status,
@@ -2329,25 +2419,30 @@ export async function createPlan(planData: Omit<ProductItem, 'id'>): Promise<Pro
 
 export async function updatePlan(planId: string, planData: Partial<ProductItem>): Promise<void> {
   if (isSupabaseConfigured && supabase) {
+    const updatePayload: any = {};
+    if (planData.name !== undefined) updatePayload.name = planData.name;
+    if (planData.category !== undefined) updatePayload.category = planData.category;
+    if (planData.description !== undefined) updatePayload.description = planData.description;
+    if (planData.price !== undefined || planData.devicePrice !== undefined) {
+      updatePayload.price = planData.devicePrice || planData.price;
+    }
+    if (planData.hourlyEarnings !== undefined) updatePayload.earning_rate = planData.hourlyEarnings;
+    if (planData.dailyEarnings !== undefined) updatePayload.daily_earnings = planData.dailyEarnings;
+    if (planData.instantBonus !== undefined) updatePayload.instant_bonus = planData.instantBonus;
+    if (planData.earningType !== undefined) updatePayload.earning_type = planData.earningType;
+    if (planData.duration !== undefined || planData.durationDays !== undefined) {
+      updatePayload.duration = planData.duration || planData.durationDays;
+    }
+    if (planData.limit !== undefined) updatePayload.limit_per_user = planData.limit;
+    if (planData.tags !== undefined) updatePayload.tags = planData.tags;
+    if (planData.imageType !== undefined) updatePayload.image_type = planData.imageType;
+    if (planData.status !== undefined) updatePayload.status = planData.status;
+    if (planData.allowDuplicate !== undefined) updatePayload.allow_duplicate = planData.allowDuplicate;
+    updatePayload.updated_at = new Date().toISOString();
+
     const { error } = await supabase
       .from('plans')
-      .update({
-        name: planData.name,
-        category: planData.category,
-        description: planData.description,
-        price: planData.devicePrice || planData.price,
-        earning_rate: planData.hourlyEarnings,
-        daily_earnings: planData.dailyEarnings,
-        instant_bonus: planData.instantBonus,
-        earning_type: planData.earningType,
-        duration: planData.duration,
-        duration_days: planData.durationDays || planData.duration,
-        tags: planData.tags,
-        image_type: planData.imageType,
-        status: planData.status,
-        allow_duplicate: planData.allowDuplicate,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq('id', planId);
 
     if (error) throw new Error(error.message);
@@ -2387,7 +2482,7 @@ export async function fetchPurchases(userId: string): Promise<PurchaseItem[]> {
     try {
       const { data, error } = await supabase
         .from('purchases')
-        .select('*, plans(*)')
+        .select('*')
         .eq('user_id', userId)
         .order('created_at', { ascending: false });
 
@@ -2396,12 +2491,12 @@ export async function fetchPurchases(userId: string): Promise<PurchaseItem[]> {
       }
 
       if (data && data.length > 0) {
-        return data.map((p) => ({
+        return data.map((p: any) => ({
           id: p.id,
           userId: p.user_id,
           planId: p.plan_id,
-          planName: p.plan_name || p.plans?.name || 'Device Cabinet',
-          planCategory: p.plan_category || p.plans?.category || (p.plans?.name?.includes('PRO') ? 'PRO' : 'HOURLY'),
+          planName: p.plan_name || 'Device Cabinet',
+          planCategory: p.plan_category || (p.plan_name?.includes('PRO') ? 'PRO' : 'HOURLY'),
           amount: Number(p.amount),
           instantBonus: Number(p.instant_bonus || 0),
           dailyEarnings: Number(p.daily_earnings || (Number(p.earning_rate || 0) * 24)),
@@ -3765,22 +3860,22 @@ export async function fetchUserWithdrawals(userId: string): Promise<WithdrawalIt
     try {
       const { data, error } = await supabase
         .from('withdrawals')
-        .select('*, bank_accounts(*)')
+        .select('*')
         .eq('user_id', userId)
         .order('created_at', { ascending: false });
 
       if (!error && data && data.length > 0) {
-        return data.map((w) => ({
+        return data.map((w: any) => ({
           id: w.id,
           userId: w.user_id,
           amount: Number(w.amount),
           fee: Number(w.fee || 0),
-          netAmount: Number(w.net_amount),
+          netAmount: Number(w.net_amount || w.actual_amount || w.amount),
           bankAccountId: w.bank_account_id,
           upiId: w.upi_id,
           status: w.status,
           adminNote: w.admin_note,
-          rejectionReason: w.rejection_reason,
+          rejectionReason: w.rejection_reason || w.rejected_reason,
           createdAt: w.created_at,
           processedAt: w.processed_at,
         }));
@@ -3801,39 +3896,54 @@ export async function fetchUserWithdrawals(userId: string): Promise<WithdrawalIt
 export async function fetchAdminPayments(): Promise<PaymentItem[]> {
   if (isSupabaseConfigured && supabase) {
     try {
-      const [manualRes, gatewayRes] = await Promise.all([
+      const [manualRes, gatewayRes, profilesRes] = await Promise.all([
         supabase
           .from('payments')
-          .select('*, profiles(username, mobile, whatsapp_no)')
+          .select('*')
           .order('created_at', { ascending: false }),
         supabase
           .from('deposit_transactions')
-          .select('*, profiles(username, mobile, whatsapp_no)')
+          .select('*')
           .order('created_at', { ascending: false })
           .limit(200),
+        supabase
+          .from('profiles')
+          .select('id, user_id, username, mobile, whatsapp_no'),
       ]);
 
+      const profileMap = new Map<string, any>();
+      if (profilesRes.data) {
+        profilesRes.data.forEach((p: any) => {
+          if (p.user_id) profileMap.set(p.user_id, p);
+          if (p.id) profileMap.set(p.id, p);
+        });
+      }
+
       const manualPayments: PaymentItem[] = (!manualRes.error && manualRes.data)
-        ? manualRes.data.map((p: any) => ({
-            id: p.id,
-            userId: p.user_id,
-            username: p.profiles?.username || 'User',
-            userMobile: p.profiles?.mobile || p.profiles?.whatsapp_no || 'N/A',
-            orderId: p.order_id || p.id,
-            amount: Number(p.amount),
-            paymentType: p.payment_type || 'MANUAL_QR',
-            utr: p.utr,
-            proofUrl: p.proof_url,
-            status: p.status as PaymentStatus,
-            adminId: p.admin_id,
-            rejectionReason: p.rejection_reason,
-            createdAt: p.created_at,
-            updatedAt: p.updated_at,
-          }))
+        ? manualRes.data.map((p: any) => {
+            const prof = profileMap.get(p.user_id) || {};
+            return {
+              id: p.id,
+              userId: p.user_id,
+              username: prof.username || 'User',
+              userMobile: prof.mobile || prof.whatsapp_no || 'N/A',
+              orderId: p.order_id || p.reference_id || p.id,
+              amount: Number(p.amount),
+              paymentType: p.payment_type || 'MANUAL_QR',
+              utr: p.utr || p.utr_number || p.reference_id,
+              proofUrl: p.proof_url || p.receipt_url,
+              status: p.status as PaymentStatus,
+              adminId: p.admin_id,
+              rejectionReason: p.rejection_reason,
+              createdAt: p.created_at,
+              updatedAt: p.updated_at,
+            };
+          })
         : [];
 
       const gatewayDeposits: PaymentItem[] = (!gatewayRes.error && gatewayRes.data)
         ? gatewayRes.data.map((d: any) => {
+            const prof = profileMap.get(d.user_id) || {};
             const rawStatus = (d.status || '').toUpperCase();
             let mappedStatus: PaymentStatus = 'PAYMENT_PENDING';
             if (rawStatus === 'SUCCESS' || rawStatus === 'PAID' || rawStatus === 'COMPLETED') {
@@ -3847,8 +3957,8 @@ export async function fetchAdminPayments(): Promise<PaymentItem[]> {
             return {
               id: d.id,
               userId: d.user_id,
-              username: d.profiles?.username || 'User',
-              userMobile: d.profiles?.whatsapp_no || d.profiles?.mobile || 'N/A',
+              username: prof.username || 'User',
+              userMobile: prof.whatsapp_no || prof.mobile || 'N/A',
               orderId: d.traceno || d.order_id || d.id,
               amount: Number(d.amount),
               paymentType: d.channel || 'UNIVEPAY_GATEWAY',
@@ -4044,39 +4154,64 @@ export async function rejectRecharge(paymentId: string, param2: string, param3?:
 export async function fetchAdminWithdrawals(): Promise<WithdrawalItem[]> {
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase
-        .from('withdrawals')
-        .select('*, profiles(mobile), bank_accounts(*)')
-        .order('created_at', { ascending: false });
+      const [withdrawalsRes, profilesRes, banksRes] = await Promise.all([
+        supabase
+          .from('withdrawals')
+          .select('*')
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('profiles')
+          .select('id, user_id, username, mobile, whatsapp_no'),
+        supabase
+          .from('bank_accounts')
+          .select('*'),
+      ]);
 
-      if (!error && data && data.length > 0) {
-        return data.map((w) => ({
-          id: w.id,
-          userId: w.user_id,
-          userMobile: w.profiles?.mobile || 'N/A',
-          amount: Number(w.amount),
-          fee: Number(w.fee || 0),
-          netAmount: Number(w.net_amount),
-          bankAccountId: w.bank_account_id,
-          bankDetails: w.bank_accounts
-            ? {
-                id: w.bank_accounts.id,
-                userId: w.bank_accounts.user_id,
-                accountHolderName: w.bank_accounts.account_holder_name,
-                bankName: w.bank_accounts.bank_name,
-                accountNumber: w.bank_accounts.account_number,
-                ifsc: w.bank_accounts.ifsc,
-                upiId: w.bank_accounts.upi_id,
-                isDefault: w.bank_accounts.is_default,
-              }
-            : undefined,
-          upiId: w.upi_id,
-          status: w.status,
-          adminNote: w.admin_note,
-          rejectionReason: w.rejection_reason,
-          createdAt: w.created_at,
-          processedAt: w.processed_at,
-        }));
+      if (!withdrawalsRes.error && withdrawalsRes.data && withdrawalsRes.data.length > 0) {
+        const profileMap = new Map<string, any>();
+        if (profilesRes.data) {
+          profilesRes.data.forEach((p: any) => {
+            if (p.user_id) profileMap.set(p.user_id, p);
+            if (p.id) profileMap.set(p.id, p);
+          });
+        }
+
+        const bankMap = new Map<string, any>();
+        if (banksRes.data) {
+          banksRes.data.forEach((b: any) => {
+            if (b.id) bankMap.set(b.id, b);
+          });
+        }
+
+        return withdrawalsRes.data.map((w: any) => {
+          const prof = profileMap.get(w.user_id) || {};
+          const bank = bankMap.get(w.bank_account_id) || {};
+          return {
+            id: w.id,
+            userId: w.user_id,
+            userMobile: prof.mobile || prof.whatsapp_no || 'N/A',
+            amount: Number(w.amount),
+            fee: Number(w.fee || 0),
+            netAmount: Number(w.net_amount || w.actual_amount || w.amount),
+            bankAccountId: w.bank_account_id,
+            bankDetails: {
+              id: bank.id || w.bank_account_id,
+              userId: bank.user_id || w.user_id,
+              accountHolderName: bank.account_holder_name || bank.holder_name || prof.username || 'Account Holder',
+              bankName: bank.bank_name || w.bank_name || 'Bank',
+              accountNumber: bank.account_number || w.account_number || 'N/A',
+              ifsc: bank.ifsc || bank.ifsc_code || w.ifsc_code || 'N/A',
+              upiId: bank.upi_id || w.upi_id,
+              isDefault: bank.is_default,
+            },
+            upiId: w.upi_id,
+            status: w.status,
+            adminNote: w.admin_note,
+            rejectionReason: w.rejection_reason || w.rejected_reason,
+            createdAt: w.created_at,
+            processedAt: w.processed_at,
+          };
+        });
       }
     } catch {
       // Fall through to local
@@ -4090,6 +4225,27 @@ export async function approveWithdrawal(withdrawalId: string, bankRefNoOrAdminId
   const isFirstAdmin = bankRefNoOrAdminId.startsWith('adm_') || bankRefNoOrAdminId.startsWith('admin_');
   const adminId = optionalAdminId || (isFirstAdmin ? bankRefNoOrAdminId : 'adm_master_01');
   const bankRef = isFirstAdmin ? (optionalAdminId || '') : bankRefNoOrAdminId;
+
+  // 1. Call authoritative Server Endpoint
+  try {
+    const resp = await fetch('/api/admin/approve-withdrawal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        withdrawalId,
+        adminId,
+        bankRef,
+      }),
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success) {
+        return data;
+      }
+    }
+  } catch (err) {
+    console.warn('API approve-withdrawal failed, falling back:', err);
+  }
 
   if (isSupabaseConfigured && supabase) {
     try {
@@ -4161,6 +4317,27 @@ export async function rejectWithdrawal(withdrawalId: string, param2: string, par
   const isParam2Admin = param2.startsWith('adm_') || param2.startsWith('admin_');
   const adminId = isParam2Admin ? param2 : (param3 || 'adm_master_01');
   const reason = isParam2Admin ? (param3 || 'Details Mismatch') : param2;
+
+  // 1. Call authoritative Server Endpoint
+  try {
+    const resp = await fetch('/api/admin/reject-withdrawal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        withdrawalId,
+        adminId,
+        reason,
+      }),
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success) {
+        return data;
+      }
+    }
+  } catch (err) {
+    console.warn('API reject-withdrawal failed, falling back:', err);
+  }
 
   if (isSupabaseConfigured && supabase) {
     try {
@@ -4274,22 +4451,25 @@ export async function saveAdminPlan(
     tags: plan.tags || ['Hourly Yield', 'Auto Settle'],
     imageType: plan.imageType || (plan.category === 'PRO' ? 'cabinet-pro' : 'cabinet-green'),
     status: plan.status || 'active',
+    description: plan.description || plan.name || 'Power Cabinet Plan',
   };
 
   if (isSupabaseConfigured && supabase) {
     const payload: any = {
       name: fullPlan.name,
       category: fullPlan.category,
-      device_price: fullPlan.devicePrice,
-      hourly_earnings: fullPlan.hourlyEarnings,
+      price: fullPlan.devicePrice || fullPlan.price,
+      earning_rate: fullPlan.hourlyEarnings,
       daily_earnings: fullPlan.dailyEarnings,
-      purchase_limit: fullPlan.limit,
-      duration_days: fullPlan.durationDays,
+      earning_type: fullPlan.category === 'PRO' ? 'DAILY' : 'HOURLY',
+      limit_per_user: fullPlan.limit,
+      duration: fullPlan.duration,
       instant_bonus: fullPlan.instantBonus,
-      requires_active_hourly_plan: fullPlan.requiresActiveHourlyPlan,
       tags: fullPlan.tags,
       image_type: fullPlan.imageType,
       status: fullPlan.status,
+      description: fullPlan.description,
+      updated_at: new Date().toISOString(),
     };
 
     if (isNew) {
@@ -4661,14 +4841,15 @@ export async function fetchAdminDashboardStats(): Promise<import('../types').Adm
 
   if (isSupabaseConfigured && supabase) {
     try {
-      const [profilesRes, walletsRes, paymentsRes, depositsRes, withdrawalsRes, purchasesRes, earningsRes] = await Promise.all([
+      const [profilesRes, walletsRes, paymentsRes, depositsRes, withdrawalsRes, purchasesRes, earningsRes, complaintsRes] = await Promise.all([
         supabase.from('profiles').select('id, status'),
         supabase.from('wallets').select('available_balance, recharge_balance, withdraw_balance'),
-        supabase.from('payments').select('amount, status'),
+        supabase.from('payments').select('amount, status, payment_type'),
         supabase.from('deposit_transactions').select('amount, status'),
         supabase.from('withdrawals').select('amount, status'),
-        supabase.from('purchases').select('amount, status, plan_category, plans(category)'),
+        supabase.from('purchases').select('amount, status, plan_category, plan_name'),
         supabase.from('earnings').select('amount, status, earning_type'),
+        supabase.from('payments').select('id, status, payment_type'),
       ]);
 
       const profiles = profilesRes.data || [];
@@ -4683,28 +4864,31 @@ export async function fetchAdminDashboardStats(): Promise<import('../types').Adm
       const activeUsers = profiles.filter((p) => p.status === 'active').length;
       const totalWalletBalance = +wallets.reduce((acc, w) => acc + Number(w.available_balance || 0), 0).toFixed(2);
 
-      const paidManual = payments.filter((p) => p.status === 'PAID').reduce((acc, p) => acc + Number(p.amount || 0), 0);
+      const paidManual = payments.filter((p) => p.status === 'PAID' || p.status === 'COMPLETED').reduce((acc, p) => acc + Number(p.amount || 0), 0);
       const paidGateway = deposits.filter((d) => d.status === 'SUCCESS' || d.status === 'COMPLETED').reduce((acc, d) => acc + Number(d.amount || 0), 0);
       const totalRecharge = +(paidManual + paidGateway).toFixed(2);
 
-      const pendingManual = payments.filter((p) => p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING').reduce((acc, p) => acc + Number(p.amount || 0), 0);
+      const pendingManual = payments.filter((p) => p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING' || p.status === 'PENDING').reduce((acc, p) => acc + Number(p.amount || 0), 0);
       const pendingGateway = deposits.filter((d) => d.status === 'PENDING').reduce((acc, d) => acc + Number(d.amount || 0), 0);
       const pendingRecharge = +(pendingManual + pendingGateway).toFixed(2);
+      const pendingRechargesCount = payments.filter((p) => p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING' || p.status === 'PENDING').length + deposits.filter((d) => d.status === 'PENDING').length;
+      const pendingComplaintsCount = payments.filter((p) => (p.payment_type === 'COMPLAINT' || p.payment_type === 'PAYMENT_COMPLAINT') && (p.status === 'PENDING' || p.status === 'REVIEWING' || p.status === 'PENDING_VERIFICATION')).length;
 
-      const totalWithdrawals = +withdrawals.filter((w) => w.status === 'COMPLETED' || w.status === 'SUCCESS').reduce((acc, w) => acc + Number(w.amount || 0), 0).toFixed(2);
+      const totalWithdrawals = +withdrawals.filter((w) => w.status === 'COMPLETED' || w.status === 'SUCCESS' || w.status === 'APPROVED').reduce((acc, w) => acc + Number(w.amount || 0), 0).toFixed(2);
       const pendingWithdrawals = +withdrawals.filter((w) => w.status === 'PENDING' || w.status === 'PROCESSING').reduce((acc, w) => acc + Number(w.amount || 0), 0).toFixed(2);
+      const pendingWithdrawalsCount = withdrawals.filter((w) => w.status === 'PENDING' || w.status === 'PROCESSING').length;
 
       const activePurchases = purchases.filter((p) => p.status === 'ACTIVE');
       const totalInvestments = +activePurchases.reduce((acc, p) => acc + Number(p.amount || 0), 0).toFixed(2);
 
       const activeHourlyPlans = activePurchases.filter((p: any) => {
-        const cat = (p.plan_category || (Array.isArray(p.plans) ? p.plans[0]?.category : p.plans?.category) || '').toUpperCase();
-        return cat !== 'PRO';
+        const cat = (p.plan_category || p.plan_name || '').toUpperCase();
+        return !cat.includes('PRO');
       }).length;
 
       const activeProPlans = activePurchases.filter((p: any) => {
-        const cat = (p.plan_category || (Array.isArray(p.plans) ? p.plans[0]?.category : p.plans?.category) || '').toUpperCase();
-        return cat === 'PRO';
+        const cat = (p.plan_category || p.plan_name || '').toUpperCase();
+        return cat.includes('PRO');
       }).length;
 
       const totalEarnings = +earnings.reduce((acc, e) => acc + Number(e.amount || 0), 0).toFixed(2);
@@ -4718,8 +4902,11 @@ export async function fetchAdminDashboardStats(): Promise<import('../types').Adm
         totalWalletBalance,
         totalRecharge,
         pendingRecharge,
+        pendingRechargesCount,
+        pendingComplaintsCount,
         totalWithdrawals,
         pendingWithdrawals,
+        pendingWithdrawalsCount,
         totalInvestments,
         activeHourlyPlans,
         activeProPlans,
@@ -4743,6 +4930,7 @@ export async function fetchAdminDashboardStats(): Promise<import('../types').Adm
   const withdrawals = getLocal<import('../types').WithdrawalItem[]>(STORAGE_KEYS.WITHDRAWALS, []);
   const purchases = getLocal<import('../types').PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
   const earnings = getLocal<import('../types').EarningRecord[]>(STORAGE_KEYS.EARNINGS, []);
+  const localComplaints = getLocal<any[]>('pb_deposit_complaints', []);
 
   const totalUsers = Math.max(allProfiles.length, 1);
   const activeUsers = allProfiles.filter((u) => u.status !== 'banned' && u.status !== 'suspended').length || 1;
@@ -4750,9 +4938,12 @@ export async function fetchAdminDashboardStats(): Promise<import('../types').Adm
 
   const totalRecharge = +payments.filter((p) => p.status === 'PAID').reduce((acc, p) => acc + p.amount, 0).toFixed(2);
   const pendingRecharge = +payments.filter((p) => p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING').reduce((acc, p) => acc + p.amount, 0).toFixed(2);
+  const pendingRechargesCount = payments.filter((p) => p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING').length;
+  const pendingComplaintsCount = localComplaints.filter((c) => c.status === 'PENDING' || c.status === 'REVIEWING').length;
 
   const totalWithdrawals = +withdrawals.filter((w) => w.status === 'COMPLETED').reduce((acc, w) => acc + w.amount, 0).toFixed(2);
   const pendingWithdrawals = +withdrawals.filter((w) => w.status === 'PENDING' || w.status === 'PROCESSING').reduce((acc, w) => acc + w.amount, 0).toFixed(2);
+  const pendingWithdrawalsCount = withdrawals.filter((w) => w.status === 'PENDING' || w.status === 'PROCESSING').length;
 
   const activePurchases = purchases.filter((p) => p.status === 'ACTIVE');
   const totalInvestments = +activePurchases.reduce((acc, p) => acc + p.amount, 0).toFixed(2);
@@ -4770,8 +4961,11 @@ export async function fetchAdminDashboardStats(): Promise<import('../types').Adm
     totalWalletBalance,
     totalRecharge,
     pendingRecharge,
+    pendingRechargesCount,
+    pendingComplaintsCount,
     totalWithdrawals,
     pendingWithdrawals,
+    pendingWithdrawalsCount,
     totalInvestments,
     activeHourlyPlans,
     activeProPlans,
@@ -4790,33 +4984,48 @@ export async function fetchAdminUsers(searchQuery: string = ''): Promise<(import
 
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*, wallets(available_balance), purchases(amount, status)')
-        .order('created_at', { ascending: false });
+      const [profilesRes, walletsRes, purchasesRes] = await Promise.all([
+        supabase.from('profiles').select('*').order('created_at', { ascending: false }),
+        supabase.from('wallets').select('*'),
+        supabase.from('purchases').select('*'),
+      ]);
 
-      if (!error && data) {
-        const mapped = data.map((p) => {
-          const activePurchases = (p.purchases || []).filter((purch: any) => purch.status === 'ACTIVE');
-          const totalInvested = activePurchases.reduce((acc: number, purch: any) => acc + Number(purch.amount || 0), 0);
+      const profiles = profilesRes.data || [];
+      const wallets = walletsRes.data || [];
+      const purchases = purchasesRes.data || [];
+
+      if (profiles.length > 0) {
+        const walletMap = new Map<string, any>();
+        wallets.forEach((w: any) => {
+          if (w.user_id) walletMap.set(w.user_id, w);
+          if (w.id) walletMap.set(w.id, w);
+        });
+
+        const mapped = profiles.map((p: any) => {
+          const uId = p.user_id || p.id;
+          const userPurchases = purchases.filter((purch: any) => (purch.user_id === uId || purch.user_id === p.id) && purch.status === 'ACTIVE');
+          const totalInvested = userPurchases.reduce((acc: number, purch: any) => acc + Number(purch.amount || 0), 0);
+          const userWallet = walletMap.get(uId) || walletMap.get(p.id) || {};
+          const bal = Number(userWallet.available_balance || 0);
+
           return {
             id: p.id,
-            userId: p.user_id,
-            username: p.username,
-            whatsappNo: p.whatsapp_no,
-            mobile: p.whatsapp_no,
-            email: p.email,
-            membershipNumber: p.membership_number,
-            referralCode: p.referral_code,
+            userId: uId,
+            username: p.username || 'User',
+            whatsappNo: p.whatsapp_no || p.mobile || 'N/A',
+            mobile: p.whatsapp_no || p.mobile || 'N/A',
+            email: p.email || 'N/A',
+            membershipNumber: p.membership_number || 'N/A',
+            referralCode: p.referral_code || 'N/A',
             referredBy: p.referred_by,
             role: p.role,
             status: p.status || 'active',
             deviceEarnings: 0,
             teamEarnings: 0,
-            walletBalance: Number(p.wallets?.available_balance || 0),
-            availableBalance: Number(p.wallets?.available_balance || 0),
+            walletBalance: bal,
+            availableBalance: bal,
             totalInvested,
-            activeDevices: activePurchases.length,
+            activeDevices: userPurchases.length,
             createdAt: p.created_at,
           };
         });
@@ -5466,31 +5675,51 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
 
 
 /**
- * Admin Banner Management
+ * Admin Banner Management & Public Active Banners
  */
 export async function fetchAdminBanners(): Promise<import('../types').BannerItem[]> {
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase.from('banners').select('*').order('priority', { ascending: true });
-      if (!error && data) {
+      const { data, error } = await supabase
+        .from('banners')
+        .select('*')
+        .order('priority', { ascending: true })
+        .order('created_at', { ascending: false });
+
+      if (!error && data && data.length > 0) {
         return data.map((b) => ({
           id: b.id,
-          title: b.title,
+          title: b.title || 'Official Hardware Promotion',
+          subtitle: b.subtitle || 'Continuous Hourly Yields',
           ctaText: b.cta_text || 'Go Now >',
           badge: b.priority === 0 ? 'Official' : undefined,
           artworkType: 'commission',
+          imageUrl: b.image_url || undefined,
+          linkUrl: b.link_url || b.target_tab || undefined,
+          priority: Number(b.priority || b.sort_order || 0),
+          isActive: b.is_active !== undefined ? b.is_active : (b.active !== undefined ? b.active : true),
+          targetTab: b.target_tab || b.link_url || undefined,
         }));
       }
     } catch (e) {
-      console.warn('Error fetching banners:', e);
+      console.warn('Error fetching admin banners from Supabase:', e);
     }
   }
   return getLocal<import('../types').BannerItem[]>(ADMIN_STORAGE_KEYS.BANNERS, homeBanners);
 }
 
-export async function saveAdminBanner(banner: Partial<import('../types').BannerItem>, adminId: string): Promise<import('../types').BannerItem> {
-  const isNew = !banner.id || banner.id.startsWith('new_');
-  const bannerId = isNew ? 'ban_' + Date.now() : banner.id!;
+export async function fetchActiveBanners(): Promise<import('../types').BannerItem[]> {
+  const all = await fetchAdminBanners();
+  const active = all.filter((b) => b.isActive !== false);
+  return active.length > 0 ? active : homeBanners;
+}
+
+export async function saveAdminBanner(
+  banner: Partial<import('../types').BannerItem>,
+  adminId: string
+): Promise<import('../types').BannerItem> {
+  const isNew = !banner.id || banner.id.startsWith('new_') || banner.id.startsWith('ban_');
+  const bannerId = isNew ? crypto.randomUUID() : banner.id!;
   const item: import('../types').BannerItem = {
     id: bannerId,
     title: banner.title || 'Platform Promotion',
@@ -5498,25 +5727,140 @@ export async function saveAdminBanner(banner: Partial<import('../types').BannerI
     ctaText: banner.ctaText || 'Go Now >',
     badge: banner.badge || 'HOT',
     artworkType: banner.artworkType || 'commission',
+    imageUrl: banner.imageUrl || '',
+    linkUrl: banner.linkUrl || '/purchase',
+    priority: Number(banner.priority || 1),
+    isActive: banner.isActive !== false,
+    targetTab: banner.targetTab || banner.linkUrl || '/purchase',
   };
 
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase.from('banners').upsert({
+        id: item.id,
+        title: item.title,
+        cta_text: item.ctaText,
+        image_url: item.imageUrl || null,
+        link_url: item.linkUrl || null,
+        target_tab: item.targetTab || null,
+        priority: item.priority || 1,
+        sort_order: item.priority || 1,
+        is_active: item.isActive,
+        active: item.isActive,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.warn('Supabase banner save error:', e);
+    }
+  }
+
   const list = getLocal<import('../types').BannerItem[]>(ADMIN_STORAGE_KEYS.BANNERS, homeBanners);
-  const idx = list.findIndex((b) => b.id === bannerId);
+  const idx = list.findIndex((b) => b.id === bannerId || b.id === banner.id);
   if (idx >= 0) list[idx] = item;
   else list.unshift(item);
   saveLocal(ADMIN_STORAGE_KEYS.BANNERS, list);
 
-  await recordAuditLog(adminId, isNew ? 'CREATE_BANNER' : 'UPDATE_BANNER', 'banners', bannerId, `Banner ${isNew ? 'created' : 'updated'}: ${item.title}`);
+  await recordAuditLog(
+    adminId,
+    isNew ? 'CREATE_BANNER' : 'UPDATE_BANNER',
+    'banners',
+    bannerId,
+    `Banner ${isNew ? 'created' : 'updated'}: ${item.title}`
+  );
   return item;
 }
 
 export async function deleteAdminBanner(bannerId: string, adminId: string): Promise<boolean> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase.from('banners').delete().eq('id', bannerId);
+    } catch (e) {
+      console.warn('Supabase banner delete error:', e);
+    }
+  }
+
   const list = getLocal<import('../types').BannerItem[]>(ADMIN_STORAGE_KEYS.BANNERS, homeBanners);
   const filtered = list.filter((b) => b.id !== bannerId);
   saveLocal(ADMIN_STORAGE_KEYS.BANNERS, filtered);
   await recordAuditLog(adminId, 'DELETE_BANNER', 'banners', bannerId, `Deleted banner ${bannerId}`);
   return true;
 }
+
+/**
+ * Website Popup Management APIs
+ */
+export async function fetchWebsitePopup(): Promise<import('../types').WebsitePopupConfig> {
+  const defaultConfig: import('../types').WebsitePopupConfig = {
+    title: 'Welcome to GainPower',
+    description: 'Join the premier hardware dividend platform and maximize daily yields.',
+    imageUrl: '',
+    link1Text: 'Official Telegram',
+    link1Url: 'https://t.me/gainpower',
+    link2Text: 'WhatsApp Group',
+    link2Url: 'https://chat.whatsapp.com',
+    link3Text: 'Revenue Guide',
+    link3Url: '/purchase',
+    link4Text: 'Customer Care',
+    link4Url: 'https://t.me/gainpower_service',
+    isActive: true,
+  };
+
+  try {
+    const resp = await fetch('/api/website-popup');
+    if (resp.ok) {
+      const json = await resp.json();
+      if (json.success && json.data) {
+        return { ...defaultConfig, ...json.data };
+      }
+    }
+  } catch (_e) {}
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase.from('admin_settings').select('value').eq('id', 'website_popup').maybeSingle();
+      if (!error && data?.value) {
+        return { ...defaultConfig, ...data.value };
+      }
+    } catch (_e) {}
+  }
+
+  return getLocal<import('../types').WebsitePopupConfig>('GP_WEBSITE_POPUP_CONFIG', defaultConfig);
+}
+
+export async function saveWebsitePopup(
+  config: import('../types').WebsitePopupConfig,
+  adminId: string
+): Promise<import('../types').WebsitePopupConfig> {
+  try {
+    const resp = await fetch('/api/admin/website-popup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config, adminId }),
+    });
+    if (resp.ok) {
+      const json = await resp.json();
+      if (json.success && json.data) {
+        saveLocal('GP_WEBSITE_POPUP_CONFIG', json.data);
+        return json.data;
+      }
+    }
+  } catch (_e) {}
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase.from('admin_settings').upsert({
+        id: 'website_popup',
+        value: config,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (_e) {}
+  }
+
+  saveLocal('GP_WEBSITE_POPUP_CONFIG', config);
+  await recordAuditLog(adminId, 'UPDATE_WEBSITE_POPUP', 'settings', 'website_popup', `Updated Website Popup Config (Active: ${config.isActive})`, config);
+  return config;
+}
+
 
 // ==============================================================================
 // ADMIN PLAN, PRODUCT & EARNING ENGINE HELPERS
@@ -6853,21 +7197,21 @@ export async function fetchGiftCodes(filters?: { status?: string; query?: string
         return data.map((g: any) => ({
           id: g.id,
           code: g.code,
-          amountType: g.amount_type,
+          amountType: g.amount_type || g.reward_type || 'FIXED',
           amount: g.amount ? Number(g.amount) : undefined,
           minAmount: g.min_amount ? Number(g.min_amount) : undefined,
           maxAmount: g.max_amount ? Number(g.max_amount) : undefined,
           totalPool: Number(g.total_pool || 0),
-          remainingPool: Number(g.remaining_pool || 0),
-          totalUses: Number(g.total_uses || 0),
-          usedCount: Number(g.used_count || 0),
+          remainingPool: Number(g.remaining_pool !== undefined ? g.remaining_pool : g.total_pool || 0),
+          totalUses: Number(g.total_uses || g.max_claims || 0),
+          usedCount: Number(g.claims_count || g.claimed_uses || g.used_count || 0),
           perUserLimit: Number(g.per_user_limit || 1),
-          startDate: g.start_date,
-          expiryDate: g.expiry_date,
-          status: g.status,
-          description: g.description,
-          walletDestination: g.wallet_destination || 'EARNING_BALANCE',
-          createdBy: g.created_by,
+          startDate: g.start_date || g.created_at,
+          expiryDate: g.expiry_date || g.expires_at,
+          status: g.status || (g.is_active ? 'ACTIVE' : 'DISABLED'),
+          description: g.description || '',
+          walletDestination: g.wallet_destination || g.wallet_type || 'TOPUP_WALLET',
+          createdBy: g.created_by || 'Admin',
           createdAt: g.created_at,
           updatedAt: g.updated_at,
         }));
@@ -6971,8 +7315,9 @@ export async function createGiftCode(
     throw new Error(`A gift code with the code "${normalizedCode}" already exists.`);
   }
 
+  const generatedUuid = crypto.randomUUID();
   const newCode: GiftCode = {
-    id: 'gc_' + Date.now(),
+    id: generatedUuid,
     code: normalizedCode,
     amountType: payload.amountType,
     amount: payload.amountType === 'FIXED' ? payload.amount : undefined,
@@ -6987,7 +7332,7 @@ export async function createGiftCode(
     expiryDate: payload.expiryDate,
     status: payload.status || 'ACTIVE',
     description: payload.description || '',
-    walletDestination: payload.walletDestination || 'EARNING_BALANCE',
+    walletDestination: payload.walletDestination || 'TOPUP_WALLET',
     createdBy: adminId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -6996,23 +7341,24 @@ export async function createGiftCode(
   if (isSupabaseConfigured && supabase) {
     try {
       await supabase.from('gift_codes').insert({
-        id: newCode.id,
+        id: generatedUuid,
         code: newCode.code,
         amount_type: newCode.amountType,
-        amount: newCode.amount,
-        min_amount: newCode.minAmount,
-        max_amount: newCode.maxAmount,
+        reward_type: newCode.amountType,
+        amount: newCode.amount || null,
+        min_amount: newCode.minAmount || null,
+        max_amount: newCode.maxAmount || null,
         total_pool: newCode.totalPool,
         remaining_pool: newCode.remainingPool,
         total_uses: newCode.totalUses,
-        used_count: 0,
+        max_claims: newCode.totalUses,
+        claimed_uses: 0,
+        claims_count: 0,
         per_user_limit: newCode.perUserLimit,
-        start_date: newCode.startDate,
-        expiry_date: newCode.expiryDate,
+        is_active: newCode.status === 'ACTIVE',
         status: newCode.status,
-        description: newCode.description,
         wallet_destination: newCode.walletDestination,
-        created_by: adminId,
+        wallet_type: newCode.walletDestination === 'WITHDRAW_WALLET' ? 'WITHDRAW' : 'TOPUP',
         created_at: newCode.createdAt,
         updated_at: newCode.updatedAt,
       });
@@ -7131,24 +7477,39 @@ export async function deleteGiftCode(id: string, adminId: string): Promise<boole
 export async function fetchGiftCodeClaims(giftCodeId?: string, userId?: string): Promise<GiftCodeClaim[]> {
   if (isSupabaseConfigured && supabase) {
     try {
-      let query = supabase.from('gift_code_claims').select('*, profiles(username, whatsapp_no)').order('claimed_at', { ascending: false });
+      let query = supabase.from('gift_code_claims').select('*').order('claimed_at', { ascending: false });
       if (giftCodeId) query = query.eq('gift_code_id', giftCodeId);
       if (userId) query = query.eq('user_id', userId);
-      const { data, error } = await query;
-      if (!error && data) {
-        return data.map((c: any) => ({
-          id: c.id,
-          giftCodeId: c.gift_code_id,
-          code: c.code,
-          userId: c.user_id,
-          username: c.profiles?.username || c.username || 'Member',
-          mobile: c.profiles?.whatsapp_no || c.mobile || 'N/A',
-          rewardAmount: Number(c.reward_amount),
-          walletDestination: c.wallet_destination || 'EARNING_BALANCE',
-          txId: c.tx_id,
-          status: c.status || 'COMPLETED',
-          claimedAt: c.claimed_at,
-        }));
+      const [claimsRes, profilesRes] = await Promise.all([
+        query,
+        supabase.from('profiles').select('id, user_id, username, whatsapp_no, mobile'),
+      ]);
+
+      if (!claimsRes.error && claimsRes.data) {
+        const profileMap = new Map<string, any>();
+        if (profilesRes.data) {
+          profilesRes.data.forEach((p: any) => {
+            if (p.user_id) profileMap.set(p.user_id, p);
+            if (p.id) profileMap.set(p.id, p);
+          });
+        }
+
+        return claimsRes.data.map((c: any) => {
+          const prof = profileMap.get(c.user_id) || {};
+          return {
+            id: c.id,
+            giftCodeId: c.gift_code_id,
+            code: c.code,
+            userId: c.user_id,
+            username: prof.username || c.username || 'Member',
+            mobile: prof.whatsapp_no || prof.mobile || c.mobile || 'N/A',
+            rewardAmount: Number(c.reward_amount),
+            walletDestination: c.wallet_destination || 'EARNING_BALANCE',
+            txId: c.tx_id,
+            status: c.status || 'COMPLETED',
+            claimedAt: c.claimed_at,
+          };
+        });
       }
     } catch (e) {
       console.warn('Error fetching gift code claims:', e);
@@ -7998,7 +8359,14 @@ export async function performDailyCheckIn(userId: string): Promise<{
       body: JSON.stringify({ userId }),
     });
 
-    const json = await resp.json();
+    const text = await resp.text();
+    let json: any = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error('Server returned an invalid response. Please try again.');
+    }
+
     if (!resp.ok || !json.success) {
       throw new Error(json.error || 'Failed to claim daily check-in reward.');
     }
@@ -8885,31 +9253,603 @@ export async function fetchAdminMissionClaims(): Promise<MissionClaim[]> {
 
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase
-        .from('mission_claims')
-        .select('*, profiles(username, whatsapp_no)')
-        .order('claimed_at', { ascending: false });
+      const [claimsRes, profilesRes] = await Promise.all([
+        supabase
+          .from('mission_claims')
+          .select('*')
+          .order('claimed_at', { ascending: false }),
+        supabase
+          .from('profiles')
+          .select('id, user_id, username, whatsapp_no, mobile'),
+      ]);
 
-      if (!error && data && data.length > 0) {
-        return data.map((c: any) => ({
-          id: c.id,
-          userId: c.user_id,
-          userMobile: c.profiles?.whatsapp_no || c.user_mobile || '9800000000',
-          username: c.profiles?.username || c.username || 'Member',
-          missionId: c.mission_id,
-          missionTitle: c.mission_title || 'Mission Bonus',
-          rewardAmount: Number(c.reward_amount || 0),
-          walletType: 'WITHDRAW_WALLET' as const,
-          transactionId: c.transaction_id,
-          claimedAt: c.claimed_at,
-          status: 'COMPLETED' as const,
-        }));
+      if (!claimsRes.error && claimsRes.data && claimsRes.data.length > 0) {
+        const profileMap = new Map<string, any>();
+        if (profilesRes.data) {
+          profilesRes.data.forEach((p: any) => {
+            if (p.user_id) profileMap.set(p.user_id, p);
+            if (p.id) profileMap.set(p.id, p);
+          });
+        }
+
+        return claimsRes.data.map((c: any) => {
+          const prof = profileMap.get(c.user_id) || {};
+          return {
+            id: c.id,
+            userId: c.user_id,
+            userMobile: prof.whatsapp_no || prof.mobile || c.user_mobile || '9800000000',
+            username: prof.username || c.username || 'Member',
+            missionId: c.mission_id,
+            missionTitle: c.mission_title || 'Mission Bonus',
+            rewardAmount: Number(c.reward_amount || 0),
+            walletType: 'WITHDRAW_WALLET' as const,
+            transactionId: c.transaction_id,
+            claimedAt: c.claimed_at,
+            status: 'COMPLETED' as const,
+          };
+        });
       }
     } catch {}
   }
 
   return claims;
 }
+
+// ==============================================================================
+// DEPOSIT COMPLAINTS API & STORAGE HELPERS
+// ==============================================================================
+
+export async function compressImageFile(file: File, maxWidth = 1280, maxHeight = 1280, quality = 0.82): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxWidth || height > maxHeight) {
+          if (width > height) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          } else {
+            width = Math.round((width * maxHeight) / height);
+            maxHeight = height;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL('image/jpeg', quality);
+          resolve(dataUrl);
+        } else {
+          resolve((e.target?.result as string) || '');
+        }
+      };
+      img.onerror = () => {
+        resolve((e.target?.result as string) || '');
+      };
+      img.src = (e.target?.result as string) || '';
+    };
+    reader.onerror = () => resolve('');
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function uploadComplaintScreenshot(file: File, userId?: string): Promise<string> {
+  // Compress image before upload/fallback
+  let compressedBase64 = '';
+  try {
+    compressedBase64 = await compressImageFile(file);
+  } catch {
+    // fallback
+  }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const fileExt = 'jpg';
+      const userFolder = userId ? userId.trim() : 'anonymous';
+      const fileName = `complaint_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${fileExt}`;
+      const filePath = `${userFolder}/${fileName}`;
+
+      let blobToUpload: Blob = file;
+      if (compressedBase64 && compressedBase64.startsWith('data:image')) {
+        const byteString = atob(compressedBase64.split(',')[1]);
+        const mimeString = compressedBase64.split(',')[0].split(':')[1].split(';')[0];
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) {
+          ia[i] = byteString.charCodeAt(i);
+        }
+        blobToUpload = new Blob([ab], { type: mimeString });
+      }
+
+      const { error: uploadError } = await supabase.storage
+        .from('deposit-complaints')
+        .upload(filePath, blobToUpload, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: 'image/jpeg',
+        });
+
+      if (!uploadError) {
+        // Return private storage path for secure signed URL resolution
+        return filePath;
+      } else {
+        console.warn('Storage upload error, falling back to data URL:', uploadError);
+      }
+    } catch (err) {
+      console.warn('Screenshot upload exception:', err);
+    }
+  }
+
+  // Fallback to compressed Data URL
+  if (compressedBase64) {
+    return compressedBase64;
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function fetchUserComplaintSignedUrl(params: {
+  userId: string;
+  complaintId?: string;
+  filePath?: string;
+}): Promise<string | null> {
+  try {
+    const resp = await fetch('/api/deposit-complaint/signed-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (resp.ok) {
+      const json = await resp.json();
+      if (json.success && json.signedUrl) {
+        return json.signedUrl;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to fetch user complaint signed URL:', err);
+  }
+  return null;
+}
+
+export async function submitDepositComplaint(data: {
+  userId: string;
+  traceno: string;
+  amount: number;
+  utr: string;
+  proofUrl?: string;
+  note?: string;
+}): Promise<{ success: boolean; complaintId?: string; message: string }> {
+  try {
+    const resp = await fetch('/api/deposit-complaint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+
+    const text = await resp.text();
+    let json: any = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error('Server returned an invalid response while submitting complaint.');
+    }
+
+    if (!resp.ok || !json.success) {
+      throw new Error(json.error || 'Failed to submit deposit complaint.');
+    }
+
+    return json;
+  } catch (err: any) {
+    // If backend endpoint is temporarily unreachable, fallback to direct Supabase insert
+    if (isSupabaseConfigured && supabase) {
+      const nowIso = new Date().toISOString();
+      const { data: complaint, error } = await supabase
+        .from('payments')
+        .insert({
+          user_id: data.userId,
+          order_id: data.traceno,
+          reference_id: data.traceno,
+          amount: data.amount,
+          payment_type: 'DEPOSIT_COMPLAINT',
+          payment_method: 'PAY_COMPLAINT',
+          utr: data.utr,
+          utr_number: data.utr,
+          proof_url: data.proofUrl || null,
+          status: 'PENDING_VERIFICATION',
+          rejection_reason: data.note ? `User note: ${data.note}` : null,
+          created_at: nowIso,
+          updated_at: nowIso,
+        })
+        .select()
+        .single();
+
+      if (error) throw new Error(error.message);
+
+      return {
+        success: true,
+        complaintId: complaint.id,
+        message: 'Deposit complaint registered. Admin will review and credit shortly.',
+      };
+    }
+    throw err;
+  }
+}
+
+export async function fetchAdminDepositComplaints(): Promise<import('../types').DepositComplaint[]> {
+  try {
+    const resp = await fetch('/api/admin/complaints');
+    if (resp.ok) {
+      const json = await resp.json();
+      if (json.success && Array.isArray(json.data)) {
+        return json.data;
+      }
+    }
+  } catch (e) {
+    console.warn('Error fetching complaints from API:', e);
+  }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const [paymentsRes, profilesRes] = await Promise.all([
+        supabase
+          .from('payments')
+          .select('*')
+          .or('payment_type.eq.DEPOSIT_COMPLAINT,payment_method.eq.PAY_COMPLAINT')
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('profiles')
+          .select('id, user_id, username, whatsapp_no, membership_number, mobile'),
+      ]);
+
+      if (!paymentsRes.error && paymentsRes.data) {
+        const profileMap = new Map<string, any>();
+        if (profilesRes.data) {
+          profilesRes.data.forEach((p: any) => {
+            if (p.user_id) profileMap.set(p.user_id, p);
+            if (p.id) profileMap.set(p.id, p);
+          });
+        }
+
+        return paymentsRes.data.map((p: any) => {
+          const prof = profileMap.get(p.user_id) || {};
+          return {
+            id: p.id,
+            userId: p.user_id,
+            username: prof.username || 'User',
+            userMobile: prof.whatsapp_no || prof.mobile || '',
+            membershipNumber: prof.membership_number || '',
+            orderId: p.order_id || p.reference_id || 'N/A',
+            traceno: p.order_id || p.reference_id || 'N/A',
+            amount: Number(p.amount || 0),
+            utr: p.utr || p.utr_number || '',
+            proofUrl: p.proof_url || p.receipt_url || '',
+            receiptUrl: p.proof_url || p.receipt_url || '',
+            status: p.status,
+            adminId: p.admin_id,
+            adminNote: p.rejection_reason,
+            rejectionReason: p.rejection_reason,
+            verifiedAt: p.verified_at,
+            verifiedBy: p.verified_by,
+            createdAt: p.created_at,
+            updatedAt: p.updated_at,
+          };
+        });
+      }
+    } catch {}
+  }
+
+  return [];
+}
+
+export async function approveDepositComplaint(complaintId: string, adminId: string, adminNote?: string): Promise<{ success: boolean; message: string }> {
+  const resp = await fetch('/api/admin/approve-complaint', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ complaintId, adminId, adminNote }),
+  });
+
+  const text = await resp.text();
+  let json: any = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error('Invalid server response during approval.');
+  }
+
+  if (!resp.ok || !json.success) {
+    throw new Error(json.error || 'Failed to approve complaint.');
+  }
+
+  return json;
+}
+
+export async function rejectDepositComplaint(complaintId: string, rejectionReason: string, adminId: string): Promise<{ success: boolean; message: string }> {
+  const resp = await fetch('/api/admin/reject-complaint', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ complaintId, rejectionReason, adminId }),
+  });
+
+  const text = await resp.text();
+  let json: any = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error('Invalid server response during rejection.');
+  }
+
+  if (!resp.ok || !json.success) {
+    throw new Error(json.error || 'Failed to reject complaint.');
+  }
+
+  return json;
+}
+
+// ==============================================================================
+// SITE SETTINGS (BRANDING) SERVICES
+// ==============================================================================
+
+export async function fetchSiteSettings(): Promise<SiteSettings> {
+  try {
+    const res = await fetch('/api/site-settings');
+    const json = await res.json();
+    if (json.success && json.data) {
+      return json.data;
+    }
+  } catch (e) {
+    console.warn('[SITE SETTINGS] Failed to fetch:', e);
+  }
+  return {
+    siteTitle: 'GAINPOWER',
+    logoUrl: '',
+    faviconUrl: '',
+  };
+}
+
+export async function saveSiteSettings(config: Partial<SiteSettings>, adminId = 'adm_root'): Promise<{ success: boolean; data: SiteSettings }> {
+  const res = await fetch('/api/admin/site-settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config, adminId }),
+  });
+  const json = await res.json();
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || 'Failed to save site settings.');
+  }
+  return json;
+}
+
+export async function uploadSiteAsset(file: File, prefix = 'branding'): Promise<string> {
+  if (!file) throw new Error('No file provided.');
+  const ext = file.name.split('.').pop() || 'png';
+  const fileName = `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
+
+  if (isSupabaseConfigured && supabase) {
+    const { data, error } = await supabase.storage
+      .from('site-assets')
+      .upload(fileName, file, { cacheControl: '3600', upsert: true });
+
+    if (error) {
+      console.warn('[SITE ASSET UPLOAD] Supabase upload failed, falling back to base64:', error.message);
+    } else if (data?.path) {
+      const { data: publicData } = supabase.storage
+        .from('site-assets')
+        .getPublicUrl(data.path);
+      return publicData.publicUrl;
+    }
+  }
+
+  // Fallback to base64 if storage is unavailable
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// ==============================================================================
+// RECHARGE CONFIGURATION SERVICES
+// ==============================================================================
+
+export async function fetchRechargeSettings(): Promise<RechargeSettings> {
+  try {
+    const res = await fetch('/api/recharge-settings');
+    const json = await res.json();
+    if (json.success && json.data) {
+      return json.data;
+    }
+  } catch (e) {
+    console.warn('[RECHARGE SETTINGS] Failed to fetch:', e);
+  }
+  return {
+    presetAmounts: [500, 1500, 2000, 3000, 3500, 5000, 7000, 10000, 20000, 30000],
+    minRecharge: 100,
+    maxRecharge: 50000,
+    isEnabled: true,
+  };
+}
+
+export async function saveRechargeSettings(config: Partial<RechargeSettings>, adminId = 'adm_root'): Promise<{ success: boolean; data: RechargeSettings }> {
+  const res = await fetch('/api/admin/recharge-settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config, adminId }),
+  });
+  const json = await res.json();
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || 'Failed to save recharge settings.');
+  }
+  return json;
+}
+
+// ==============================================================================
+// USDT DEPOSIT SERVICES
+// ==============================================================================
+
+export async function fetchUsdtSettings(): Promise<UsdtSettings> {
+  try {
+    const res = await fetch('/api/usdt-settings');
+    const json = await res.json();
+    if (json.success && json.data) {
+      return json.data;
+    }
+  } catch (e) {
+    console.warn('[USDT SETTINGS] Failed to fetch:', e);
+  }
+  return {
+    isEnabled: true,
+    usdtRate: 100,
+    trc20Address: '',
+    bep20Address: '',
+    qrUrl: '',
+  };
+}
+
+export async function saveUsdtSettings(config: Partial<UsdtSettings>, adminId = 'adm_root'): Promise<{ success: boolean; data: UsdtSettings }> {
+  const res = await fetch('/api/admin/usdt-settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config, adminId }),
+  });
+  const json = await res.json();
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || 'Failed to save USDT settings.');
+  }
+  return json;
+}
+
+export async function uploadUsdtScreenshot(userId: string, file: File): Promise<string> {
+  if (!userId || !file) throw new Error('User ID and File are required.');
+  const ext = file.name.split('.').pop() || 'png';
+  const storagePath = `${userId}/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
+
+  if (isSupabaseConfigured && supabase) {
+    const { data, error } = await supabase.storage
+      .from('usdt-deposits')
+      .upload(storagePath, file, { cacheControl: '3600', upsert: false });
+
+    if (error) {
+      console.warn('[USDT SCREENSHOT UPLOAD] Supabase storage upload warning:', error.message);
+    } else if (data?.path) {
+      return data.path;
+    }
+  }
+
+  // Fallback to base64
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function submitUsdtDeposit(payload: {
+  userId: string;
+  amountInr: number;
+  usdtAmount: number;
+  usdtRate: number;
+  network: 'TRC20' | 'BEP20';
+  walletAddress?: string;
+  txHash?: string;
+  proofPath: string;
+  note?: string;
+}): Promise<{ success: boolean; depositId: string; message: string }> {
+  const res = await fetch('/api/usdt-deposit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || 'Failed to submit USDT deposit.');
+  }
+  return json;
+}
+
+export async function fetchUserUsdtDeposits(userId: string): Promise<UsdtDepositItem[]> {
+  if (!userId) return [];
+  try {
+    const res = await fetch(`/api/usdt-deposits/user/${encodeURIComponent(userId)}`);
+    const json = await res.json();
+    if (json.success && Array.isArray(json.data)) {
+      return json.data;
+    }
+  } catch (e) {
+    console.warn('[USER USDT DEPOSITS] Failed to fetch:', e);
+  }
+  return [];
+}
+
+export async function fetchAdminUsdtDeposits(): Promise<UsdtDepositItem[]> {
+  try {
+    const res = await fetch('/api/admin/usdt-deposits');
+    const json = await res.json();
+    if (json.success && Array.isArray(json.data)) {
+      return json.data;
+    }
+  } catch (e) {
+    console.warn('[ADMIN USDT DEPOSITS] Failed to fetch:', e);
+  }
+  return [];
+}
+
+export async function fetchUsdtSignedUrl(userId: string, depositId?: string, filePath?: string): Promise<string> {
+  try {
+    const res = await fetch('/api/usdt-deposit/signed-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, depositId, filePath }),
+    });
+    const json = await res.json();
+    if (json.success && json.signedUrl) {
+      return json.signedUrl;
+    }
+  } catch (e) {
+    console.warn('[USDT SIGNED URL] Failed to fetch:', e);
+  }
+  return '';
+}
+
+export async function approveUsdtDeposit(depositId: string, adminId = 'adm_root', adminNote = ''): Promise<{ success: boolean; message: string }> {
+  const res = await fetch('/api/admin/approve-usdt-deposit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ depositId, adminId, adminNote }),
+  });
+  const json = await res.json();
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || 'Failed to approve USDT deposit.');
+  }
+  return json;
+}
+
+export async function rejectUsdtDeposit(depositId: string, rejectionReason: string, adminId = 'adm_root'): Promise<{ success: boolean; message: string }> {
+  const res = await fetch('/api/admin/reject-usdt-deposit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ depositId, rejectionReason, adminId }),
+  });
+  const json = await res.json();
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || 'Failed to reject USDT deposit.');
+  }
+  return json;
+}
+
 
 
 

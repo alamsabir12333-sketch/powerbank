@@ -11,6 +11,7 @@ import { PlaceholderModal } from '../components/PlaceholderModal';
 import { CustomerSupportModal } from '../components/CustomerSupportModal';
 import { LanguageModal } from '../components/LanguageModal';
 import { DoubleHistoryModal } from '../components/DoubleHistoryModal';
+import { WebsitePopupModal } from '../components/WebsitePopupModal';
 import { homeBanners } from '../data/mockData';
 import {
   TabType,
@@ -20,6 +21,7 @@ import {
   PurchaseItem,
   NotificationItem,
   NewsItem,
+  WebsitePopupConfig,
 } from '../types';
 import {
   fetchEligibleHomeNotification,
@@ -27,6 +29,8 @@ import {
   fetchUnreadNotificationCount,
   fetchPlatformNews,
   fetchUserHomeSummary,
+  fetchActiveBanners,
+  fetchWebsitePopup,
 } from '../services/api';
 import {
   X,
@@ -76,6 +80,13 @@ export const HomePage: React.FC<HomePageProps> = ({
   const [isDoubleHistoryOpen, setIsDoubleHistoryOpen] = useState(false);
   const [currentLanguage, setCurrentLanguage] = useState('English');
 
+  // Dynamic Banners
+  const [activeBanners, setActiveBanners] = useState<BannerItem[]>(homeBanners);
+
+  // Dynamic Website Popup Modal
+  const [websitePopupConfig, setWebsitePopupConfig] = useState<WebsitePopupConfig | null>(null);
+  const [isWebsitePopupOpen, setIsWebsitePopupOpen] = useState(false);
+
   // News State
   const [newsList, setNewsList] = useState<NewsItem[]>([]);
   const [selectedNews, setSelectedNews] = useState<NewsItem | null>(null);
@@ -101,6 +112,34 @@ export const HomePage: React.FC<HomePageProps> = ({
   const [homePopupNotif, setHomePopupNotif] = useState<NotificationItem | null>(null);
 
   const userId = userProfile?.userId || userProfile?.id || '';
+
+  // Load Active Banners from Supabase
+  const loadBanners = useCallback(async () => {
+    try {
+      const banners = await fetchActiveBanners();
+      if (banners && banners.length > 0) {
+        setActiveBanners(banners);
+      }
+    } catch (e) {
+      console.warn('Error loading banners:', e);
+    }
+  }, []);
+
+  // Load Website Popup
+  const loadWebsitePopup = useCallback(async () => {
+    try {
+      const config = await fetchWebsitePopup();
+      if (config && config.isActive) {
+        const dismissedSession = sessionStorage.getItem('gp_popup_dismissed');
+        if (!dismissedSession) {
+          setWebsitePopupConfig(config);
+          setIsWebsitePopupOpen(true);
+        }
+      }
+    } catch (e) {
+      console.warn('Error loading website popup:', e);
+    }
+  }, []);
 
   // Load Real Platform News from Supabase
   const loadNews = useCallback(async () => {
@@ -139,6 +178,8 @@ export const HomePage: React.FC<HomePageProps> = ({
   }, [userId]);
 
   useEffect(() => {
+    loadBanners();
+    loadWebsitePopup();
     loadNews();
     if (userId) {
       loadHomeSummary();
@@ -151,7 +192,7 @@ export const HomePage: React.FC<HomePageProps> = ({
 
       return () => clearInterval(interval);
     }
-  }, [loadNews, loadHomeSummary, refreshNotifications, userId, purchases, wallet, userProfile]);
+  }, [loadBanners, loadWebsitePopup, loadNews, loadHomeSummary, refreshNotifications, userId, purchases, wallet, userProfile]);
 
   // Handle Home Popup Dismissal (X button)
   const handleDismissHomePopup = async () => {
@@ -175,6 +216,16 @@ export const HomePage: React.FC<HomePageProps> = ({
   };
 
   const handleBannerClick = (banner: BannerItem) => {
+    if (banner.linkUrl) {
+      if (banner.linkUrl.startsWith('/')) {
+        const tab = banner.linkUrl.replace('/', '') as TabType;
+        onNavigateTab(tab);
+        return;
+      } else if (banner.linkUrl.startsWith('http')) {
+        window.open(banner.linkUrl, '_blank');
+        return;
+      }
+    }
     if (banner.artworkType === 'commission') {
       onNavigateTab('team');
     } else {
@@ -198,7 +249,7 @@ export const HomePage: React.FC<HomePageProps> = ({
       />
 
       {/* 2. Top Promotional Banner Carousel */}
-      <BannerCarousel banners={homeBanners} onBannerClick={handleBannerClick} />
+      <BannerCarousel banners={activeBanners} onBannerClick={handleBannerClick} />
 
       {/* 3. Dark Announcement Bar */}
       <AnnouncementBar
@@ -340,6 +391,17 @@ export const HomePage: React.FC<HomePageProps> = ({
           </div>
         </div>
       )}
+
+      {/* Website Popup Modal (4 Links + Image) */}
+      <WebsitePopupModal
+        isOpen={isWebsitePopupOpen}
+        config={websitePopupConfig}
+        onClose={() => {
+          setIsWebsitePopupOpen(false);
+          sessionStorage.setItem('gp_popup_dismissed', 'true');
+        }}
+        onNavigateTab={onNavigateTab}
+      />
 
       {/* Global Modals */}
       <PlaceholderModal

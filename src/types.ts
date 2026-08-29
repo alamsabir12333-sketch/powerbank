@@ -9,6 +9,8 @@ export type TabType =
   | 'notifications'
   | 'withdrawal'
   | 'recharge'
+  | 'recharge_usdt'
+  | 'usdt_deposit'
   | 'bank_card'
   | 'add_bank_card'
   | 'vip_levels'
@@ -137,6 +139,11 @@ export interface BannerItem {
   badge?: string;
   bgGradient?: string;
   artworkType?: 'commission' | 'bonus' | 'powerbank';
+  imageUrl?: string;
+  linkUrl?: string;
+  priority?: number;
+  isActive?: boolean;
+  targetTab?: string;
 }
 
 export type PlanCategory = 'HOURLY' | 'PRO' | 'EVENT' | 'VIP' | string;
@@ -476,6 +483,7 @@ export interface AdminDashboardStats {
   totalRecharge: number;
   pendingRecharge: number;
   pendingRechargesCount?: number;
+  pendingComplaintsCount?: number;
   totalWithdrawals: number;
   pendingWithdrawals: number;
   pendingWithdrawalsCount?: number;
@@ -564,6 +572,29 @@ export interface DailyCheckInStatus {
   isDailyCheckInEnabled: boolean;
   totalClaimed: number;
   history?: DailyCheckInHistoryItem[];
+}
+
+export interface DepositComplaint {
+  id: string;
+  userId: string;
+  username?: string;
+  userMobile?: string;
+  orderId: string;
+  traceno?: string;
+  amount: number;
+  currency?: string;
+  utr: string;
+  proofUrl?: string;
+  receiptUrl?: string;
+  status: 'PENDING_VERIFICATION' | 'PAID' | 'REJECTED' | 'APPROVED';
+  userNote?: string;
+  adminId?: string;
+  adminNote?: string;
+  rejectionReason?: string;
+  verifiedAt?: string;
+  verifiedBy?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type DepositStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'EXPIRED' | 'PAID' | 'COMPLETED';
@@ -1034,6 +1065,66 @@ export interface CreateMissionPayload {
   displayOrder?: number;
 }
 
+export interface WebsitePopupConfig {
+  id?: string;
+  title: string;
+  description: string;
+  imageUrl?: string;
+  link1Text?: string;
+  link1Url?: string;
+  link2Text?: string;
+  link2Url?: string;
+  link3Text?: string;
+  link3Url?: string;
+  link4Text?: string;
+  link4Url?: string;
+  isActive: boolean;
+  updatedAt?: string;
+}
 
+export interface SiteSettings {
+  siteTitle: string;
+  logoUrl: string;
+  faviconUrl: string;
+  updatedAt?: string;
+}
 
+export interface RechargeSettings {
+  presetAmounts: number[];
+  minRecharge: number;
+  maxRecharge: number;
+  isEnabled: boolean;
+  updatedAt?: string;
+}
+
+export interface UsdtSettings {
+  isEnabled: boolean;
+  usdtRate: number; // e.g. 100 for 1 USDT = ₹100
+  trc20Address: string;
+  bep20Address: string;
+  qrUrl?: string;
+  updatedAt?: string;
+}
+
+export interface UsdtDepositItem {
+  id: string;
+  userId: string;
+  username?: string;
+  phone?: string;
+  membershipNumber?: string;
+  amountInr: number;
+  usdtAmount: number;
+  usdtRate: number;
+  network: 'TRC20' | 'BEP20';
+  walletAddress: string;
+  txHash: string;
+  proofUrl: string;
+  signedProofUrl?: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  adminNote?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
 

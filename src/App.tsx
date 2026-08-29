@@ -15,6 +15,7 @@ import { VIPLevelsPage } from './pages/VIPLevelsPage';
 import { AboutPlatformPage } from './pages/AboutPlatformPage';
 import { MissionBonusPage } from './pages/MissionBonusPage';
 import { AuthPage } from './pages/AuthPage';
+import UsdtDepositPage from './pages/UsdtDepositPage';
 import { AdminLoginPage } from './pages/admin/AdminLoginPage';
 import { PaymentCheckoutPage } from './pages/PaymentCheckoutPage';
 import { BottomNav } from './components/BottomNav';
@@ -25,6 +26,7 @@ import { WithdrawalModal } from './components/WithdrawalModal';
 import { BindBankCardModal } from './components/FunctionModals';
 import { MyDeviceModal } from './components/MyDeviceModal';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { SiteBrandingProvider } from './context/SiteBrandingContext';
 import { getAdminSession, logoutAdmin } from './services/api';
 import { Zap, RefreshCw, ShieldCheck, Loader2 } from 'lucide-react';
 
@@ -151,6 +153,8 @@ function AppContent() {
         return '/about-platform';
       case 'mission_bonus':
         return '/mission-bonus';
+      case 'usdt_deposit':
+        return '/usdt-deposit';
       default:
         return '/home';
     }
@@ -253,6 +257,8 @@ function AppContent() {
         navigateTab('transactions', false);
       } else if (path === '/recharge' || path === '/topup') {
         navigateTab('recharge', false);
+      } else if (path === '/usdt-deposit' || path === '/usdt') {
+        navigateTab('usdt_deposit', false);
       } else if (path === '/withdrawal' || path === '/withdraw') {
         navigateTab('withdrawal', false);
       } else {
@@ -604,6 +610,21 @@ function AppContent() {
             />
           )}
 
+          {activeTab === 'usdt_deposit' && (
+            <UsdtDepositPage
+              userId={activeUserId}
+              wallet={wallet}
+              onBack={() => {
+                navigateTab('recharge');
+              }}
+              onNavigateTab={(tab) => {
+                navigateTab(tab as TabType);
+              }}
+              onShowToast={showToast}
+              onRefreshData={() => refreshUserData()}
+            />
+          )}
+
           {activeTab === 'bank_card' && (
             <BankCardPage
               userId={activeUserId}
@@ -682,6 +703,7 @@ function AppContent() {
           activeTab !== 'notifications' &&
           activeTab !== 'withdrawal' &&
           activeTab !== 'recharge' &&
+          activeTab !== 'usdt_deposit' &&
           activeTab !== 'bank_card' &&
           activeTab !== 'add_bank_card' &&
           activeTab !== 'vip_levels' &&
@@ -758,8 +780,10 @@ function AppContent() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <SiteBrandingProvider>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </SiteBrandingProvider>
   );
 }

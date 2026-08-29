@@ -65,54 +65,64 @@ export const BannerCarousel: React.FC<BannerCarouselProps> = ({
             transition={{ duration: 0.4 }}
             className="w-full h-full relative p-4 flex items-center justify-between overflow-hidden bg-gradient-to-br from-[#FF8C00] to-[#FF4500]"
           >
-            {/* Background glowing circles and floating coins */}
-            <div className="absolute -top-12 -left-12 w-36 h-36 rounded-full bg-white/15 blur-md pointer-events-none" />
-            <div className="absolute -bottom-10 right-10 w-32 h-32 rounded-full bg-[#FF4500]/40 blur-lg pointer-events-none" />
+            {currentBanner.imageUrl ? (
+              <img
+                src={currentBanner.imageUrl}
+                alt={currentBanner.title}
+                className="absolute inset-0 w-full h-full object-cover z-0"
+              />
+            ) : (
+              <>
+                {/* Background glowing circles and floating coins */}
+                <div className="absolute -top-12 -left-12 w-36 h-36 rounded-full bg-white/15 blur-md pointer-events-none" />
+                <div className="absolute -bottom-10 right-10 w-32 h-32 rounded-full bg-[#FF4500]/40 blur-lg pointer-events-none" />
 
-            {/* Left Artwork Composition matching Screenshot 1 */}
-            <div className="relative z-10 flex items-center justify-center w-[45%] h-full">
-              {/* Floating translucent Rupee coin top-left */}
-              <div className="absolute top-1 left-2 w-7 h-7 rounded-full bg-white/20 border border-white/40 flex items-center justify-center shadow-xs">
-                <span className="text-[12px] font-bold text-white/80">₹</span>
-              </div>
-              
-              {/* x2 badge tag */}
-              <div className="absolute top-3 right-4 bg-orange-400/60 text-white font-extrabold text-[10px] px-1.5 py-0.5 rounded-sm transform -rotate-12 border border-white/30">
-                x2
-              </div>
-
-              {/* Central 3D Power Bank station platform */}
-              <div className="relative mt-2 flex flex-col items-center">
-                {/* 3D Rack Device Graphic */}
-                <div className="w-16 h-20 bg-gradient-to-b from-[#FF5722] to-[#D84315] rounded-xl p-1.5 shadow-md border border-white/30 flex flex-col justify-between">
-                  <div className="w-full h-2 rounded-full bg-white/40 mb-1" />
-                  <div className="grid grid-cols-2 gap-1 my-auto">
-                    {[1, 2, 3, 4, 5, 6].map((i) => (
-                      <div key={i} className="h-2 rounded-sm bg-white/80" />
-                    ))}
+                {/* Left Artwork Composition matching Screenshot 1 */}
+                <div className="relative z-10 flex items-center justify-center w-[45%] h-full">
+                  {/* Floating translucent Rupee coin top-left */}
+                  <div className="absolute top-1 left-2 w-7 h-7 rounded-full bg-white/20 border border-white/40 flex items-center justify-center shadow-xs">
+                    <span className="text-[12px] font-bold text-white/80">₹</span>
                   </div>
-                  <div className="w-full h-1.5 rounded-full bg-black/20 mt-1" />
-                </div>
-                
-                {/* Yellow platform cylinder base */}
-                <div className="w-24 h-6 -mt-3 bg-gradient-to-r from-[#FFD54F] via-[#FFCA28] to-[#FFA000] rounded-full shadow-md border-t border-white/50" />
-              </div>
+                  
+                  {/* x2 badge tag */}
+                  <div className="absolute top-3 right-4 bg-orange-400/60 text-white font-extrabold text-[10px] px-1.5 py-0.5 rounded-sm transform -rotate-12 border border-white/30">
+                    x2
+                  </div>
 
-              {/* Floating coin bottom-left */}
-              <div className="absolute bottom-2 left-6 w-6 h-6 rounded-full bg-white/25 border border-white/40 flex items-center justify-center">
-                <span className="text-[10px] font-bold text-white/90">₹</span>
-              </div>
-            </div>
+                  {/* Central 3D Power Bank station platform */}
+                  <div className="relative mt-2 flex flex-col items-center">
+                    {/* 3D Rack Device Graphic */}
+                    <div className="w-16 h-20 bg-gradient-to-b from-[#FF5722] to-[#D84315] rounded-xl p-1.5 shadow-md border border-white/30 flex flex-col justify-between">
+                      <div className="w-full h-2 rounded-full bg-white/40 mb-1" />
+                      <div className="grid grid-cols-2 gap-1 my-auto">
+                        {[1, 2, 3, 4, 5, 6].map((i) => (
+                          <div key={i} className="h-2 rounded-sm bg-white/80" />
+                        ))}
+                      </div>
+                      <div className="w-full h-1.5 rounded-full bg-black/20 mt-1" />
+                    </div>
+                    
+                    {/* Yellow platform cylinder base */}
+                    <div className="w-24 h-6 -mt-3 bg-gradient-to-r from-[#FFD54F] via-[#FFCA28] to-[#FFA000] rounded-full shadow-md border-t border-white/50" />
+                  </div>
+
+                  {/* Floating coin bottom-left */}
+                  <div className="absolute bottom-2 left-6 w-6 h-6 rounded-full bg-white/25 border border-white/40 flex items-center justify-center">
+                    <span className="text-[10px] font-bold text-white/90">₹</span>
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* Right Promotional Content matching Screenshot 1 */}
-            <div className="relative z-10 w-[55%] flex flex-col items-end text-right pl-2 pr-1">
-              <h2 className="text-[18px] font-extrabold text-white leading-tight drop-shadow-xs">
+            <div className="relative z-10 w-[55%] flex flex-col items-end text-right pl-2 pr-1 ml-auto">
+              <h2 className="text-[18px] font-extrabold text-white leading-tight drop-shadow-md">
                 {currentBanner.title}
               </h2>
 
               <div className="mt-2.5">
-                <div className="inline-block bg-white/20 hover:bg-white/30 px-3 py-1 rounded-full text-[11px] font-bold text-white shadow-xs border border-white/20 active:scale-95 transition-all">
-                  <span>{currentBanner.ctaText}</span>
+                <div className="inline-block bg-white/25 hover:bg-white/35 px-3 py-1 rounded-full text-[11px] font-bold text-white shadow-xs border border-white/30 backdrop-blur-xs active:scale-95 transition-all">
+                  <span>{currentBanner.ctaText || 'Go Now >'}</span>
                 </div>
               </div>
             </div>

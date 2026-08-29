@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { Wallet, DepositTransaction } from '../types';
-import { fetchDepositTransactions } from '../services/api';
+import { Wallet, DepositTransaction, RechargeSettings, UsdtSettings } from '../types';
+import {
+  fetchDepositTransactions,
+  submitDepositComplaint,
+  uploadComplaintScreenshot,
+  compressImageFile,
+  fetchRechargeSettings,
+  fetchUsdtSettings,
+} from '../services/api';
 import {
   ChevronLeft,
   FileText,
@@ -15,6 +22,13 @@ import {
   Check,
   RefreshCw,
   ArrowDownLeft,
+  HelpCircle,
+  Upload,
+  Image as ImageIcon,
+  Send,
+  X,
+  ShieldAlert,
+  Coins,
 } from 'lucide-react';
 
 interface TopUpPageProps {
@@ -26,7 +40,7 @@ interface TopUpPageProps {
   onRefreshData?: () => void;
 }
 
-const PRESET_AMOUNTS = [500, 1500, 2000, 3000, 3500, 5000, 7000, 10000, 20000, 30000];
+const DEFAULT_PRESET_AMOUNTS = [500, 1500, 2000, 3000, 3500, 5000, 7000, 10000, 20000, 30000];
 
 export default function TopUpPage({
   userId: propUserId,
@@ -46,11 +60,139 @@ export default function TopUpPage({
   const [userProfile, setUserProfile] = useState<any>(null);
   const [currentAuthUserId, setCurrentAuthUserId] = useState<string>(propUserId || '');
   
+  // Dynamic Settings
+  const [rechargeSettings, setRechargeSettings] = useState<RechargeSettings>({
+    presetAmounts: DEFAULT_PRESET_AMOUNTS,
+    minRecharge: 100,
+    maxRecharge: 50000,
+    isEnabled: true,
+  });
+  const [usdtSettings, setUsdtSettings] = useState<UsdtSettings>({
+    isEnabled: true,
+    usdtRate: 100,
+    trc20Address: '',
+    bep20Address: '',
+  });
+
   // Recharge History states
   const [rechargeHistory, setRechargeHistory] = useState<DepositTransaction[]>([]);
   const [historyLoading, setHistoryLoading] = useState<boolean>(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Pay Complaint Modal states
+  const [complaintModalOpen, setComplaintModalOpen] = useState(false);
+  const [complaintOrder, setComplaintOrder] = useState<DepositTransaction | null>(null);
+  const [complaintTraceno, setComplaintTraceno] = useState('');
+  const [complaintAmount, setComplaintAmount] = useState('');
+  const [complaintUtr, setComplaintUtr] = useState('');
+  const [complaintProofFile, setComplaintProofFile] = useState<File | null>(null);
+  const [complaintProofPreview, setComplaintProofPreview] = useState<string | null>(null);
+  const [complaintNote, setComplaintNote] = useState('');
+  const [submittingComplaint, setSubmittingComplaint] = useState(false);
+  const [complaintError, setComplaintError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function loadDynamicSettings() {
+      try {
+        const [rSet, uSet] = await Promise.all([
+          fetchRechargeSettings(),
+          fetchUsdtSettings(),
+        ]);
+        if (rSet) setRechargeSettings(rSet);
+        if (uSet) setUsdtSettings(uSet);
+      } catch (err) {
+        console.warn('[TopUpPage] Failed to fetch settings:', err);
+      }
+    }
+    loadDynamicSettings();
+  }, []);
+
+  const handleOpenComplaint = (order?: DepositTransaction | null) => {
+    if (order) {
+      setComplaintOrder(order);
+      setComplaintTraceno(order.traceno || order.id || '');
+      setComplaintAmount(String(order.amount || ''));
+    } else {
+      setComplaintOrder(null);
+      setComplaintTraceno('');
+      setComplaintAmount(amount || '500');
+    }
+    setComplaintUtr('');
+    setComplaintProofFile(null);
+    setComplaintProofPreview(null);
+    setComplaintNote('');
+    setComplaintError(null);
+    setComplaintModalOpen(true);
+  };
+
+  const handleProofFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setComplaintProofFile(file);
+      try {
+        const preview = await compressImageFile(file, 800, 800, 0.8);
+        setComplaintProofPreview(preview || null);
+      } catch {
+        const reader = new FileReader();
+        reader.onload = () => {
+          setComplaintProofPreview(reader.result as string);
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+  };
+
+  const handleSubmitComplaint = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const effectiveUid = currentAuthUserId || propUserId;
+    if (!effectiveUid) {
+      setComplaintError('User session expired. Please sign in again.');
+      return;
+    }
+    const cleanUtr = complaintUtr.trim();
+    if (!cleanUtr || cleanUtr.length < 8) {
+      setComplaintError('Please enter a valid 12-digit UPI UTR number.');
+      return;
+    }
+    const cleanAmount = Number(complaintAmount);
+    if (!cleanAmount || cleanAmount <= 0) {
+      setComplaintError('Please provide a valid deposit amount.');
+      return;
+    }
+
+    setSubmittingComplaint(true);
+    setComplaintError(null);
+    try {
+      let uploadedUrl: string | undefined = undefined;
+      if (complaintProofFile) {
+        uploadedUrl = await uploadComplaintScreenshot(complaintProofFile, effectiveUid);
+      }
+
+      const res = await submitDepositComplaint({
+        userId: effectiveUid,
+        traceno: complaintTraceno.trim() || `MANUAL_${Date.now()}`,
+        amount: cleanAmount,
+        utr: cleanUtr,
+        proofUrl: uploadedUrl || complaintProofPreview || undefined,
+        note: complaintNote.trim() || undefined,
+      });
+
+      if (onShowToast) {
+        onShowToast(res.message || 'Deposit complaint submitted for Admin review.');
+      }
+
+      setComplaintModalOpen(false);
+      // Reload history and balance
+      loadHistory(effectiveUid);
+      fetchWallet(effectiveUid);
+      if (onRefreshData) onRefreshData();
+    } catch (err: any) {
+      setComplaintError(err.message || 'Failed to submit complaint. Please try again.');
+    } finally {
+      setSubmittingComplaint(false);
+    }
+  };
 
   const pollingRef = useRef<any>(null);
 
@@ -398,7 +540,7 @@ export default function TopUpPage({
           >
             <ChevronLeft className="w-5 h-5 text-white" />
           </button>
-          <h1 className="text-lg font-semibold tracking-wide">Top Up</h1>
+          <h1 className="text-lg font-semibold tracking-wide">Recharge</h1>
           <button
             onClick={() => onNavigateTab && onNavigateTab('transactions')}
             className="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center transition-colors cursor-pointer"
@@ -417,12 +559,15 @@ export default function TopUpPage({
             ₹{currentDisplayAmount}
           </h2>
           <p className="text-gray-400 text-sm mt-1">
-            Topup Wallet Balance: ₹{balance.toFixed(2)}
+            Recharge Wallet Balance: ₹{balance.toFixed(2)}
           </p>
 
           {/* Preset Buttons */}
           <div className="grid grid-cols-3 gap-3 w-full mt-6">
-            {PRESET_AMOUNTS.map((amt) => {
+            {(rechargeSettings.presetAmounts && rechargeSettings.presetAmounts.length > 0
+              ? rechargeSettings.presetAmounts
+              : DEFAULT_PRESET_AMOUNTS
+            ).map((amt) => {
               const isSelected = amount === String(amt);
               const isRecommended = [1500, 3500, 5000].includes(amt);
 
@@ -454,7 +599,7 @@ export default function TopUpPage({
               type="text"
               inputMode="numeric"
               pattern="[0-9]*"
-              placeholder="₹ Or enter other amount (Min ₹100)"
+              placeholder={`₹ Or enter other amount (Min ₹${rechargeSettings.minRecharge || 100})`}
               value={amount}
               onChange={(e) => {
                 const cleanDigits = e.target.value.replace(/\D/g, '');
@@ -478,7 +623,7 @@ export default function TopUpPage({
             </div>
           )}
 
-          {/* Top Up Button */}
+          {/* Primary Recharge Button */}
           <button
             type="button"
             onClick={handleTopUp}
@@ -491,9 +636,25 @@ export default function TopUpPage({
                 <span>Creating order & opening gateway...</span>
               </>
             ) : (
-              <span>Top Up</span>
+              <span>Recharge</span>
             )}
           </button>
+
+          {/* Recharge USDT Button */}
+          {usdtSettings.isEnabled !== false && (
+            <button
+              type="button"
+              onClick={() => {
+                if (onNavigateTab) {
+                  onNavigateTab('recharge_usdt');
+                }
+              }}
+              className="w-full mt-3 bg-gradient-to-r from-amber-500 via-orange-500 to-[#FF5500] hover:from-amber-600 hover:to-[#E04B00] text-white font-bold py-3.5 rounded-2xl shadow-md shadow-orange-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer text-sm"
+            >
+              <Coins className="w-4 h-4 text-yellow-200" />
+              <span>Recharge USDT (1 USDT = ₹{usdtSettings.usdtRate || 100})</span>
+            </button>
+          )}
         </div>
 
         {/* RECHARGE HISTORY SECTION DIRECTLY BELOW THE TOP UP BUTTON */}
@@ -505,19 +666,21 @@ export default function TopUpPage({
                 Recharge History
               </h3>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                if (currentAuthUserId || propUserId) {
-                  loadHistory(currentAuthUserId || propUserId!);
-                }
-              }}
-              disabled={historyLoading}
-              className="text-xs text-gray-500 hover:text-[#FF5500] flex items-center gap-1 font-medium cursor-pointer transition-colors"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${historyLoading ? 'animate-spin' : ''}`} />
-              <span>Refresh</span>
-            </button>
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  if (currentAuthUserId || propUserId) {
+                    loadHistory(currentAuthUserId || propUserId!);
+                  }
+                }}
+                disabled={historyLoading}
+                className="text-xs text-gray-500 hover:text-[#FF5500] flex items-center gap-1 font-medium cursor-pointer transition-colors"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${historyLoading ? 'animate-spin' : ''}`} />
+                <span>Refresh</span>
+              </button>
+            </div>
           </div>
 
           {historyLoading ? (
@@ -601,10 +764,19 @@ export default function TopUpPage({
                       </div>
                     </div>
 
-                    <div className="text-right shrink-0">
+                    <div className="text-right shrink-0 flex flex-col items-end gap-1">
                       <span className="text-[11px] text-gray-400 block font-medium">
                         {item.paymentMethod || 'UPI Gateway'}
                       </span>
+                      {item.status !== 'PAID' && item.status !== 'SUCCESS' && item.status !== 'COMPLETED' && (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenComplaint(item)}
+                          className="text-[10px] text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 px-2 py-0.5 rounded font-bold transition-colors cursor-pointer"
+                        >
+                          Dispute / UTR
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -613,6 +785,174 @@ export default function TopUpPage({
           )}
         </div>
       </div>
+
+      {/* PAY COMPLAINT / DEPOSIT DISPUTE MODAL */}
+      {complaintModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full overflow-hidden shadow-2xl animate-in fade-in zoom-in duration-150 border border-gray-100">
+            <div className="flex items-center justify-between p-4 border-b border-gray-100 bg-gradient-to-r from-orange-500 to-[#FF5500] text-white">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-5 h-5" />
+                <div>
+                  <h3 className="text-sm font-bold">Deposit Problem / Pay Complaint</h3>
+                  <p className="text-[10px] text-orange-100">Submit 12-digit UPI UTR and proof screenshot</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setComplaintModalOpen(false)}
+                disabled={submittingComplaint}
+                className="text-white/80 hover:text-white p-1 rounded-lg hover:bg-white/10 cursor-pointer transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitComplaint} className="p-5 space-y-4 text-xs">
+              {complaintError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                  <span>{complaintError}</span>
+                </div>
+              )}
+
+              <div className="bg-amber-50/60 border border-amber-200/60 rounded-xl p-3 text-[11px] text-amber-800 space-y-1">
+                <p className="font-semibold flex items-center gap-1">
+                  <HelpCircle className="w-3.5 h-3.5 text-[#FF5500]" />
+                  <span>Money debited but not credited to Recharge Wallet?</span>
+                </p>
+                <p className="text-amber-700 leading-relaxed">
+                  Enter the exact 12-digit UTR / Ref No from your payment app (Google Pay, PhonePe, Paytm, BHIM) and upload the payment receipt screenshot. Our support team will verify and credit your wallet.
+                </p>
+              </div>
+
+              {/* Order ID / Traceno (Optional / Pre-filled) */}
+              <div>
+                <label className="block text-gray-700 font-semibold mb-1">
+                  Order Number / Traceno (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. T20250101..."
+                  value={complaintTraceno}
+                  onChange={(e) => setComplaintTraceno(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl p-2.5 text-gray-900 outline-none focus:border-[#FF5500] font-mono text-xs"
+                />
+              </div>
+
+              {/* Amount */}
+              <div>
+                <label className="block text-gray-700 font-semibold mb-1">
+                  Paid Amount (₹) <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  placeholder="e.g. 500"
+                  value={complaintAmount}
+                  onChange={(e) => setComplaintAmount(e.target.value)}
+                  required
+                  min="1"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl p-2.5 text-gray-900 font-bold outline-none focus:border-[#FF5500] text-xs"
+                />
+              </div>
+
+              {/* 12-Digit UTR Number */}
+              <div>
+                <label className="block text-gray-700 font-semibold mb-1">
+                  12-Digit UPI UTR / RRN / Reference No. <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. 423589123456"
+                  value={complaintUtr}
+                  onChange={(e) => setComplaintUtr(e.target.value)}
+                  required
+                  maxLength={24}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl p-2.5 text-gray-900 font-mono font-bold outline-none focus:border-[#FF5500] text-xs tracking-wider"
+                />
+              </div>
+
+              {/* Screenshot Proof Upload */}
+              <div>
+                <label className="block text-gray-700 font-semibold mb-1">
+                  Payment Receipt Screenshot (Recommended)
+                </label>
+                <div className="mt-1 flex flex-col gap-2">
+                  <label className="flex items-center justify-center gap-2 px-4 py-3 bg-gray-50 hover:bg-gray-100 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer transition-colors text-gray-600">
+                    <Upload className="w-4 h-4 text-[#FF5500]" />
+                    <span className="font-medium text-xs">
+                      {complaintProofFile ? complaintProofFile.name : 'Select or capture screenshot'}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleProofFileChange}
+                      className="hidden"
+                    />
+                  </label>
+
+                  {complaintProofPreview && (
+                    <div className="relative inline-block border border-gray-200 rounded-xl overflow-hidden max-h-32 bg-gray-100">
+                      <img
+                        src={complaintProofPreview}
+                        alt="Proof preview"
+                        className="h-32 w-auto object-contain mx-auto"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setComplaintProofFile(null);
+                          setComplaintProofPreview(null);
+                        }}
+                        className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-1 hover:bg-black/80"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Note */}
+              <div>
+                <label className="block text-gray-700 font-semibold mb-1">
+                  Additional Note (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Paid via PhonePe, money deducted from bank"
+                  value={complaintNote}
+                  onChange={(e) => setComplaintNote(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl p-2.5 text-gray-900 outline-none focus:border-[#FF5500] text-xs"
+                />
+              </div>
+
+              <div className="pt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setComplaintModalOpen(false)}
+                  disabled={submittingComplaint}
+                  className="px-4 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs cursor-pointer transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingComplaint}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-orange-500 to-[#FF5500] hover:from-orange-600 hover:to-[#E04B00] text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-md transition-all disabled:opacity-50"
+                >
+                  {submittingComplaint ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Send className="w-4 h-4" />
+                  )}
+                  <span>Submit Complaint</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

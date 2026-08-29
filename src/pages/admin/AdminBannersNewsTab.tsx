@@ -332,6 +332,53 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
                 </div>
               </div>
 
+              <div>
+                <label className="block text-gray-300 font-semibold mb-1">Banner Image URL (Optional)</label>
+                <input
+                  type="text"
+                  placeholder="https://example.com/banner.png"
+                  value={editingBanner.imageUrl || ''}
+                  onChange={(e) => setEditingBanner({ ...editingBanner, imageUrl: e.target.value })}
+                  className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1">Target Link / Action</label>
+                  <input
+                    type="text"
+                    placeholder="/purchase or https://..."
+                    value={editingBanner.linkUrl || editingBanner.targetTab || ''}
+                    onChange={(e) => setEditingBanner({ ...editingBanner, linkUrl: e.target.value, targetTab: e.target.value })}
+                    className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1">Sort Priority</label>
+                  <input
+                    type="number"
+                    value={editingBanner.priority ?? 1}
+                    onChange={(e) => setEditingBanner({ ...editingBanner, priority: Number(e.target.value) })}
+                    className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="bannerIsActive"
+                  checked={editingBanner.isActive !== false}
+                  onChange={(e) => setEditingBanner({ ...editingBanner, isActive: e.target.checked })}
+                  className="w-4 h-4 accent-[#FF6000]"
+                />
+                <label htmlFor="bannerIsActive" className="text-gray-300 font-medium cursor-pointer">
+                  Active (Visible in Home Carousel)
+                </label>
+              </div>
+
               <div className="flex gap-2 pt-3">
                 <button
                   type="button"

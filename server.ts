@@ -11,8 +11,8 @@ dotenv.config();
 const PORT = 3000;
 const app = express();
 
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // Gateway Configurations
 const UNIVEPAY_MERCHANT_NO = process.env.UNIVEPAY_MERCHANT_NO || '';
@@ -2316,10 +2316,10 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
     const [profilesRes, walletsRes, paymentsRes, depositsRes, withdrawalsRes, purchasesRes, earningsRes] = await Promise.all([
       supabase.from('profiles').select('id, status'),
       supabase.from('wallets').select('available_balance, withdraw_balance, recharge_balance'),
-      supabase.from('payments').select('amount, status'),
+      supabase.from('payments').select('amount, status, payment_type, payment_method'),
       supabase.from('deposit_transactions').select('amount, status'),
       supabase.from('withdrawals').select('amount, status'),
-      supabase.from('purchases').select('amount, status, plan_category, plans(category)'),
+      supabase.from('purchases').select('amount, status, plan_category'),
       supabase.from('earnings').select('amount, status, earning_type'),
     ]);
 
@@ -2340,7 +2340,7 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
     const paidGatewayDeposits = deposits.filter((d) => d.status === 'SUCCESS' || d.status === 'COMPLETED').reduce((acc, d) => acc + Number(d.amount || 0), 0);
     const totalRecharge = +(paidManualPayments + paidGatewayDeposits).toFixed(2);
 
-    const pendingManualPayments = payments.filter((p) => p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING').reduce((acc, p) => acc + Number(p.amount || 0), 0);
+    const pendingManualPayments = payments.filter((p) => (p.status === 'PENDING_VERIFICATION' || p.status === 'PAYMENT_PENDING' || p.status === 'PENDING')).reduce((acc, p) => acc + Number(p.amount || 0), 0);
     const pendingGatewayDeposits = deposits.filter((d) => d.status === 'PENDING').reduce((acc, d) => acc + Number(d.amount || 0), 0);
     const pendingRecharge = +(pendingManualPayments + pendingGatewayDeposits).toFixed(2);
 
@@ -2351,12 +2351,12 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
     const totalInvestments = +activePurchases.reduce((acc, p) => acc + Number(p.amount || 0), 0).toFixed(2);
 
     const activeHourlyPlans = activePurchases.filter((p: any) => {
-      const cat = (p.plan_category || (Array.isArray(p.plans) ? p.plans[0]?.category : p.plans?.category) || '').toUpperCase();
+      const cat = (p.plan_category || '').toUpperCase();
       return cat !== 'PRO';
     }).length;
 
     const activeProPlans = activePurchases.filter((p: any) => {
-      const cat = (p.plan_category || (Array.isArray(p.plans) ? p.plans[0]?.category : p.plans?.category) || '').toUpperCase();
+      const cat = (p.plan_category || '').toUpperCase();
       return cat === 'PRO';
     }).length;
 
@@ -2364,6 +2364,8 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
     const totalClaimableEarnings = +earnings.filter((e) => e.status === 'CLAIMABLE').reduce((acc, e) => acc + Number(e.amount || 0), 0).toFixed(2);
     const totalClaimedEarnings = +earnings.filter((e) => e.status === 'CLAIMED').reduce((acc, e) => acc + Number(e.amount || 0), 0).toFixed(2);
     const referralEarnings = +earnings.filter((e) => (e.earning_type || '').includes('REFERRAL')).reduce((acc, e) => acc + Number(e.amount || 0), 0).toFixed(2);
+
+    const pendingComplaintsCount = payments.filter((p) => (p.payment_type === 'DEPOSIT_COMPLAINT' || p.payment_method === 'PAY_COMPLAINT') && (p.status === 'PENDING_VERIFICATION' || p.status === 'PENDING')).length;
 
     return res.json({
       success: true,
@@ -2375,6 +2377,7 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
         pendingRecharge,
         totalWithdrawals,
         pendingWithdrawals,
+        pendingComplaintsCount,
         totalInvestments,
         activeHourlyPlans,
         activeProPlans,
@@ -2392,16 +2395,35 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
 app.get('/api/admin/users', async (req, res) => {
   if (!supabase) return res.json({ success: true, data: [] });
   try {
-    const { data: profiles, error } = await supabase
-      .from('profiles')
-      .select('*, wallets(available_balance, withdraw_balance, recharge_balance), purchases(amount, status)')
-      .order('created_at', { ascending: false });
+    const [profilesRes, walletsRes, purchasesRes] = await Promise.all([
+      supabase.from('profiles').select('*').order('created_at', { ascending: false }),
+      supabase.from('wallets').select('*'),
+      supabase.from('purchases').select('*'),
+    ]);
 
-    if (error) return res.status(500).json({ success: false, error: error.message });
+    if (profilesRes.error) return res.status(500).json({ success: false, error: profilesRes.error.message });
 
-    const formatted = (profiles || []).map((p: any) => {
-      const walletObj = Array.isArray(p.wallets) ? p.wallets[0] : p.wallets;
-      const purchasesList = p.purchases || [];
+    const walletMap = new Map<string, any>();
+    if (walletsRes.data) {
+      walletsRes.data.forEach((w: any) => {
+        if (w.user_id) walletMap.set(w.user_id, w);
+        if (w.id) walletMap.set(w.id, w);
+      });
+    }
+
+    const purchasesByUser = new Map<string, any[]>();
+    if (purchasesRes.data) {
+      purchasesRes.data.forEach((pur: any) => {
+        const uId = pur.user_id;
+        if (!purchasesByUser.has(uId)) purchasesByUser.set(uId, []);
+        purchasesByUser.get(uId)!.push(pur);
+      });
+    }
+
+    const formatted = (profilesRes.data || []).map((p: any) => {
+      const uId = p.user_id || p.id;
+      const walletObj = walletMap.get(p.user_id) || walletMap.get(p.id);
+      const purchasesList = purchasesByUser.get(p.user_id) || purchasesByUser.get(p.id) || [];
       const totalInvested = purchasesList
         .filter((pur: any) => pur.status === 'ACTIVE')
         .reduce((sum: number, pur: any) => sum + Number(pur.amount || 0), 0);
@@ -2409,17 +2431,17 @@ app.get('/api/admin/users', async (req, res) => {
 
       return {
         id: p.id,
-        userId: p.user_id,
-        username: p.username,
-        whatsappNo: p.whatsapp_no,
-        name: p.username,
-        mobile: p.whatsapp_no,
-        email: p.email,
-        membershipNumber: p.membership_number,
-        referralCode: p.referral_code,
-        referredBy: p.referred_by,
-        role: p.role,
-        status: p.status,
+        userId: p.user_id || p.id,
+        username: p.username || 'User',
+        whatsappNo: p.whatsapp_no || p.mobile || '',
+        name: p.username || 'User',
+        mobile: p.whatsapp_no || p.mobile || '',
+        email: p.email || '',
+        membershipNumber: p.membership_number || '',
+        referralCode: p.referral_code || '',
+        referredBy: p.referred_by || '',
+        role: p.role || 'user',
+        status: p.status || 'active',
         availableBalance: Number(walletObj?.available_balance || 0),
         walletBalance: Number(walletObj?.available_balance || 0),
         totalInvested,
@@ -2437,23 +2459,32 @@ app.get('/api/admin/users', async (req, res) => {
 app.get('/api/admin/recharges', async (req, res) => {
   if (!supabase) return res.json({ success: true, data: [] });
   try {
-    const [paymentsRes, depositsRes] = await Promise.all([
-      supabase.from('payments').select('*, profiles(username, whatsapp_no, membership_number)').order('created_at', { ascending: false }),
-      supabase.from('deposit_transactions').select('*, profiles(username, whatsapp_no, membership_number)').order('created_at', { ascending: false }),
+    const [paymentsRes, depositsRes, profilesRes] = await Promise.all([
+      supabase.from('payments').select('*').order('created_at', { ascending: false }),
+      supabase.from('deposit_transactions').select('*').order('created_at', { ascending: false }),
+      supabase.from('profiles').select('id, user_id, username, whatsapp_no, membership_number, mobile'),
     ]);
 
+    const profileMap = new Map<string, any>();
+    if (profilesRes.data) {
+      profilesRes.data.forEach((p: any) => {
+        if (p.user_id) profileMap.set(p.user_id, p);
+        if (p.id) profileMap.set(p.id, p);
+      });
+    }
+
     const payments = (paymentsRes.data || []).map((p: any) => {
-      const prof = Array.isArray(p.profiles) ? p.profiles[0] : p.profiles;
+      const prof = profileMap.get(p.user_id) || {};
       return {
         id: p.id,
         userId: p.user_id,
-        username: prof?.username || 'User',
-        whatsappNo: prof?.whatsapp_no || '',
-        membershipNumber: prof?.membership_number || '',
+        username: prof.username || 'User',
+        whatsappNo: prof.whatsapp_no || prof.mobile || '',
+        membershipNumber: prof.membership_number || '',
         amount: Number(p.amount || 0),
         paymentMethod: p.payment_method || 'UPI',
-        utrNumber: p.utr_number || p.reference_id || '',
-        referenceId: p.reference_id || p.utr_number || '',
+        utrNumber: p.utr || p.utr_number || p.reference_id || '',
+        referenceId: p.order_id || p.reference_id || p.utr_number || '',
         status: p.status,
         createdAt: p.created_at,
         type: 'MANUAL_UPI',
@@ -2461,18 +2492,18 @@ app.get('/api/admin/recharges', async (req, res) => {
     });
 
     const deposits = (depositsRes.data || []).map((d: any) => {
-      const prof = Array.isArray(d.profiles) ? d.profiles[0] : d.profiles;
+      const prof = profileMap.get(d.user_id) || {};
       return {
         id: d.id,
         userId: d.user_id,
-        username: prof?.username || 'User',
-        whatsappNo: prof?.whatsapp_no || '',
-        membershipNumber: prof?.membership_number || '',
+        username: prof.username || 'User',
+        whatsappNo: prof.whatsapp_no || prof.mobile || '',
+        membershipNumber: prof.membership_number || '',
         amount: Number(d.amount || 0),
         paymentMethod: d.channel || 'UNIVEPAY',
-        utrNumber: d.traceno || '',
+        utrNumber: d.utr || d.traceno || '',
         referenceId: d.traceno || '',
-        status: d.status === 'SUCCESS' ? 'PAID' : d.status,
+        status: (d.status === 'SUCCESS' || d.status === 'COMPLETED') ? 'PAID' : d.status,
         createdAt: d.created_at,
         type: 'GATEWAY_DEPOSIT',
       };
@@ -2545,31 +2576,48 @@ app.post('/api/admin/approve-recharge', async (req, res) => {
 app.get('/api/admin/withdrawals', async (req, res) => {
   if (!supabase) return res.json({ success: true, data: [] });
   try {
-    const { data, error } = await supabase
-      .from('withdrawals')
-      .select('*, profiles(username, whatsapp_no, membership_number)')
-      .order('created_at', { ascending: false });
+    const [withdrawalsRes, profilesRes, banksRes] = await Promise.all([
+      supabase.from('withdrawals').select('*').order('created_at', { ascending: false }),
+      supabase.from('profiles').select('id, user_id, username, whatsapp_no, membership_number, mobile'),
+      supabase.from('bank_accounts').select('*'),
+    ]);
 
-    if (error) return res.status(500).json({ success: false, error: error.message });
+    if (withdrawalsRes.error) return res.status(500).json({ success: false, error: withdrawalsRes.error.message });
 
-    const formatted = (data || []).map((w: any) => {
-      const prof = Array.isArray(w.profiles) ? w.profiles[0] : w.profiles;
+    const profileMap = new Map<string, any>();
+    if (profilesRes.data) {
+      profilesRes.data.forEach((p: any) => {
+        if (p.user_id) profileMap.set(p.user_id, p);
+        if (p.id) profileMap.set(p.id, p);
+      });
+    }
+
+    const bankMap = new Map<string, any>();
+    if (banksRes.data) {
+      banksRes.data.forEach((b: any) => {
+        if (b.id) bankMap.set(b.id, b);
+      });
+    }
+
+    const formatted = (withdrawalsRes.data || []).map((w: any) => {
+      const prof = profileMap.get(w.user_id) || {};
+      const bank = bankMap.get(w.bank_account_id) || {};
       return {
         id: w.id,
         userId: w.user_id,
-        username: prof?.username || 'User',
-        whatsappNo: prof?.whatsapp_no || '',
-        membershipNumber: prof?.membership_number || '',
+        username: prof.username || 'User',
+        whatsappNo: prof.whatsapp_no || prof.mobile || '',
+        membershipNumber: prof.membership_number || '',
         amount: Number(w.amount || 0),
-        actualAmount: Number(w.actual_amount || w.amount || 0),
+        actualAmount: Number(w.actual_amount || w.net_amount || w.amount || 0),
         fee: Number(w.fee || 0),
         status: w.status,
-        accountNumber: w.account_number || '',
-        ifscCode: w.ifsc_code || '',
-        holderName: w.holder_name || '',
-        bankName: w.bank_name || '',
+        accountNumber: w.account_number || bank.account_number || '',
+        ifscCode: w.ifsc_code || bank.ifsc || bank.ifsc_code || '',
+        holderName: w.holder_name || bank.account_holder_name || bank.holder_name || prof.username || '',
+        bankName: w.bank_name || bank.bank_name || '',
         bankRefNo: w.bank_ref_no || '',
-        rejectedReason: w.rejected_reason || '',
+        rejectedReason: w.rejection_reason || w.rejected_reason || '',
         createdAt: w.created_at,
       };
     });
@@ -2631,6 +2679,1450 @@ app.post('/api/admin/approve-withdrawal', async (req, res) => {
 
     return res.json({ success: true, message: 'Withdrawal marked as completed.' });
   } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/reject-withdrawal', async (req, res) => {
+  const { withdrawalId, rejectionReason = 'Verification failed', adminId = 'adm_root' } = req.body;
+  if (!withdrawalId || !supabase) return res.status(400).json({ success: false, error: 'Missing withdrawalId' });
+
+  try {
+    const { data: w, error: fetchErr } = await supabase.from('withdrawals').select('*').eq('id', withdrawalId).single();
+    if (fetchErr || !w) return res.status(404).json({ success: false, error: 'Withdrawal not found' });
+    if (w.status === 'REJECTED') return res.json({ success: true, message: 'Already rejected' });
+    if (w.status === 'COMPLETED' || w.status === 'PAID') {
+      return res.status(400).json({ success: false, error: 'Cannot reject a completed withdrawal' });
+    }
+
+    const nowIso = new Date().toISOString();
+    const amount = Number(w.amount);
+    const userId = w.user_id;
+
+    // Update withdrawal record
+    await supabase.from('withdrawals').update({
+      status: 'REJECTED',
+      rejection_reason: rejectionReason,
+      processed_at: nowIso,
+      processed_by: adminId,
+    }).eq('id', withdrawalId);
+
+    // Atomically refund held withdrawal balance to user's wallet
+    const { data: wallet } = await supabase.from('wallets').select('*').eq('user_id', userId).single();
+    if (wallet) {
+      const curWithdraw = Number(wallet.withdraw_balance !== undefined ? wallet.withdraw_balance : (wallet.earned_balance || wallet.available_balance || 0));
+      const curPending = Number(wallet.pending_balance || 0);
+      const newPending = Math.max(0, +(curPending - amount).toFixed(2));
+      const newWithdraw = +(curWithdraw + amount).toFixed(2);
+      const curRecharge = Number(wallet.recharge_balance || 0);
+      const newAvailable = +(curRecharge + newWithdraw).toFixed(2);
+
+      await supabase.from('wallets').update({
+        withdraw_balance: newWithdraw,
+        available_balance: newAvailable,
+        pending_balance: newPending,
+        updated_at: nowIso,
+      }).eq('user_id', userId);
+    }
+
+    // Insert reversal wallet transaction
+    await supabase.from('wallet_transactions').insert({
+      user_id: userId,
+      type: 'WITHDRAWAL_REVERSAL',
+      amount: amount,
+      balance_before: Number(wallet?.available_balance || 0),
+      balance_after: Number(wallet?.available_balance || 0) + amount,
+      wallet_type: 'WITHDRAWABLE',
+      status: 'Completed',
+      reference_id: w.id,
+      description: `Withdrawal Reversal: ${rejectionReason}`,
+      created_at: nowIso,
+    });
+
+    // Notify user
+    await supabase.from('notifications').insert({
+      user_id: userId,
+      title: 'Withdrawal Rejected',
+      message: `Your withdrawal request of ₹${amount} was not approved (${rejectionReason}). Funds have been refunded to your Withdraw Wallet.`,
+      type: 'WARNING',
+      read: false,
+      created_at: nowIso,
+    });
+
+    // Record audit log
+    try {
+      await supabase.from('admin_audit_logs').insert({
+        admin_user_id: adminId,
+        action: 'REJECT_WITHDRAWAL',
+        target_type: 'withdrawal',
+        target_id: withdrawalId,
+        description: `Rejected withdrawal of ₹${amount} for user ${userId}: ${rejectionReason}`,
+        details: { withdrawalId, amount, rejectionReason, userId },
+        created_at: nowIso,
+      });
+    } catch (_e) {}
+
+    return res.json({ success: true, message: 'Withdrawal rejected and funds refunded to user wallet.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==============================================================================
+// 20-MINUTE AUTOMATIC TOPUP ORDER EXPIRATION SERVICE
+// ==============================================================================
+async function cancelExpiredPendingTopups() {
+  if (!supabase) return;
+  try {
+    const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    const { data: expiredOrders, error } = await supabase
+      .from('deposit_transactions')
+      .update({
+        status: 'CANCELLED',
+        failure_reason: 'Order automatically cancelled after 20 minutes of inactivity',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('status', 'PENDING')
+      .lt('created_at', twentyMinutesAgo)
+      .select('id, traceno, user_id, amount');
+
+    if (expiredOrders && expiredOrders.length > 0) {
+      console.log(`[Auto-Cancel] Automatically marked ${expiredOrders.length} expired topup order(s) as CANCELLED.`);
+    }
+  } catch (e: any) {
+    console.warn('[Auto-Cancel] Notice during topup cleanup:', e?.message || e);
+  }
+}
+
+// Check every 60 seconds
+setInterval(cancelExpiredPendingTopups, 60 * 1000);
+setTimeout(cancelExpiredPendingTopups, 3000);
+
+// ==============================================================================
+// WEBSITE POPUP CONFIGURATION ENDPOINTS
+// ==============================================================================
+app.get('/api/website-popup', async (req, res) => {
+  if (!supabase) {
+    return res.json({
+      success: true,
+      data: {
+        title: 'Welcome to GainPower',
+        description: 'Join the premier hardware dividend platform and maximize daily yields.',
+        imageUrl: '',
+        link1Text: 'Official Telegram',
+        link1Url: 'https://t.me/gainpower',
+        link2Text: 'WhatsApp Group',
+        link2Url: 'https://chat.whatsapp.com',
+        link3Text: 'Revenue Guide',
+        link3Url: '/purchase',
+        link4Text: 'Customer Care',
+        link4Url: 'https://t.me/gainpower_service',
+        isActive: true,
+      },
+    });
+  }
+  try {
+    const { data } = await supabase.from('admin_settings').select('value').eq('id', 'website_popup').maybeSingle();
+    const config = data?.value || {
+      title: 'Welcome to GainPower',
+      description: 'Join the premier hardware dividend platform and maximize daily yields.',
+      imageUrl: '',
+      link1Text: 'Official Telegram',
+      link1Url: 'https://t.me/gainpower',
+      link2Text: 'WhatsApp Group',
+      link2Url: 'https://chat.whatsapp.com',
+      link3Text: 'Revenue Guide',
+      link3Url: '/purchase',
+      link4Text: 'Customer Care',
+      link4Url: 'https://t.me/gainpower_service',
+      isActive: true,
+    };
+    return res.json({ success: true, data: config });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/website-popup', async (req, res) => {
+  const { config, adminId = 'adm_root' } = req.body;
+  if (!config) return res.status(400).json({ success: false, error: 'Missing popup configuration.' });
+
+  try {
+    if (supabase) {
+      await supabase.from('admin_settings').upsert({
+        id: 'website_popup',
+        value: config,
+        updated_at: new Date().toISOString(),
+      });
+
+      try {
+        await supabase.from('admin_audit_logs').insert({
+          admin_user_id: adminId,
+          action: 'UPDATE_WEBSITE_POPUP',
+          target_type: 'settings',
+          target_id: 'website_popup',
+          description: `Updated website popup config (Active: ${config.isActive})`,
+          details: config,
+          created_at: new Date().toISOString(),
+        });
+      } catch (_e) {}
+    }
+    return res.json({ success: true, message: 'Website popup saved successfully.', data: config });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
+// ==============================================================================
+// DEPOSIT COMPLAINT SYSTEM (USER SUBMISSION & ADMIN MANUAL REVIEW)
+// ==============================================================================
+
+// Helper to extract storage path and generate signed URL for deposit complaint evidence
+async function getSignedProofUrl(rawPathOrUrl: string | null | undefined, expiresInSeconds = 3600): Promise<string> {
+  if (!rawPathOrUrl || !supabase) return '';
+  const str = String(rawPathOrUrl).trim();
+  if (!str) return '';
+  if (str.startsWith('data:image')) return str; // Base64 fallback
+
+  let objectKey = str;
+  // If it's a legacy public or signed URL, extract storage key
+  if (str.includes('/deposit-complaints/')) {
+    const parts = str.split('/deposit-complaints/');
+    if (parts[1]) {
+      objectKey = parts[1].split('?')[0];
+    }
+  } else if (str.startsWith('http://') || str.startsWith('https://')) {
+    return str;
+  }
+
+  try {
+    const { data: signedData, error } = await supabase.storage
+      .from('deposit-complaints')
+      .createSignedUrl(objectKey, expiresInSeconds);
+    if (!error && signedData?.signedUrl) {
+      return signedData.signedUrl;
+    }
+  } catch (err) {
+    console.warn('[SIGNED URL] Failed to create signed URL for:', objectKey, err);
+  }
+  return str;
+}
+
+// 1. Submit a deposit complaint (User)
+app.post('/api/deposit-complaint', async (req, res) => {
+  const { userId, traceno, amount, utr, proofUrl = '', note = '' } = req.body;
+  if (!userId || !traceno || !amount || !utr) {
+    return res.status(400).json({ success: false, error: 'User ID, Order Reference (Traceno), Amount, and 12-digit UTR are required.' });
+  }
+
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database service unavailable.' });
+  }
+
+  try {
+    const numAmount = Number(amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      return res.status(400).json({ success: false, error: 'Invalid deposit amount.' });
+    }
+
+    const cleanUtr = String(utr).trim();
+    const cleanTraceno = String(traceno).trim();
+
+    // Check if complaint already exists for this UTR or order
+    const { data: existingComplaint } = await supabase
+      .from('payments')
+      .select('id, status')
+      .eq('utr', cleanUtr)
+      .maybeSingle();
+
+    if (existingComplaint && existingComplaint.status === 'PAID') {
+      return res.status(400).json({ success: false, error: 'This UTR has already been approved and credited.' });
+    }
+
+    const nowIso = new Date().toISOString();
+
+    // Insert into payments table as a DEPOSIT_COMPLAINT
+    const { data: complaint, error: insertErr } = await supabase
+      .from('payments')
+      .insert({
+        user_id: userId,
+        order_id: cleanTraceno,
+        reference_id: cleanTraceno,
+        amount: numAmount,
+        payment_type: 'DEPOSIT_COMPLAINT',
+        payment_method: 'PAY_COMPLAINT',
+        utr: cleanUtr,
+        utr_number: cleanUtr,
+        proof_url: proofUrl || null,
+        status: 'PENDING_VERIFICATION',
+        rejection_reason: note ? `User note: ${note}` : null,
+        created_at: nowIso,
+        updated_at: nowIso,
+      })
+      .select()
+      .single();
+
+    if (insertErr) {
+      console.error('[COMPLAINT] Error inserting payment complaint:', insertErr);
+      return res.status(500).json({ success: false, error: insertErr.message });
+    }
+
+    // If matching deposit transaction exists, update its UTR
+    try {
+      await supabase
+        .from('deposit_transactions')
+        .update({
+          utr: cleanUtr,
+          updated_at: nowIso,
+        })
+        .eq('traceno', cleanTraceno);
+    } catch (_e) {}
+
+    // Send user notification
+    try {
+      await supabase.from('notifications').insert({
+        user_id: userId,
+        title: 'Deposit Complaint Submitted 📋',
+        message: `Your deposit complaint for ₹${numAmount.toFixed(2)} (UTR: ${cleanUtr}) has been received. Our review team is verifying it.`,
+        type: 'SYSTEM',
+        read: false,
+        created_at: nowIso,
+      });
+    } catch (_e) {}
+
+    return res.json({
+      success: true,
+      complaintId: complaint.id,
+      message: 'Deposit complaint submitted successfully. It will be reviewed by admin shortly.',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 2. Fetch all deposit complaints with authorized signed proof URLs (Admin)
+app.get('/api/admin/complaints', async (req, res) => {
+  if (!supabase) return res.json({ success: true, data: [] });
+  try {
+    const [paymentsRes, profilesRes] = await Promise.all([
+      supabase
+        .from('payments')
+        .select('*')
+        .or('payment_type.eq.DEPOSIT_COMPLAINT,payment_method.eq.PAY_COMPLAINT')
+        .order('created_at', { ascending: false }),
+      supabase.from('profiles').select('id, user_id, username, whatsapp_no, membership_number, phone'),
+    ]);
+
+    if (paymentsRes.error) {
+      console.error('[API /api/admin/complaints] payments error:', paymentsRes.error);
+      return res.status(500).json({ success: false, error: paymentsRes.error.message });
+    }
+
+    const profileMap = new Map<string, any>();
+    if (profilesRes.data) {
+      profilesRes.data.forEach((p: any) => {
+        if (p.user_id) profileMap.set(p.user_id, p);
+        if (p.id) profileMap.set(p.id, p);
+      });
+    }
+
+    const formatted = await Promise.all((paymentsRes.data || []).map(async (p: any) => {
+      const prof = profileMap.get(p.user_id) || {};
+      const rawProof = p.proof_url || p.receipt_url || '';
+      const signedProof = await getSignedProofUrl(rawProof, 3600);
+
+      return {
+        id: p.id,
+        userId: p.user_id,
+        username: prof.username || 'User',
+        userMobile: prof.whatsapp_no || prof.phone || '',
+        membershipNumber: prof.membership_number || '',
+        orderId: p.order_id || p.reference_id || 'N/A',
+        traceno: p.order_id || p.reference_id || 'N/A',
+        amount: Number(p.amount || 0),
+        utr: p.utr || p.utr_number || '',
+        proofUrl: signedProof,
+        receiptUrl: signedProof,
+        status: p.status,
+        adminId: p.admin_id,
+        adminNote: p.rejection_reason,
+        rejectionReason: p.rejection_reason,
+        verifiedAt: p.verified_at,
+        verifiedBy: p.verified_by,
+        createdAt: p.created_at,
+        updatedAt: p.updated_at,
+      };
+    }));
+
+    return res.json({ success: true, data: formatted });
+  } catch (err: any) {
+    console.error('[API /api/admin/complaints] catch err:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3. User request to generate authorized signed URL for their own complaint screenshot
+app.post('/api/deposit-complaint/signed-url', async (req, res) => {
+  const { userId, complaintId, filePath } = req.body;
+  if (!userId) {
+    return res.status(400).json({ success: false, error: 'User ID is required.' });
+  }
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database service unavailable.' });
+  }
+
+  try {
+    // If complaintId is supplied, verify ownership from payments table
+    if (complaintId) {
+      const { data: complaint, error } = await supabase
+        .from('payments')
+        .select('user_id, proof_url, receipt_url')
+        .eq('id', complaintId)
+        .maybeSingle();
+
+      if (error || !complaint) {
+        return res.status(404).json({ success: false, error: 'Complaint not found.' });
+      }
+
+      if (complaint.user_id !== userId) {
+        return res.status(403).json({ success: false, error: 'Unauthorized: Access denied to another user\'s evidence.' });
+      }
+
+      const targetPath = complaint.proof_url || complaint.receipt_url;
+      const signedUrl = await getSignedProofUrl(targetPath, 3600);
+      return res.json({ success: true, signedUrl });
+    }
+
+    // If direct filePath is supplied, verify ownership via user folder prefix
+    if (filePath) {
+      const cleanPath = String(filePath).trim();
+      if (!cleanPath.startsWith(`${userId}/`)) {
+        return res.status(403).json({ success: false, error: 'Unauthorized: Access denied to another user\'s evidence.' });
+      }
+      const signedUrl = await getSignedProofUrl(cleanPath, 3600);
+      return res.json({ success: true, signedUrl });
+    }
+
+    return res.status(400).json({ success: false, error: 'Either complaintId or filePath must be provided.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3. Approve deposit complaint (Admin -> Safely & Atomically Credits Topup/Recharge Wallet)
+app.post('/api/admin/approve-complaint', async (req, res) => {
+  const { complaintId, adminId = 'adm_root', adminNote = '' } = req.body;
+  if (!complaintId || !supabase) {
+    return res.status(400).json({ success: false, error: 'Missing complaintId' });
+  }
+
+  try {
+    const { data: complaint, error: fetchErr } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('id', complaintId)
+      .single();
+
+    if (fetchErr || !complaint) {
+      return res.status(404).json({ success: false, error: 'Complaint not found.' });
+    }
+
+    if (complaint.status === 'PAID' || complaint.status === 'APPROVED') {
+      return res.status(400).json({ success: false, error: 'This complaint has already been approved and credited.' });
+    }
+
+    const amount = Number(complaint.amount);
+    const userId = complaint.user_id;
+    const utr = complaint.utr || complaint.utr_number || 'N/A';
+    const traceno = complaint.order_id || complaint.reference_id || complaint.id;
+    const nowIso = new Date().toISOString();
+
+    // 1. Fetch user wallet
+    const { data: wallet } = await supabase
+      .from('wallets')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    const curRecharge = Number(wallet?.recharge_balance || 0);
+    const curWithdraw = Number(wallet?.withdraw_balance || 0);
+    const newRecharge = +(curRecharge + amount).toFixed(2);
+    const newAvail = +(newRecharge + curWithdraw).toFixed(2);
+
+    if (wallet) {
+      await supabase
+        .from('wallets')
+        .update({
+          recharge_balance: newRecharge,
+          available_balance: newAvail,
+          updated_at: nowIso,
+        })
+        .eq('user_id', userId);
+    } else {
+      await supabase.from('wallets').insert({
+        user_id: userId,
+        recharge_balance: newRecharge,
+        withdraw_balance: 0,
+        available_balance: newRecharge,
+        pending_balance: 0,
+        total_earned: 0,
+        total_withdrawn: 0,
+      });
+    }
+
+    // 2. Insert into wallet_ledger (AUTHORITATIVE RECORD)
+    await supabase.from('wallet_ledger').insert({
+      user_id: userId,
+      wallet_type: 'RECHARGE',
+      transaction_type: 'DEPOSIT_COMPLAINT_APPROVED',
+      amount: amount,
+      direction: 'CREDIT',
+      reference_type: 'DEPOSIT_COMPLAINT',
+      reference_id: `COMPLAINT-${complaint.id}`,
+      balance_before: curRecharge,
+      balance_after: newRecharge,
+      description: `⚡ Deposit Complaint Approved: ₹${amount.toFixed(2)} (UTR: ${utr}) Ref: ${traceno}`,
+      created_at: nowIso,
+    });
+
+    // 3. Insert into wallet_transactions
+    await supabase.from('wallet_transactions').insert({
+      user_id: userId,
+      type: 'RECHARGE',
+      amount: amount,
+      balance_before: curRecharge,
+      balance_after: newRecharge,
+      wallet_type: 'RECHARGE',
+      status: 'Completed',
+      reference_id: `COMPLAINT-${complaint.id}`,
+      description: `⚡ Deposit Complaint Approved: ₹${amount.toFixed(2)} (UTR: ${utr})`,
+      created_at: nowIso,
+    });
+
+    // 4. Update payments table
+    const isValidUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+    const { error: payUpdateErr } = await supabase
+      .from('payments')
+      .update({
+        status: 'PAID',
+        verified_at: nowIso,
+        verified_by: adminId,
+        admin_id: isValidUuid(adminId) ? adminId : null,
+        rejection_reason: adminNote ? `Approved: ${adminNote}` : 'Approved by Admin',
+        updated_at: nowIso,
+      })
+      .eq('id', complaintId);
+
+    if (payUpdateErr) {
+      console.warn('[COMPLAINT APPROVE] Notice updating payments status:', payUpdateErr.message);
+    }
+
+    // 5. Update deposit_transactions if matching traceno exists
+    if (traceno) {
+      await supabase
+        .from('deposit_transactions')
+        .update({
+          status: 'SUCCESS',
+          utr: utr,
+          completed_at: nowIso,
+          updated_at: nowIso,
+        })
+        .eq('traceno', traceno);
+    }
+
+    // 6. Notify user
+    await supabase.from('notifications').insert({
+      user_id: userId,
+      title: 'Deposit Complaint Approved! ✅',
+      message: `Your deposit complaint of ₹${amount.toFixed(2)} (UTR: ${utr}) has been approved and credited to your Recharge Wallet.`,
+      type: 'DEPOSIT',
+      read: false,
+      created_at: nowIso,
+    });
+
+    // 7. Record admin audit log
+    try {
+      await supabase.from('admin_audit_logs').insert({
+        admin_user_id: adminId,
+        action: 'APPROVE_DEPOSIT_COMPLAINT',
+        target_type: 'payment',
+        target_id: complaintId,
+        description: `Approved deposit complaint of ₹${amount} for user ${userId} (UTR: ${utr})`,
+        details: { complaintId, amount, utr, adminNote, userId },
+        created_at: nowIso,
+      });
+    } catch (_e) {}
+
+    return res.json({
+      success: true,
+      message: `Deposit complaint for ₹${amount} approved successfully. Topup Wallet credited.`,
+    });
+  } catch (err: any) {
+    console.error('[APPROVE COMPLAINT ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 4. Reject deposit complaint (Admin)
+app.post('/api/admin/reject-complaint', async (req, res) => {
+  const { complaintId, rejectionReason = 'Payment verification failed', adminId = 'adm_root' } = req.body;
+  if (!complaintId || !supabase) {
+    return res.status(400).json({ success: false, error: 'Missing complaintId' });
+  }
+
+  try {
+    const { data: complaint, error: fetchErr } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('id', complaintId)
+      .single();
+
+    if (fetchErr || !complaint) {
+      return res.status(404).json({ success: false, error: 'Complaint not found.' });
+    }
+
+    if (complaint.status === 'PAID' || complaint.status === 'APPROVED') {
+      return res.status(400).json({ success: false, error: 'Cannot reject a complaint that has already been approved and credited.' });
+    }
+
+    const nowIso = new Date().toISOString();
+    const amount = Number(complaint.amount);
+    const userId = complaint.user_id;
+
+    // Update payments table
+    const isValidUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+    const { error: payUpdateErr } = await supabase
+      .from('payments')
+      .update({
+        status: 'REJECTED',
+        rejection_reason: rejectionReason,
+        verified_at: nowIso,
+        verified_by: adminId,
+        admin_id: isValidUuid(adminId) ? adminId : null,
+        updated_at: nowIso,
+      })
+      .eq('id', complaintId);
+
+    if (payUpdateErr) {
+      console.warn('[COMPLAINT REJECT] Notice updating payments status:', payUpdateErr.message);
+    }
+
+    // If matching deposit transaction exists, update failure reason
+    const traceno = complaint.order_id || complaint.reference_id;
+    if (traceno) {
+      await supabase
+        .from('deposit_transactions')
+        .update({
+          failure_reason: rejectionReason,
+          updated_at: nowIso,
+        })
+        .eq('traceno', traceno);
+    }
+
+    // Notify user
+    await supabase.from('notifications').insert({
+      user_id: userId,
+      title: 'Deposit Complaint Update',
+      message: `Your deposit complaint of ₹${amount.toFixed(2)} was not approved. Reason: ${rejectionReason}`,
+      type: 'SYSTEM',
+      read: false,
+      created_at: nowIso,
+    });
+
+    // Record audit log
+    try {
+      await supabase.from('admin_audit_logs').insert({
+        admin_user_id: adminId,
+        action: 'REJECT_DEPOSIT_COMPLAINT',
+        target_type: 'payment',
+        target_id: complaintId,
+        description: `Rejected deposit complaint of ₹${amount} for user ${userId}. Reason: ${rejectionReason}`,
+        details: { complaintId, amount, rejectionReason, userId },
+        created_at: nowIso,
+      });
+    } catch (_e) {}
+
+    return res.json({
+      success: true,
+      message: 'Deposit complaint rejected.',
+    });
+  } catch (err: any) {
+    console.error('[REJECT COMPLAINT ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==============================================================================
+// SITE SETTINGS, RECHARGE SETTINGS & USDT CONFIGURATION & DEPOSITS
+// ==============================================================================
+
+// Helper for USDT private screenshots signed URLs
+async function getSignedUsdtProofUrl(rawPathOrUrl: string | null | undefined, expiresInSeconds = 3600): Promise<string> {
+  if (!rawPathOrUrl || !supabase) return '';
+  const str = String(rawPathOrUrl).trim();
+  if (!str) return '';
+  if (str.startsWith('data:image')) return str;
+
+  let objectKey = str;
+  if (str.includes('/usdt-deposits/')) {
+    const parts = str.split('/usdt-deposits/');
+    if (parts[1]) {
+      objectKey = parts[1].split('?')[0];
+    }
+  } else if (str.startsWith('http://') || str.startsWith('https://')) {
+    return str;
+  }
+
+  try {
+    const { data: signedData, error } = await supabase.storage
+      .from('usdt-deposits')
+      .createSignedUrl(objectKey, expiresInSeconds);
+    if (!error && signedData?.signedUrl) {
+      return signedData.signedUrl;
+    }
+  } catch (err) {
+    console.warn('[USDT SIGNED URL] Failed to create signed URL for:', objectKey, err);
+  }
+  return str;
+}
+
+// 1. Get Site Settings
+app.get('/api/site-settings', async (req, res) => {
+  if (!supabase) {
+    return res.json({
+      success: true,
+      data: {
+        siteTitle: 'GAINPOWER',
+        logoUrl: '',
+        faviconUrl: '',
+      },
+    });
+  }
+  try {
+    const { data, error } = await supabase
+      .from('admin_settings')
+      .select('value')
+      .eq('id', 'site_settings')
+      .maybeSingle();
+
+    const config = data?.value || {
+      siteTitle: 'GAINPOWER',
+      logoUrl: '',
+      faviconUrl: '',
+    };
+    return res.json({ success: true, data: config });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 2. Save Site Settings (Admin)
+app.post('/api/admin/site-settings', async (req, res) => {
+  const { config, adminId = 'adm_root' } = req.body;
+  if (!config) return res.status(400).json({ success: false, error: 'Missing site settings configuration.' });
+  if (!supabase) return res.status(500).json({ success: false, error: 'Database service unavailable.' });
+
+  try {
+    const nowIso = new Date().toISOString();
+    const payload = {
+      siteTitle: config.siteTitle || 'GAINPOWER',
+      logoUrl: config.logoUrl || '',
+      faviconUrl: config.faviconUrl || '',
+      updatedAt: nowIso,
+    };
+
+    const { error } = await supabase
+      .from('admin_settings')
+      .upsert({
+        id: 'site_settings',
+        value: payload,
+        updated_at: nowIso,
+      });
+
+    if (error) throw error;
+
+    try {
+      await supabase.from('admin_audit_logs').insert({
+        admin_user_id: adminId,
+        action: 'UPDATE_SITE_SETTINGS',
+        target_type: 'settings',
+        target_id: 'site_settings',
+        description: `Updated site settings: title="${payload.siteTitle}", logo="${payload.logoUrl ? 'configured' : 'empty'}", favicon="${payload.faviconUrl ? 'configured' : 'empty'}"`,
+        details: payload,
+        created_at: nowIso,
+      });
+    } catch (_e) {}
+
+    return res.json({ success: true, message: 'Site settings updated successfully.', data: payload });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3. Get Recharge Settings
+app.get('/api/recharge-settings', async (req, res) => {
+  if (!supabase) {
+    return res.json({
+      success: true,
+      data: {
+        presetAmounts: [500, 1500, 2000, 3000, 3500, 5000, 7000, 10000, 20000, 30000],
+        minRecharge: 100,
+        maxRecharge: 50000,
+        isEnabled: true,
+      },
+    });
+  }
+  try {
+    const { data, error } = await supabase
+      .from('admin_settings')
+      .select('value')
+      .eq('id', 'recharge_settings')
+      .maybeSingle();
+
+    const config = data?.value || {
+      presetAmounts: [500, 1500, 2000, 3000, 3500, 5000, 7000, 10000, 20000, 30000],
+      minRecharge: 100,
+      maxRecharge: 50000,
+      isEnabled: true,
+    };
+    return res.json({ success: true, data: config });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 4. Save Recharge Settings (Admin)
+app.post('/api/admin/recharge-settings', async (req, res) => {
+  const { config, adminId = 'adm_root' } = req.body;
+  if (!config) return res.status(400).json({ success: false, error: 'Missing recharge configuration.' });
+  if (!supabase) return res.status(500).json({ success: false, error: 'Database service unavailable.' });
+
+  try {
+    const nowIso = new Date().toISOString();
+    const cleanPresets = Array.isArray(config.presetAmounts)
+      ? config.presetAmounts.map((n: any) => Number(n)).filter((n: number) => !isNaN(n) && n > 0)
+      : [500, 1500, 2000, 3000, 3500, 5000, 7000, 10000, 20000, 30000];
+
+    const payload = {
+      presetAmounts: cleanPresets.length > 0 ? cleanPresets : [500, 1500, 2000, 3000, 3500, 5000, 7000, 10000, 20000, 30000],
+      minRecharge: Math.max(1, Number(config.minRecharge) || 100),
+      maxRecharge: Math.max(100, Number(config.maxRecharge) || 50000),
+      isEnabled: config.isEnabled !== false,
+      updatedAt: nowIso,
+    };
+
+    const { error } = await supabase
+      .from('admin_settings')
+      .upsert({
+        id: 'recharge_settings',
+        value: payload,
+        updated_at: nowIso,
+      });
+
+    if (error) throw error;
+
+    try {
+      await supabase.from('admin_audit_logs').insert({
+        admin_user_id: adminId,
+        action: 'UPDATE_RECHARGE_SETTINGS',
+        target_type: 'settings',
+        target_id: 'recharge_settings',
+        description: `Updated recharge settings: min=₹${payload.minRecharge}, max=₹${payload.maxRecharge}, presets=[${payload.presetAmounts.join(', ')}]`,
+        details: payload,
+        created_at: nowIso,
+      });
+    } catch (_e) {}
+
+    return res.json({ success: true, message: 'Recharge settings updated successfully.', data: payload });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 5. Get USDT Settings
+app.get('/api/usdt-settings', async (req, res) => {
+  if (!supabase) {
+    return res.json({
+      success: true,
+      data: {
+        isEnabled: true,
+        usdtRate: 100,
+        trc20Address: '',
+        bep20Address: '',
+        qrUrl: '',
+      },
+    });
+  }
+  try {
+    const { data, error } = await supabase
+      .from('admin_settings')
+      .select('value')
+      .eq('id', 'usdt_settings')
+      .maybeSingle();
+
+    const config = data?.value || {
+      isEnabled: true,
+      usdtRate: 100,
+      trc20Address: '',
+      bep20Address: '',
+      qrUrl: '',
+    };
+    return res.json({ success: true, data: config });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 6. Save USDT Settings (Admin)
+app.post('/api/admin/usdt-settings', async (req, res) => {
+  const { config, adminId = 'adm_root' } = req.body;
+  if (!config) return res.status(400).json({ success: false, error: 'Missing USDT configuration.' });
+  if (!supabase) return res.status(500).json({ success: false, error: 'Database service unavailable.' });
+
+  try {
+    const nowIso = new Date().toISOString();
+    const payload = {
+      isEnabled: config.isEnabled !== false,
+      usdtRate: Math.max(0.01, Number(config.usdtRate) || 100),
+      trc20Address: String(config.trc20Address || '').trim(),
+      bep20Address: String(config.bep20Address || '').trim(),
+      qrUrl: String(config.qrUrl || '').trim(),
+      updatedAt: nowIso,
+    };
+
+    const { error } = await supabase
+      .from('admin_settings')
+      .upsert({
+        id: 'usdt_settings',
+        value: payload,
+        updated_at: nowIso,
+      });
+
+    if (error) throw error;
+
+    try {
+      await supabase.from('admin_audit_logs').insert({
+        admin_user_id: adminId,
+        action: 'UPDATE_USDT_SETTINGS',
+        target_type: 'settings',
+        target_id: 'usdt_settings',
+        description: `Updated USDT settings: rate=₹${payload.usdtRate}, enabled=${payload.isEnabled}, TRC20="${payload.trc20Address.slice(0, 8)}...", BEP20="${payload.bep20Address.slice(0, 8)}..."`,
+        details: payload,
+        created_at: nowIso,
+      });
+    } catch (_e) {}
+
+    return res.json({ success: true, message: 'USDT settings updated successfully.', data: payload });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 7. Submit USDT Deposit (User)
+app.post('/api/usdt-deposit', async (req, res) => {
+  const {
+    userId,
+    amountInr,
+    usdtAmount,
+    usdtRate,
+    network = 'TRC20',
+    walletAddress = '',
+    txHash = '',
+    proofPath = '',
+    note = '',
+  } = req.body;
+
+  if (!userId || !amountInr || !proofPath) {
+    return res.status(400).json({
+      success: false,
+      error: 'User ID, INR Deposit Amount, and Payment Screenshot proof are required.',
+    });
+  }
+
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database service unavailable.' });
+  }
+
+  try {
+    const cleanInr = Number(amountInr);
+    if (isNaN(cleanInr) || cleanInr <= 0) {
+      return res.status(400).json({ success: false, error: 'Invalid deposit amount.' });
+    }
+
+    const cleanNetwork = String(network).toUpperCase() === 'BEP20' ? 'BEP20' : 'TRC20';
+    const cleanTxHash = String(txHash || '').trim();
+    const cleanRate = Number(usdtRate) > 0 ? Number(usdtRate) : 100;
+    const calcUsdt = Number(usdtAmount) > 0 ? Number(usdtAmount) : +(cleanInr / cleanRate).toFixed(6);
+
+    const nowIso = new Date().toISOString();
+    const orderId = `USDT${Date.now()}${Math.floor(1000 + Math.random() * 9000)}`;
+
+    const { data: deposit, error: insertErr } = await supabase
+      .from('payments')
+      .insert({
+        user_id: userId,
+        order_id: orderId,
+        amount: cleanInr,
+        payment_type: 'USDT_DEPOSIT',
+        payment_method: cleanNetwork,
+        utr: cleanTxHash || `TX-${orderId}`,
+        proof_url: proofPath,
+        receipt_url: proofPath,
+        reference_id: `USDT:${calcUsdt}@${cleanRate}${walletAddress ? '|' + walletAddress : ''}`,
+        status: 'PENDING',
+        rejection_reason: note ? `Note: ${note}` : null,
+        created_at: nowIso,
+        updated_at: nowIso,
+      })
+      .select('id')
+      .single();
+
+    if (insertErr || !deposit) {
+      console.error('[USDT DEPOSIT INSERT ERROR]', insertErr);
+      return res.status(500).json({ success: false, error: insertErr?.message || 'Failed to submit USDT deposit.' });
+    }
+
+    // Insert pending record in wallet_transactions for user visibility
+    try {
+      await supabase.from('wallet_transactions').insert({
+        user_id: userId,
+        type: 'RECHARGE',
+        amount: cleanInr,
+        balance_before: 0,
+        balance_after: 0,
+        wallet_type: 'TOPUP',
+        status: 'Pending',
+        reference_id: `USDT-${deposit.id}`,
+        description: `USDT Recharge Pending: ₹${cleanInr} (${calcUsdt} USDT via ${cleanNetwork})`,
+        created_at: nowIso,
+      });
+    } catch (_wErr) {}
+
+    return res.json({
+      success: true,
+      depositId: deposit.id,
+      message: 'USDT deposit submitted successfully. It will be reviewed by admin shortly.',
+    });
+  } catch (err: any) {
+    console.error('[API /api/usdt-deposit] catch err:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 8. Get User USDT Deposits
+app.get('/api/usdt-deposits/user/:userId', async (req, res) => {
+  const { userId } = req.params;
+  if (!userId || !supabase) return res.json({ success: true, data: [] });
+
+  try {
+    const { data: deposits, error } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('payment_type', 'USDT_DEPOSIT')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    const formatted = await Promise.all(
+      (deposits || []).map(async (p: any) => {
+        let usdtAmount = 0;
+        let usdtRate = 100;
+        let walletAddress = '';
+
+        if (p.reference_id && p.reference_id.startsWith('USDT:')) {
+          const parts = p.reference_id.replace('USDT:', '').split('|');
+          const [uAmt, uRate] = (parts[0] || '').split('@');
+          usdtAmount = Number(uAmt) || 0;
+          usdtRate = Number(uRate) || 100;
+          walletAddress = parts[1] || '';
+        } else {
+          usdtAmount = +(Number(p.amount) / 100).toFixed(4);
+        }
+
+        const signedUrl = await getSignedUsdtProofUrl(p.proof_url || p.receipt_url, 3600);
+
+        return {
+          id: p.id,
+          userId: p.user_id,
+          amountInr: Number(p.amount),
+          usdtAmount,
+          usdtRate,
+          network: p.payment_method || 'TRC20',
+          walletAddress,
+          txHash: p.utr && !p.utr.startsWith('TX-USDT') ? p.utr : '',
+          proofUrl: p.proof_url || p.receipt_url,
+          signedProofUrl: signedUrl,
+          status: p.status === 'PAID' ? 'APPROVED' : p.status,
+          adminNote: p.rejection_reason,
+          reviewedAt: p.verified_at,
+          reviewedBy: p.verified_by,
+          createdAt: p.created_at,
+          updatedAt: p.updated_at,
+        };
+      })
+    );
+
+    return res.json({ success: true, data: formatted });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 9. Get Admin USDT Deposits List
+app.get('/api/admin/usdt-deposits', async (req, res) => {
+  if (!supabase) return res.json({ success: true, data: [] });
+
+  try {
+    const [depositsRes, profilesRes] = await Promise.all([
+      supabase
+        .from('payments')
+        .select('*')
+        .eq('payment_type', 'USDT_DEPOSIT')
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('profiles')
+        .select('id, user_id, username, phone, whatsapp_no, membership_number'),
+    ]);
+
+    if (depositsRes.error) {
+      return res.status(500).json({ success: false, error: depositsRes.error.message });
+    }
+
+    const profileMap = new Map<string, any>();
+    if (profilesRes.data) {
+      profilesRes.data.forEach((p: any) => {
+        if (p.user_id) profileMap.set(p.user_id, p);
+        if (p.id) profileMap.set(p.id, p);
+      });
+    }
+
+    const formatted = await Promise.all(
+      (depositsRes.data || []).map(async (p: any) => {
+        const prof = profileMap.get(p.user_id) || {};
+        let usdtAmount = 0;
+        let usdtRate = 100;
+        let walletAddress = '';
+
+        if (p.reference_id && p.reference_id.startsWith('USDT:')) {
+          const parts = p.reference_id.replace('USDT:', '').split('|');
+          const [uAmt, uRate] = (parts[0] || '').split('@');
+          usdtAmount = Number(uAmt) || 0;
+          usdtRate = Number(uRate) || 100;
+          walletAddress = parts[1] || '';
+        } else {
+          usdtAmount = +(Number(p.amount) / 100).toFixed(4);
+        }
+
+        const signedUrl = await getSignedUsdtProofUrl(p.proof_url || p.receipt_url, 3600);
+
+        return {
+          id: p.id,
+          userId: p.user_id,
+          username: prof.username || 'User',
+          phone: prof.phone || prof.whatsapp_no || '',
+          membershipNumber: prof.membership_number || '',
+          amountInr: Number(p.amount),
+          usdtAmount,
+          usdtRate,
+          network: p.payment_method || 'TRC20',
+          walletAddress,
+          txHash: p.utr && !p.utr.startsWith('TX-USDT') ? p.utr : '',
+          proofUrl: signedUrl || p.proof_url || p.receipt_url,
+          signedProofUrl: signedUrl,
+          status: p.status === 'PAID' ? 'APPROVED' : p.status,
+          adminNote: p.rejection_reason,
+          reviewedAt: p.verified_at,
+          reviewedBy: p.verified_by,
+          createdAt: p.created_at,
+          updatedAt: p.updated_at,
+        };
+      })
+    );
+
+    return res.json({ success: true, data: formatted });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 10. User request to generate signed URL for own USDT screenshot
+app.post('/api/usdt-deposit/signed-url', async (req, res) => {
+  const { userId, depositId, filePath } = req.body;
+  if (!userId) {
+    return res.status(400).json({ success: false, error: 'User ID is required.' });
+  }
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database service unavailable.' });
+  }
+
+  try {
+    if (depositId) {
+      const { data: deposit, error } = await supabase
+        .from('payments')
+        .select('user_id, proof_url, receipt_url')
+        .eq('id', depositId)
+        .maybeSingle();
+
+      if (error || !deposit) {
+        return res.status(404).json({ success: false, error: 'Deposit record not found.' });
+      }
+
+      if (deposit.user_id !== userId) {
+        return res.status(403).json({ success: false, error: 'Unauthorized: Access denied to another user\'s evidence.' });
+      }
+
+      const targetPath = deposit.proof_url || deposit.receipt_url;
+      const signedUrl = await getSignedUsdtProofUrl(targetPath, 3600);
+      return res.json({ success: true, signedUrl });
+    }
+
+    if (filePath) {
+      const cleanPath = String(filePath).trim();
+      if (!cleanPath.startsWith(`${userId}/`)) {
+        return res.status(403).json({ success: false, error: 'Unauthorized: Access denied to another user\'s evidence.' });
+      }
+      const signedUrl = await getSignedUsdtProofUrl(cleanPath, 3600);
+      return res.json({ success: true, signedUrl });
+    }
+
+    return res.status(400).json({ success: false, error: 'Either depositId or filePath must be provided.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 11. Admin Approve USDT Deposit (Exact-Once Settlement & Wallet Credit)
+app.post('/api/admin/approve-usdt-deposit', async (req, res) => {
+  const { depositId, adminId = 'adm_root', adminNote = '' } = req.body;
+  if (!depositId || !supabase) {
+    return res.status(400).json({ success: false, error: 'Missing depositId' });
+  }
+
+  try {
+    const { data: deposit, error: fetchErr } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('id', depositId)
+      .single();
+
+    if (fetchErr || !deposit) {
+      return res.status(404).json({ success: false, error: 'USDT Deposit not found.' });
+    }
+
+    if (deposit.status === 'PAID' || deposit.status === 'APPROVED') {
+      return res.status(400).json({ success: false, error: 'This USDT deposit has already been approved and credited.' });
+    }
+
+    const amount = Number(deposit.amount);
+    const userId = deposit.user_id;
+    const network = deposit.payment_method || 'TRC20';
+    const txHash = deposit.utr || 'N/A';
+    const orderId = deposit.order_id || `USDT-${deposit.id}`;
+    const nowIso = new Date().toISOString();
+
+    // 1. Fetch and credit user wallet
+    const { data: wallet } = await supabase
+      .from('wallets')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    const curRecharge = Number(wallet?.recharge_balance || 0);
+    const curWithdraw = Number(wallet?.withdraw_balance || 0);
+    const newRecharge = +(curRecharge + amount).toFixed(2);
+    const newAvail = +(newRecharge + curWithdraw).toFixed(2);
+
+    if (wallet) {
+      await supabase
+        .from('wallets')
+        .update({
+          recharge_balance: newRecharge,
+          available_balance: newAvail,
+          updated_at: nowIso,
+        })
+        .eq('user_id', userId);
+    } else {
+      await supabase.from('wallets').insert({
+        user_id: userId,
+        recharge_balance: newRecharge,
+        withdraw_balance: 0,
+        available_balance: newRecharge,
+        pending_balance: 0,
+        total_earned: 0,
+        total_withdrawn: 0,
+      });
+    }
+
+    // 2. Insert into wallet_ledger
+    await supabase.from('wallet_ledger').insert({
+      user_id: userId,
+      wallet_type: 'RECHARGE',
+      transaction_type: 'USDT_DEPOSIT_APPROVED',
+      amount: amount,
+      direction: 'CREDIT',
+      reference_type: 'USDT_DEPOSIT',
+      reference_id: `USDT_DEP-${deposit.id}`,
+      balance_before: curRecharge,
+      balance_after: newRecharge,
+      description: `⚡ USDT Deposit Approved: ₹${amount.toFixed(2)} (${network} TXID: ${txHash})`,
+      created_at: nowIso,
+    });
+
+    // 3. Insert into wallet_transactions
+    await supabase.from('wallet_transactions').insert({
+      user_id: userId,
+      type: 'RECHARGE',
+      amount: amount,
+      balance_before: curRecharge,
+      balance_after: newRecharge,
+      wallet_type: 'TOPUP',
+      status: 'Completed',
+      reference_id: `USDT_DEP-${deposit.id}`,
+      description: `⚡ USDT Deposit Approved: ₹${amount.toFixed(2)} (${network})`,
+      created_at: nowIso,
+    });
+
+    // 4. Update payments table
+    const isValidUuid = (val: string) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+
+    const { error: payUpdateErr } = await supabase
+      .from('payments')
+      .update({
+        status: 'PAID',
+        verified_at: nowIso,
+        verified_by: adminId,
+        admin_id: isValidUuid(adminId) ? adminId : null,
+        rejection_reason: adminNote ? `Approved: ${adminNote}` : 'Approved by Admin',
+        updated_at: nowIso,
+      })
+      .eq('id', depositId);
+
+    if (payUpdateErr) {
+      console.warn('[USDT APPROVE] Notice updating payments status:', payUpdateErr.message);
+    }
+
+    // 5. Referral commission distribution
+    try {
+      await processReferralCommissionsServer(supabase, userId, amount, orderId);
+    } catch (_refErr) {
+      console.warn('[USDT APPROVE] Referral commission warning:', _refErr);
+    }
+
+    // 6. Notify user
+    await supabase.from('notifications').insert({
+      user_id: userId,
+      title: 'USDT Recharge Approved! 💰',
+      message: `Your USDT deposit of ₹${amount.toFixed(2)} has been verified and added to your Recharge Wallet.`,
+      type: 'DEPOSIT',
+      read: false,
+      created_at: nowIso,
+    });
+
+    // 7. Record admin audit log
+    try {
+      await supabase.from('admin_audit_logs').insert({
+        admin_user_id: adminId,
+        action: 'APPROVE_USDT_DEPOSIT',
+        target_type: 'payment',
+        target_id: depositId,
+        description: `Approved USDT deposit of ₹${amount} for user ${userId} (${network}, TX: ${txHash})`,
+        details: { depositId, amount, network, txHash, userId, adminNote },
+        created_at: nowIso,
+      });
+    } catch (_e) {}
+
+    return res.json({
+      success: true,
+      message: 'USDT deposit approved successfully. Recharge wallet credited.',
+    });
+  } catch (err: any) {
+    console.error('[APPROVE USDT ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 12. Admin Reject USDT Deposit
+app.post('/api/admin/reject-usdt-deposit', async (req, res) => {
+  const { depositId, rejectionReason = 'Screenshot or transaction invalid', adminId = 'adm_root' } = req.body;
+  if (!depositId || !supabase) {
+    return res.status(400).json({ success: false, error: 'Missing depositId' });
+  }
+
+  try {
+    const { data: deposit, error: fetchErr } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('id', depositId)
+      .single();
+
+    if (fetchErr || !deposit) {
+      return res.status(404).json({ success: false, error: 'USDT deposit not found.' });
+    }
+
+    if (deposit.status === 'PAID' || deposit.status === 'APPROVED') {
+      return res.status(400).json({ success: false, error: 'Cannot reject an already approved deposit.' });
+    }
+
+    if (deposit.status === 'REJECTED') {
+      return res.status(400).json({ success: false, error: 'Deposit has already been rejected.' });
+    }
+
+    const amount = Number(deposit.amount);
+    const userId = deposit.user_id;
+    const nowIso = new Date().toISOString();
+    const isValidUuid = (val: string) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+
+    const { error: payUpdateErr } = await supabase
+      .from('payments')
+      .update({
+        status: 'REJECTED',
+        rejection_reason: rejectionReason,
+        verified_at: nowIso,
+        verified_by: adminId,
+        admin_id: isValidUuid(adminId) ? adminId : null,
+        updated_at: nowIso,
+      })
+      .eq('id', depositId);
+
+    if (payUpdateErr) {
+      console.warn('[USDT REJECT] Notice updating payments status:', payUpdateErr.message);
+    }
+
+    // Notify user
+    await supabase.from('notifications').insert({
+      user_id: userId,
+      title: 'USDT Deposit Update',
+      message: `Your USDT deposit of ₹${amount.toFixed(2)} was not approved. Reason: ${rejectionReason}`,
+      type: 'SYSTEM',
+      read: false,
+      created_at: nowIso,
+    });
+
+    // Record audit log
+    try {
+      await supabase.from('admin_audit_logs').insert({
+        admin_user_id: adminId,
+        action: 'REJECT_USDT_DEPOSIT',
+        target_type: 'payment',
+        target_id: depositId,
+        description: `Rejected USDT deposit of ₹${amount} for user ${userId}. Reason: ${rejectionReason}`,
+        details: { depositId, amount, rejectionReason, userId },
+        created_at: nowIso,
+      });
+    } catch (_e) {}
+
+    return res.json({
+      success: true,
+      message: 'USDT deposit rejected.',
+    });
+  } catch (err: any) {
+    console.error('[REJECT USDT ERROR]', err);
     return res.status(500).json({ success: false, error: err.message });
   }
 });

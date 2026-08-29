@@ -44,6 +44,9 @@ import { AdminAuditTab } from './AdminAuditTab';
 import { AdminGiftCodesTab } from './AdminGiftCodesTab';
 import { AdminVipLevelsTab } from './AdminVipLevelsTab';
 import { AdminAboutPlatformTab } from './AdminAboutPlatformTab';
+import { AdminComplaintsTab } from './AdminComplaintsTab';
+import AdminUsdtDepositsTab from './AdminUsdtDepositsTab';
+import { AlertCircle, Coins } from 'lucide-react';
 
 interface AdminDashboardPageProps {
   session: AdminSession;
@@ -61,6 +64,8 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     if (path.includes('/adminbank/users')) return 'USERS';
     if (path.includes('/adminbank/plans')) return 'PLANS';
     if (path.includes('/adminbank/vip-levels') || path.includes('/adminbank/vip')) return 'VIP_LEVELS';
+    if (path.includes('/adminbank/complaints') || path.includes('/adminbank/deposit-problems') || path.includes('/adminbank/deposit-complaints')) return 'COMPLAINTS';
+    if (path.includes('/adminbank/usdt') || path.includes('/adminbank/usdt-deposits')) return 'USDT_DEPOSITS';
     if (path.includes('/adminbank/recharge')) return 'RECHARGE';
     if (path.includes('/adminbank/withdrawals')) return 'WITHDRAWALS';
     if (path.includes('/adminbank/transactions')) return 'TRANSACTIONS';
@@ -106,6 +111,8 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
         USERS: '/adminbank/users',
         PLANS: '/adminbank/plans',
         VIP_LEVELS: '/adminbank/vip-levels',
+        COMPLAINTS: '/adminbank/complaints',
+        USDT_DEPOSITS: '/adminbank/usdt-deposits',
         RECHARGE: '/adminbank/recharge',
         WITHDRAWALS: '/adminbank/withdrawals',
         TRANSACTIONS: '/adminbank/transactions',
@@ -159,6 +166,19 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
     { id: 'USERS', label: 'User Directory & Portfolios', icon: Users, badge: stats?.totalUsers },
     { id: 'PLANS', label: 'Investment Plans & Hardware', icon: ShoppingBasket, badge: null },
     { id: 'VIP_LEVELS', label: 'VIP Membership Levels', icon: Crown, badge: null },
+    {
+      id: 'COMPLAINTS',
+      label: 'Deposit Problems',
+      icon: AlertCircle,
+      badge: stats?.pendingComplaintsCount ? `${stats.pendingComplaintsCount}` : null,
+      badgeColor: 'bg-rose-500 text-white',
+    },
+    {
+      id: 'USDT_DEPOSITS',
+      label: 'USDT Deposits',
+      icon: Coins,
+      badge: null,
+    },
     {
       id: 'RECHARGE',
       label: 'Recharge Verifications',
@@ -365,6 +385,18 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
               adminId={adminIdentifier}
               onShowToast={showToast}
             />
+          )}
+
+          {activeTab === 'COMPLAINTS' && (
+            <AdminComplaintsTab
+              adminId={adminIdentifier}
+              onShowToast={showToast}
+              onRefreshGlobalStats={loadGlobalStats}
+            />
+          )}
+
+          {activeTab === 'USDT_DEPOSITS' && (
+            <AdminUsdtDepositsTab onShowToast={showToast} />
           )}
 
           {activeTab === 'RECHARGE' && (

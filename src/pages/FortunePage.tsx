@@ -104,16 +104,22 @@ export const FortunePage: React.FC<FortunePageProps> = ({
   };
 
   const activePurchases = purchases.filter((p) => p.status === 'ACTIVE');
-  const activeDeviceInvestments = activePurchases.reduce((acc, p) => acc + p.amount, 0);
-  const availableBalance = wallet?.availableBalance || 0;
-  const earnedBalance = wallet?.earnedBalance !== undefined ? wallet.earnedBalance : availableBalance;
-  const withdrawableEarnings = earnedBalance;
-  const totalAssets = +(activeDeviceInvestments + availableBalance).toFixed(2);
+  const activeDeviceInvestments = activePurchases.reduce((acc, p) => acc + (p.amount || 0), 0);
+  const topupBalance = Number(wallet?.topupBalance || 0);
+  const withdrawBalance = Number(
+    wallet?.withdrawBalance !== undefined
+      ? wallet.withdrawBalance
+      : wallet?.earnedBalance !== undefined
+      ? wallet.earnedBalance
+      : wallet?.availableBalance || 0
+  );
+  const withdrawableEarnings = withdrawBalance;
+  const totalAssets = +(activeDeviceInvestments + topupBalance + withdrawBalance).toFixed(2);
   const todayEstimatedEarnings = activePurchases.reduce((acc, p) => {
     const daily = p.dailyEarnings || (p.earningRate * 24) || 0;
     return acc + daily;
   }, 0);
-  const totalEarned = wallet?.totalEarned || 0;
+  const totalEarned = Number(wallet?.totalEarned || 0);
 
   // Daily check-in calculations
   const streak = checkInStatus?.currentStreak || 0;
