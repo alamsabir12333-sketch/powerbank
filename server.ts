@@ -830,6 +830,137 @@ app.post('/functions/v1/create-payin-order', handleCreatePayment);
 // ==============================================================================
 // ATOMIC & IDEMPOTENT DEPOSIT SETTLEMENT HELPER
 // ==============================================================================
+async function processReferralCommissionsServer(supabaseClient: any, userId: string, depositAmount: number, traceno: string) {
+  try {
+    const { data: refs, error: refErr } = await supabaseClient
+      .from('referrals')
+      .select('*')
+      .eq('referee_id', userId);
+
+    if (refErr || !refs || refs.length === 0) return;
+
+    let tiers = [
+      { tier: 1, percentage: 10 },
+      { tier: 2, percentage: 3 },
+      { tier: 3, percentage: 1 },
+    ];
+
+    try {
+      const { data: set } = await supabaseClient
+        .from('admin_settings')
+        .select('*')
+        .eq('id', 'referral_tiers')
+        .maybeSingle();
+      if (set?.value && Array.isArray(set.value)) {
+        tiers = set.value;
+      }
+    } catch (_e) {}
+
+    const nowIso = new Date().toISOString();
+
+    for (const ref of refs) {
+      const tierNum = Number(ref.level || 1);
+      const tierConfig = tiers.find((t) => t.tier === tierNum);
+      if (!tierConfig || tierConfig.percentage <= 0) continue;
+
+      const commission = +(depositAmount * (tierConfig.percentage / 100)).toFixed(2);
+      if (commission <= 0) continue;
+
+      const refId = `TOPUP-REF-L${tierNum}-${traceno}`;
+
+      const { data: existingLedger } = await supabaseClient
+        .from('wallet_ledger')
+        .select('id')
+        .eq('reference_id', refId)
+        .maybeSingle();
+
+      if (existingLedger) continue;
+
+      const referrerId = ref.referrer_id;
+      if (!referrerId) continue;
+
+      const { data: refWallet } = await supabaseClient
+        .from('wallets')
+        .select('*')
+        .eq('user_id', referrerId)
+        .maybeSingle();
+
+      const curWithdraw = Number(refWallet?.withdraw_balance || 0);
+      const curRecharge = Number(refWallet?.recharge_balance || 0);
+      const newWithdraw = +(curWithdraw + commission).toFixed(2);
+      const newAvail = +(curRecharge + newWithdraw).toFixed(2);
+
+      if (refWallet) {
+        await supabaseClient
+          .from('wallets')
+          .update({
+            withdraw_balance: newWithdraw,
+            available_balance: newAvail,
+            updated_at: nowIso,
+          })
+          .eq('user_id', referrerId);
+      } else {
+        await supabaseClient.from('wallets').insert({
+          user_id: referrerId,
+          recharge_balance: 0,
+          withdraw_balance: newWithdraw,
+          available_balance: newWithdraw,
+          pending_balance: 0,
+          total_earned: commission,
+          total_withdrawn: 0,
+        });
+      }
+
+      await supabaseClient.from('wallet_ledger').insert({
+        user_id: referrerId,
+        wallet_type: 'WITHDRAW',
+        transaction_type: 'REFERRAL_COMMISSION',
+        amount: commission,
+        direction: 'CREDIT',
+        reference_type: 'REFERRAL_COMMISSION',
+        reference_id: refId,
+        balance_before: curWithdraw,
+        balance_after: newWithdraw,
+        description: `Level ${tierNum} Team Commission (${tierConfig.percentage}%) from Topup #${traceno}`,
+        created_at: nowIso,
+      });
+
+      await supabaseClient.from('wallet_transactions').insert({
+        user_id: referrerId,
+        type: 'COMMISSION',
+        amount: commission,
+        balance_before: curWithdraw,
+        balance_after: newWithdraw,
+        reference_id: refId,
+        description: `Level ${tierNum} Team Commission (${tierConfig.percentage}%) from Topup #${traceno}`,
+        wallet_type: 'WITHDRAW',
+        status: 'Completed',
+        created_at: nowIso,
+      });
+
+      await supabaseClient.from('notifications').insert({
+        user_id: referrerId,
+        title: `Tier ${tierNum} Team Commission Earned! 💰`,
+        message: `You received ₹${commission.toFixed(2)} (${tierConfig.percentage}%) commission from a team member recharge.`,
+        type: 'EARNING',
+        read: false,
+        created_at: nowIso,
+      });
+
+      await supabaseClient
+        .from('referrals')
+        .update({
+          qualifying_recharge_done: true,
+          commission_earned: +((ref.commission_earned || 0) + commission).toFixed(2),
+          updated_at: nowIso,
+        })
+        .eq('id', ref.id);
+    }
+  } catch (err: any) {
+    console.error('[SETTLEMENT] Referral commission error:', err.message);
+  }
+}
+
 async function settleDepositSuccess(
   traceno: string,
   serialNo?: string,
@@ -883,6 +1014,7 @@ async function settleDepositSuccess(
       status: 'SUCCESS',
       gateway_status: 'SUCCESS',
       gateway_serial_no: serialNo || order.gateway_serial_no || null,
+      serial_no: serialNo || order.serial_no || null,
       utr: utr || order.utr || null,
       callback_received: true,
       signature_verified: true,
@@ -951,7 +1083,26 @@ async function settleDepositSuccess(
     });
   }
 
-  // 7. Insert In-App User Notification in notifications table
+  // 7. Insert into wallet_ledger (Financial Audit Trail)
+  try {
+    await supabase.from('wallet_ledger').insert({
+      user_id: userId,
+      wallet_type: 'RECHARGE',
+      transaction_type: 'DEPOSIT_SUCCESS',
+      amount: depositAmount,
+      direction: 'CREDIT',
+      reference_type: 'DEPOSIT',
+      reference_id: traceno,
+      balance_before: currentRechargeBalance,
+      balance_after: newRechargeBalance,
+      description: `Topup Recharge of ₹${depositAmount} Credited to Recharge Wallet`,
+      created_at: nowIso,
+    });
+  } catch (ledErr) {
+    console.warn('[SETTLEMENT] Failed to insert wallet_ledger:', ledErr);
+  }
+
+  // 8. Insert In-App User Notification in notifications table
   try {
     await supabase.from('notifications').insert({
       user_id: userId,
@@ -965,14 +1116,8 @@ async function settleDepositSuccess(
     console.warn('[SETTLEMENT] Failed to insert user notification:', notifErr);
   }
 
-  // Try RPCs if configured for backwards compatibility
-  try {
-    await supabase.rpc('process_deposit_success', {
-      p_order_id: traceno,
-      p_serial_no: serialNo || '',
-      p_raw_callback: rawPayload || {},
-    }).catch(() => {});
-  } catch {}
+  // 9. Process Referral Commission for referrers
+  await processReferralCommissionsServer(supabase, userId, depositAmount, traceno);
 
   console.log(`[SETTLEMENT] Success: ₹${depositAmount} credited to user ${userId} for order ${traceno}.`);
   return { success: true, order: { ...order, status: 'SUCCESS' } };
