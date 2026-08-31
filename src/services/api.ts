@@ -2753,32 +2753,28 @@ export async function fetchPaymentSettings(): Promise<PaymentSettings> {
   }
 }
 
-export async function updatePaymentSettings(settings: Partial<PaymentSettings>) {
-  if (isSupabaseConfigured && supabase) {
-    const { error } = await supabase
-      .from('payment_settings')
-      .upsert({
-        id: 'default',
-        upi_id: settings.upiId,
-        qr_image_url: settings.qrImageUrl,
-        instructions: settings.instructions,
-        is_recharge_enabled: settings.isRechargeEnabled,
-        is_purchase_enabled: settings.isPurchaseEnabled,
-        payu_upi_id: settings.payuUpiId,
-        payu_qr_image_url: settings.payuQrImageUrl,
-        toppay_upi_id: settings.toppayUpiId,
-        toppay_qr_image_url: settings.toppayQrImageUrl,
-        upay_upi_id: settings.upayUpiId,
-        upay_qr_image_url: settings.upayQrImageUrl,
-        channels: settings.channels,
-        updated_at: new Date().toISOString(),
-      });
-    if (error) throw new Error(error.message);
-  } else {
-    const cur = getLocal<PaymentSettings>(STORAGE_KEYS.SETTINGS, defaultPaymentSettings);
-    const updated = { ...cur, ...settings };
-    saveLocal(STORAGE_KEYS.SETTINGS, updated);
+export async function updatePaymentSettings(settings: Partial<PaymentSettings>, adminId = 'adm_root') {
+  try {
+    const res = await fetch('/api/admin/payment-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: settings, adminId }),
+    });
+    const json = await res.json();
+    if (json.success && json.data) {
+      const cur = getLocal<PaymentSettings>(STORAGE_KEYS.SETTINGS, defaultPaymentSettings);
+      const updated = { ...cur, ...settings };
+      saveLocal(STORAGE_KEYS.SETTINGS, updated);
+      return updated;
+    }
+  } catch (err) {
+    console.warn('[PAYMENT SETTINGS] Backend update error:', err);
   }
+
+  const cur = getLocal<PaymentSettings>(STORAGE_KEYS.SETTINGS, defaultPaymentSettings);
+  const updated = { ...cur, ...settings };
+  saveLocal(STORAGE_KEYS.SETTINGS, updated);
+  return updated;
 }
 
 export async function uploadPaymentProof(file: File, userId: string): Promise<string> {
@@ -7357,7 +7353,7 @@ export async function createGiftCode(
     const res = await fetch('/api/admin/gift-codes/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ giftCode: newCode, adminId }),
+      body: JSON.stringify({ giftCode: newCode, adminId, isNew: true }),
     });
     const json = await res.json();
     if (json.success && json.data) {
@@ -7366,24 +7362,13 @@ export async function createGiftCode(
       list.unshift(saved);
       saveLocal(STORAGE_KEYS.GIFT_CODES, list);
       return saved;
+    } else {
+      throw new Error(json.error || 'Failed to create gift code on server.');
     }
-  } catch (err) {
-    console.warn('Backend createGiftCode error, fallback to local:', err);
+  } catch (err: any) {
+    console.error('Backend createGiftCode error:', err);
+    throw new Error(err.message || 'Failed to create gift code.');
   }
-
-  const list = getLocal<GiftCode[]>(STORAGE_KEYS.GIFT_CODES, initialGiftCodes);
-  list.unshift(newCode);
-  saveLocal(STORAGE_KEYS.GIFT_CODES, list);
-
-  await recordAuditLog(
-    adminId,
-    'ADMIN_CREATE_GIFT_CODE',
-    'gift_codes',
-    newCode.id,
-    `Created Gift Code ${newCode.code} (${newCode.amountType}, Pool: ₹${newCode.totalPool}, Uses: ${newCode.totalUses})`
-  );
-
-  return newCode;
 }
 
 /**
@@ -7408,7 +7393,7 @@ export async function updateGiftCode(
     const res = await fetch('/api/admin/gift-codes/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ giftCode: { id, ...updated }, adminId }),
+      body: JSON.stringify({ giftCode: { id, ...updated }, adminId, isNew: false }),
     });
     const json = await res.json();
     if (json.success && json.data) {
@@ -7420,25 +7405,13 @@ export async function updateGiftCode(
       }
       saveLocal(STORAGE_KEYS.GIFT_CODES, list);
       return saved;
+    } else {
+      throw new Error(json.error || 'Failed to update gift code on server.');
     }
-  } catch (err) {
-    console.warn('Backend updateGiftCode error, fallback to local:', err);
+  } catch (err: any) {
+    console.error('Backend updateGiftCode error:', err);
+    throw new Error(err.message || 'Failed to update gift code.');
   }
-
-  if (index !== -1) {
-    list[index] = updated;
-    saveLocal(STORAGE_KEYS.GIFT_CODES, list);
-  }
-
-  await recordAuditLog(
-    adminId,
-    'ADMIN_UPDATE_GIFT_CODE',
-    'gift_codes',
-    id,
-    `Updated Gift Code ${updated.code} (Status: ${updated.status})`
-  );
-
-  return updated;
 }
 
 /**

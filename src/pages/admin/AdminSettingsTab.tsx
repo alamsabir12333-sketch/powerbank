@@ -177,9 +177,6 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
       if (settings) {
         promises.push(updateSystemSettings(settings, adminId));
       }
-      if (paymentSettings) {
-        promises.push(updatePaymentSettings(paymentSettings));
-      }
       if (popupConfig) {
         promises.push(saveWebsitePopup(popupConfig, adminId));
       }

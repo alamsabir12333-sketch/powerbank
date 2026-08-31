@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Image,
   Newspaper,
@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Tag,
   Calendar,
+  Upload,
 } from 'lucide-react';
 import {
   fetchAdminBanners,
@@ -19,6 +20,7 @@ import {
   fetchAdminNews,
   saveAdminNews,
   deleteAdminNews,
+  uploadSiteAsset,
 } from '../../services/api';
 import { BannerItem, NewsItem } from '../../types';
 
@@ -37,6 +39,8 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
   const [banners, setBanners] = useState<BannerItem[]>([]);
   const [loadingBanners, setLoadingBanners] = useState(true);
   const [editingBanner, setEditingBanner] = useState<Partial<BannerItem> | null>(null);
+  const [uploadingBannerImg, setUploadingBannerImg] = useState(false);
+  const bannerFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // News state
   const [news, setNews] = useState<NewsItem[]>([]);

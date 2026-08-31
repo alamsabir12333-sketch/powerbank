@@ -3642,6 +3642,93 @@ app.post('/api/admin/usdt-settings', async (req, res) => {
   }
 });
 
+// 6b. Get Payment Settings
+app.get('/api/payment-settings', async (req, res) => {
+  if (!supabase) {
+    return res.json({
+      success: true,
+      data: {
+        id: 'default',
+        upi_id: 'powerbank.pay@upi',
+        instructions: '1. Scan QR or transfer to UPI ID.\n2. Enter the exact 12-digit UTR number below and submit.',
+        is_recharge_enabled: true,
+        is_purchase_enabled: true,
+      },
+    });
+  }
+  try {
+    const { data, error } = await supabase
+      .from('payment_settings')
+      .select('*')
+      .eq('id', 'default')
+      .maybeSingle();
+
+    if (error) throw error;
+    return res.json({ success: true, data: data || {} });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 6c. Save Payment Settings (Admin)
+app.post('/api/admin/payment-settings', async (req, res) => {
+  const { config, adminId = 'adm_root' } = req.body;
+  if (!config) return res.status(400).json({ success: false, error: 'Missing payment settings configuration.' });
+  if (!supabase) return res.status(500).json({ success: false, error: 'Database service unavailable.' });
+
+  try {
+    const nowIso = new Date().toISOString();
+    const payload = {
+      id: config.id || 'default',
+      upi_id: config.upiId || config.upi_id || 'powerbank.pay@upi',
+      qr_image_url: config.qrImageUrl || config.qr_image_url || null,
+      instructions: config.instructions || '1. Scan QR or transfer to UPI ID.\n2. Enter the exact 12-digit UTR number below and submit.',
+      is_recharge_enabled: config.isRechargeEnabled !== undefined ? config.isRechargeEnabled : (config.is_recharge_enabled !== false),
+      is_purchase_enabled: config.isPurchaseEnabled !== undefined ? config.isPurchaseEnabled : (config.is_purchase_enabled !== false),
+      merchant_name: config.merchantName || config.merchant_name || 'GainPower Energy Infrastructure',
+      is_active: config.isActive !== undefined ? config.isActive : (config.is_active !== false),
+      min_amount: Number(config.minAmount || config.min_amount || 100),
+      max_amount: Number(config.maxAmount || config.max_amount || 500000),
+      payu_upi_id: config.payuUpiId || config.payu_upi_id || null,
+      payu_qr_image_url: config.payuQrImageUrl || config.payu_qr_image_url || null,
+      toppay_upi_id: config.toppayUpiId || config.toppay_upi_id || null,
+      toppay_qr_image_url: config.toppayQrImageUrl || config.toppay_qr_image_url || null,
+      upay_upi_id: config.upayUpiId || config.upay_upi_id || null,
+      upay_qr_image_url: config.upayQrImageUrl || config.upay_qr_image_url || null,
+      channels: config.channels || {},
+      updated_at: nowIso,
+    };
+
+    const { error } = await supabase
+      .from('payment_settings')
+      .upsert(payload, { onConflict: 'id' });
+
+    if (error) throw error;
+
+    const { data: fresh } = await supabase
+      .from('payment_settings')
+      .select('*')
+      .eq('id', payload.id)
+      .maybeSingle();
+
+    try {
+      await supabase.from('admin_audit_logs').insert({
+        admin_user_id: adminId,
+        action: 'UPDATE_PAYMENT_SETTINGS',
+        target_type: 'settings',
+        target_id: 'payment_settings',
+        description: `Admin updated payment configuration`,
+        details: payload,
+        created_at: nowIso,
+      });
+    } catch (_e) {}
+
+    return res.json({ success: true, message: 'Payment settings updated successfully.', data: fresh || payload });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 7. Submit USDT Deposit (User)
 app.post('/api/usdt-deposit', async (req, res) => {
   const {
@@ -4628,31 +4715,45 @@ app.post('/api/admin/gift-codes/save', async (req, res) => {
     }
 
     const code = giftCode.code.trim().toUpperCase();
-    const isNew = !giftCode.id || giftCode.id.startsWith('new_');
-    const codeId = isNew ? crypto.randomUUID() : giftCode.id;
+    const rawId = giftCode.id;
+    let isNew = !rawId || rawId.startsWith('new_') || req.body.isNew === true;
+
+    if (supabase && !isNew && rawId) {
+      const { data: existingRow } = await supabase
+        .from('gift_codes')
+        .select('id')
+        .eq('id', rawId)
+        .maybeSingle();
+      if (!existingRow) {
+        isNew = true;
+      }
+    }
+
+    const codeId = (!rawId || isNew) ? (rawId && !rawId.startsWith('new_') ? rawId : crypto.randomUUID()) : rawId;
     const totalPool = Number(giftCode.totalPool || 0);
-    const totalUses = Number(giftCode.totalUses || 0);
+    const totalUses = Number(giftCode.totalUses || giftCode.total_uses || giftCode.max_claims || 0);
     const status = giftCode.status || 'ACTIVE';
 
     const record = {
       code,
-      amount_type: giftCode.amountType || 'FIXED',
-      reward_type: giftCode.amountType || 'FIXED',
-      amount: giftCode.amount ? Number(giftCode.amount) : null,
-      min_amount: giftCode.minAmount ? Number(giftCode.minAmount) : null,
-      max_amount: giftCode.maxAmount ? Number(giftCode.maxAmount) : null,
+      amount_type: giftCode.amountType || giftCode.amount_type || 'FIXED',
+      reward_type: giftCode.amountType || giftCode.amount_type || 'FIXED',
+      amount: giftCode.amount !== undefined && giftCode.amount !== null ? Number(giftCode.amount) : null,
+      min_amount: giftCode.minAmount !== undefined && giftCode.minAmount !== null ? Number(giftCode.minAmount) : null,
+      max_amount: giftCode.maxAmount !== undefined && giftCode.maxAmount !== null ? Number(giftCode.maxAmount) : null,
       total_pool: totalPool,
       remaining_pool: giftCode.remainingPool !== undefined ? Number(giftCode.remainingPool) : totalPool,
       total_uses: totalUses,
       max_claims: totalUses,
-      per_user_limit: Number(giftCode.perUserLimit || 1),
+      total_claims: totalUses,
+      per_user_limit: Number(giftCode.perUserLimit || giftCode.per_user_limit || 1),
       is_active: status === 'ACTIVE',
       status: status,
-      wallet_destination: giftCode.walletDestination || 'TOPUP_WALLET',
-      wallet_type: giftCode.walletDestination || 'TOPUP_WALLET',
-      start_date: giftCode.startDate || new Date().toISOString(),
-      expiry_date: giftCode.expiryDate || null,
-      expires_at: giftCode.expiryDate || null,
+      wallet_destination: giftCode.walletDestination || giftCode.wallet_destination || 'TOPUP_WALLET',
+      wallet_type: giftCode.walletDestination || giftCode.wallet_destination || 'TOPUP_WALLET',
+      start_date: giftCode.startDate || giftCode.start_date || new Date().toISOString(),
+      expiry_date: giftCode.expiryDate || giftCode.expiry_date || null,
+      expires_at: giftCode.expiryDate || giftCode.expiry_date || null,
       description: giftCode.description || '',
       created_by: adminId || 'Admin',
       updated_at: new Date().toISOString(),
@@ -4671,9 +4772,15 @@ app.post('/api/admin/gift-codes/save', async (req, res) => {
             .insert({ created_at: new Date().toISOString(), claims_count: 0, claimed_uses: 0, ...record })
             .select();
           if (retryErr) throw new Error(retryErr.message);
-          return res.json({ success: true, data: (retryData && retryData[0]) || { id: codeId, ...record } });
+
+          const freshId = retryData && retryData[0] ? retryData[0].id : codeId;
+          const { data: freshSelect } = await supabase.from('gift_codes').select('*').eq('id', freshId).maybeSingle();
+          return res.json({ success: true, data: freshSelect || (retryData && retryData[0]) || { id: codeId, ...record } });
         }
-        return res.json({ success: true, data: (data && data[0]) || { id: codeId, ...record } });
+
+        const freshId = data && data[0] ? data[0].id : codeId;
+        const { data: freshSelect } = await supabase.from('gift_codes').select('*').eq('id', freshId).maybeSingle();
+        return res.json({ success: true, data: freshSelect || (data && data[0]) || { id: codeId, ...record } });
       } else {
         const { data, error } = await supabase
           .from('gift_codes')
@@ -4682,7 +4789,8 @@ app.post('/api/admin/gift-codes/save', async (req, res) => {
           .select();
 
         if (error) throw new Error(error.message);
-        return res.json({ success: true, data: (data && data[0]) || { id: codeId, ...record } });
+        const { data: freshSelect } = await supabase.from('gift_codes').select('*').eq('id', codeId).maybeSingle();
+        return res.json({ success: true, data: freshSelect || (data && data[0]) || { id: codeId, ...record } });
       }
     }
 
@@ -4986,21 +5094,34 @@ app.post('/api/admin/banners/save', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Banner title is required.' });
     }
 
-    const isNew = !banner.id || banner.id.startsWith('new_');
-    const bannerId = isNew ? crypto.randomUUID() : banner.id;
+    const rawId = banner.id;
+    let isNew = !rawId || rawId.startsWith('new_') || req.body.isNew === true;
+
+    if (supabase && !isNew && rawId) {
+      const { data: existingRow } = await supabase
+        .from('banners')
+        .select('id')
+        .eq('id', rawId)
+        .maybeSingle();
+      if (!existingRow) {
+        isNew = true;
+      }
+    }
+
+    const bannerId = (!rawId || isNew) ? (rawId && !rawId.startsWith('new_') ? rawId : crypto.randomUUID()) : rawId;
 
     const record = {
       title: banner.title,
       subtitle: banner.subtitle || '',
-      cta_text: banner.ctaText || 'Explore >',
+      cta_text: banner.ctaText || banner.cta_text || 'Explore >',
       badge: banner.badge || 'HOT',
-      image_url: banner.imageUrl || '',
-      link_url: banner.linkUrl || '',
-      target_tab: banner.targetTab || 'INVEST',
+      image_url: banner.imageUrl || banner.image_url || '',
+      link_url: banner.linkUrl || banner.link_url || '',
+      target_tab: banner.targetTab || banner.target_tab || 'INVEST',
       priority: Number(banner.priority || 1),
       sort_order: Number(banner.priority || 1),
-      is_active: banner.isActive !== false,
-      active: banner.isActive !== false,
+      is_active: banner.isActive !== false && banner.active !== false,
+      active: banner.isActive !== false && banner.active !== false,
       updated_at: new Date().toISOString(),
     };
 
@@ -5017,9 +5138,15 @@ app.post('/api/admin/banners/save', async (req, res) => {
             .insert({ created_at: new Date().toISOString(), ...record })
             .select();
           if (retryErr) throw new Error(retryErr.message);
-          return res.json({ success: true, data: (retryData && retryData[0]) || { id: bannerId, ...record } });
+
+          const freshId = retryData && retryData[0] ? retryData[0].id : bannerId;
+          const { data: freshSelect } = await supabase.from('banners').select('*').eq('id', freshId).maybeSingle();
+          return res.json({ success: true, data: freshSelect || (retryData && retryData[0]) || { id: bannerId, ...record } });
         }
-        return res.json({ success: true, data: (data && data[0]) || { id: bannerId, ...record } });
+
+        const freshId = data && data[0] ? data[0].id : bannerId;
+        const { data: freshSelect } = await supabase.from('banners').select('*').eq('id', freshId).maybeSingle();
+        return res.json({ success: true, data: freshSelect || (data && data[0]) || { id: bannerId, ...record } });
       } else {
         const { data, error } = await supabase
           .from('banners')
@@ -5028,7 +5155,8 @@ app.post('/api/admin/banners/save', async (req, res) => {
           .select();
 
         if (error) throw new Error(error.message);
-        return res.json({ success: true, data: (data && data[0]) || { id: bannerId, ...record } });
+        const { data: freshSelect } = await supabase.from('banners').select('*').eq('id', bannerId).maybeSingle();
+        return res.json({ success: true, data: freshSelect || (data && data[0]) || { id: bannerId, ...record } });
       }
     }
 
@@ -5169,29 +5297,32 @@ app.post('/api/admin/news/delete', async (req, res) => {
 // ==============================================================================
 app.post('/api/admin/upload-asset', async (req, res) => {
   try {
-    const { base64, fileName, prefix = 'asset' } = req.body;
-    if (!base64) {
-      return res.status(400).json({ success: false, error: 'base64 data is required.' });
+    const rawData = req.body.base64 || req.body.fileData || req.body.data;
+    const { fileName, prefix = 'asset' } = req.body;
+    if (!rawData) {
+      return res.status(400).json({ success: false, error: 'Image data is required.' });
     }
 
+    const bucketName = prefix === 'banner' ? 'banners' : 'site-assets';
+
     // Try to upload to Supabase storage if storage is active
-    if (supabase && base64.startsWith('data:')) {
+    if (supabase && typeof rawData === 'string' && rawData.startsWith('data:')) {
       try {
-        const parts = base64.split(';base64,');
+        const parts = rawData.split(';base64,');
         const mimeType = parts[0].replace('data:', '');
         const ext = mimeType.split('/')[1] || 'png';
         const buffer = Buffer.from(parts[1], 'base64');
-        const targetFileName = `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
+        const targetFileName = fileName || `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
 
         const { data: uploadData, error: uploadErr } = await supabase.storage
-          .from('site-assets')
+          .from(bucketName)
           .upload(targetFileName, buffer, {
             contentType: mimeType,
             upsert: true,
           });
 
         if (!uploadErr && uploadData?.path) {
-          const { data: pubData } = supabase.storage.from('site-assets').getPublicUrl(uploadData.path);
+          const { data: pubData } = supabase.storage.from(bucketName).getPublicUrl(uploadData.path);
           if (pubData?.publicUrl) {
             return res.json({ success: true, url: pubData.publicUrl });
           }
@@ -5202,7 +5333,7 @@ app.post('/api/admin/upload-asset', async (req, res) => {
     }
 
     // Direct Data URL is completely self-contained and universally supported in all browsers
-    return res.json({ success: true, url: base64 });
+    return res.json({ success: true, url: rawData });
   } catch (err: any) {
     console.error('[UPLOAD ASSET ERROR]', err);
     return res.status(500).json({ success: false, error: err.message || 'Failed to process asset upload.' });
