@@ -2385,74 +2385,46 @@ export async function createPlan(planData: Omit<ProductItem, 'id'>): Promise<Pro
     imageType: planData.imageType || (planData.category === 'PRO' ? 'cabinet-pro' : 'cabinet-green'),
   };
 
-  if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase
-      .from('plans')
-      .insert({
-        name: newPlan.name,
-        category: newPlan.category,
-        description: newPlan.description || newPlan.name,
-        price: newPlan.price,
-        earning_rate: newPlan.hourlyEarnings,
-        daily_earnings: newPlan.dailyEarnings,
-        instant_bonus: newPlan.instantBonus || 0,
-        earning_type: newPlan.category === 'PRO' ? 'DAILY' : (newPlan.earningType || 'HOURLY'),
-        duration: newPlan.duration || newPlan.durationDays || 365,
-        limit_per_user: newPlan.limit || 5,
-        tags: newPlan.tags,
-        image_type: newPlan.imageType,
-        status: newPlan.status,
-        allow_duplicate: newPlan.allowDuplicate,
-      })
-      .select()
-      .single();
-
-    if (error) throw new Error(error.message);
-    return { ...newPlan, id: data.id };
-  } else {
-    const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
-    list.unshift(newPlan);
-    saveLocal(STORAGE_KEYS.PLANS, list);
-    return newPlan;
+  try {
+    const res = await fetch('/api/admin/plans/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: newPlan, adminId: 'adm_root_700' }),
+    });
+    const json = await res.json();
+    if (json.success && json.data) {
+      return { ...newPlan, ...json.data, id: json.data.id || newPlan.id };
+    }
+  } catch (err) {
+    console.warn('Backend plan save error, falling back:', err);
   }
+
+  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+  list.unshift(newPlan);
+  saveLocal(STORAGE_KEYS.PLANS, list);
+  return newPlan;
 }
 
 export async function updatePlan(planId: string, planData: Partial<ProductItem>): Promise<void> {
-  if (isSupabaseConfigured && supabase) {
-    const updatePayload: any = {};
-    if (planData.name !== undefined) updatePayload.name = planData.name;
-    if (planData.category !== undefined) updatePayload.category = planData.category;
-    if (planData.description !== undefined) updatePayload.description = planData.description;
-    if (planData.price !== undefined || planData.devicePrice !== undefined) {
-      updatePayload.price = planData.devicePrice || planData.price;
+  try {
+    const res = await fetch('/api/admin/plans/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: { id: planId, ...planData }, adminId: 'adm_root_700' }),
+    });
+    const json = await res.json();
+    if (json.success) {
+      return;
     }
-    if (planData.hourlyEarnings !== undefined) updatePayload.earning_rate = planData.hourlyEarnings;
-    if (planData.dailyEarnings !== undefined) updatePayload.daily_earnings = planData.dailyEarnings;
-    if (planData.instantBonus !== undefined) updatePayload.instant_bonus = planData.instantBonus;
-    if (planData.earningType !== undefined) updatePayload.earning_type = planData.earningType;
-    if (planData.duration !== undefined || planData.durationDays !== undefined) {
-      updatePayload.duration = planData.duration || planData.durationDays;
-    }
-    if (planData.limit !== undefined) updatePayload.limit_per_user = planData.limit;
-    if (planData.tags !== undefined) updatePayload.tags = planData.tags;
-    if (planData.imageType !== undefined) updatePayload.image_type = planData.imageType;
-    if (planData.status !== undefined) updatePayload.status = planData.status;
-    if (planData.allowDuplicate !== undefined) updatePayload.allow_duplicate = planData.allowDuplicate;
-    updatePayload.updated_at = new Date().toISOString();
+  } catch (err) {
+    console.warn('Backend plan update error, falling back:', err);
+  }
 
-    const { error } = await supabase
-      .from('plans')
-      .update(updatePayload)
-      .eq('id', planId);
-
-    if (error) throw new Error(error.message);
-  } else {
-    const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
-    const index = list.findIndex((p) => p.id === planId);
-    if (index !== -1) {
-      list[index] = { ...list[index], ...planData };
-      saveLocal(STORAGE_KEYS.PLANS, list);
-    }
+  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+  const index = list.findIndex((p) => p.id === planId);
+  if (index !== -1) {
+    list[index] = { ...list[index], ...planData };
+    saveLocal(STORAGE_KEYS.PLANS, list);
   }
 }
 
@@ -2461,17 +2433,20 @@ export async function togglePlanStatus(planId: string, status: 'active' | 'disab
 }
 
 export async function deletePlan(planId: string): Promise<void> {
-  if (isSupabaseConfigured && supabase) {
-    try {
-      // Soft delete/archive to avoid orphan references for existing users
-      const { error } = await supabase.from('plans').update({ status: 'archived' }).eq('id', planId);
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase delete plan error:', error.message);
-      }
-    } catch {
-      // Fall through to local
+  try {
+    const res = await fetch('/api/admin/plans/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ planId, adminId: 'adm_root_700' }),
+    });
+    const json = await res.json();
+    if (json.success) {
+      return;
     }
+  } catch (err) {
+    console.warn('Backend plan delete error, falling back:', err);
   }
+
   const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
   const filtered = list.filter((p) => p.id !== planId);
   saveLocal(STORAGE_KEYS.PLANS, filtered);
@@ -4454,75 +4429,68 @@ export async function saveAdminPlan(
     description: plan.description || plan.name || 'Power Cabinet Plan',
   };
 
-  if (isSupabaseConfigured && supabase) {
-    const payload: any = {
-      name: fullPlan.name,
-      category: fullPlan.category,
-      price: fullPlan.devicePrice || fullPlan.price,
-      earning_rate: fullPlan.hourlyEarnings,
-      daily_earnings: fullPlan.dailyEarnings,
-      earning_type: fullPlan.category === 'PRO' ? 'DAILY' : 'HOURLY',
-      limit_per_user: fullPlan.limit,
-      duration: fullPlan.duration,
-      instant_bonus: fullPlan.instantBonus,
-      tags: fullPlan.tags,
-      image_type: fullPlan.imageType,
-      status: fullPlan.status,
-      description: fullPlan.description,
-      updated_at: new Date().toISOString(),
-    };
-
-    if (isNew) {
-      const { data, error } = await supabase.from('plans').insert(payload).select().single();
-      if (error) throw new Error(error.message);
-      if (adminId) {
-        await recordAuditLog(adminId, 'CREATE_PLAN', 'plans', data.id, `Created plan: ${fullPlan.name}`);
+  try {
+    const res = await fetch('/api/admin/plans/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: fullPlan, adminId }),
+    });
+    const json = await res.json();
+    if (json.success && json.data) {
+      const saved = { ...fullPlan, ...json.data, id: json.data.id || fullPlan.id };
+      const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+      const existingIndex = list.findIndex((p) => p.id === planId || p.id === saved.id);
+      if (existingIndex >= 0) {
+        list[existingIndex] = saved;
+      } else {
+        list.push(saved);
       }
-      return {
-        ...fullPlan,
-        id: data.id,
-      };
-    } else {
-      const { data, error } = await supabase.from('plans').update(payload).eq('id', planId).select().single();
-      if (error) throw new Error(error.message);
-      if (adminId) {
-        await recordAuditLog(adminId, 'UPDATE_PLAN', 'plans', planId, `Updated plan: ${fullPlan.name}`);
-      }
-      return fullPlan;
+      saveLocal(STORAGE_KEYS.PLANS, list);
+      return saved;
     }
-  } else {
-    const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
-    const existingIndex = list.findIndex((p) => p.id === planId);
-    if (existingIndex >= 0) {
-      list[existingIndex] = fullPlan;
-    } else {
-      list.push(fullPlan);
-    }
-    saveLocal(STORAGE_KEYS.PLANS, list);
-    if (adminId) {
-      await recordAuditLog(adminId, isNew ? 'CREATE_PLAN' : 'UPDATE_PLAN', 'plans', planId, `${isNew ? 'Created' : 'Updated'} plan: ${fullPlan.name}`);
-    }
-    return fullPlan;
+  } catch (err) {
+    console.warn('Backend plan save error, falling back:', err);
   }
+
+  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+  const existingIndex = list.findIndex((p) => p.id === planId);
+  if (existingIndex >= 0) {
+    list[existingIndex] = fullPlan;
+  } else {
+    list.push(fullPlan);
+  }
+  saveLocal(STORAGE_KEYS.PLANS, list);
+  if (adminId) {
+    await recordAuditLog(adminId, isNew ? 'CREATE_PLAN' : 'UPDATE_PLAN', 'plans', planId, `${isNew ? 'Created' : 'Updated'} plan: ${fullPlan.name}`);
+  }
+  return fullPlan;
 }
 
 export async function deleteAdminPlan(planId: string, adminId?: string): Promise<boolean> {
-  if (isSupabaseConfigured && supabase) {
-    const { error } = await supabase.from('plans').update({ status: 'archived' }).eq('id', planId);
-    if (error) throw new Error(error.message);
-    if (adminId) {
-      await recordAuditLog(adminId, 'DELETE_PLAN', 'plans', planId, `Archived plan ${planId}`);
+  try {
+    const res = await fetch('/api/admin/plans/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ planId, adminId }),
+    });
+    const json = await res.json();
+    if (json.success) {
+      const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+      const filtered = list.filter((p) => p.id !== planId);
+      saveLocal(STORAGE_KEYS.PLANS, filtered);
+      return true;
     }
-    return true;
-  } else {
-    const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
-    const filtered = list.filter((p) => p.id !== planId);
-    saveLocal(STORAGE_KEYS.PLANS, filtered);
-    if (adminId) {
-      await recordAuditLog(adminId, 'DELETE_PLAN', 'plans', planId, `Deleted plan ${planId}`);
-    }
-    return true;
+  } catch (err) {
+    console.warn('Backend delete plan error, falling back:', err);
   }
+
+  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+  const filtered = list.filter((p) => p.id !== planId);
+  saveLocal(STORAGE_KEYS.PLANS, filtered);
+  if (adminId) {
+    await recordAuditLog(adminId, 'DELETE_PLAN', 'plans', planId, `Deleted plan ${planId}`);
+  }
+  return true;
 }
 
 // ==============================================================================
@@ -5368,6 +5336,16 @@ export async function fetchPlatformNews(): Promise<import('../types').NewsItem[]
  * Fetch all Admin Platform News (includes drafts / unpublished)
  */
 export async function fetchAdminNews(): Promise<import('../types').NewsItem[]> {
+  try {
+    const res = await fetch('/api/news');
+    const json = await res.json();
+    if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+      return json.data;
+    }
+  } catch (err) {
+    console.warn('Backend fetchAdminNews error, fallback:', err);
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase
@@ -5433,30 +5411,24 @@ export async function saveAdminNews(news: Partial<import('../types').NewsItem>, 
     updated_at: new Date().toISOString(),
   };
 
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const payload: any = {
-        title: item.title,
-        description: item.description,
-        content: item.content,
-        image_url: item.imageUrl,
-        category: item.category,
-        tag: item.tag,
-        is_published: item.isPublished,
-        sort_order: item.sortOrder,
-        updated_at: item.updatedAt,
-      };
-
-      if (isNew) {
-        payload.id = newsId;
-        payload.created_at = item.createdAt;
-        await supabase.from('platform_news').insert(payload);
-      } else {
-        await supabase.from('platform_news').update(payload).eq('id', newsId);
-      }
-    } catch (e) {
-      console.warn('Supabase saveAdminNews fallback to local cache:', e);
+  try {
+    const res = await fetch('/api/admin/news/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newsItem: item, adminId }),
+    });
+    const json = await res.json();
+    if (json.success && json.data) {
+      const saved = { ...item, ...json.data };
+      const list = getLocal<import('../types').NewsItem[]>(ADMIN_STORAGE_KEYS.NEWS, platformNewsList);
+      const idx = list.findIndex((n) => n.id === newsId || n.id === saved.id);
+      if (idx >= 0) list[idx] = saved;
+      else list.unshift(saved);
+      saveLocal(ADMIN_STORAGE_KEYS.NEWS, list);
+      return saved;
     }
+  } catch (err) {
+    console.warn('Backend saveAdminNews error, fallback:', err);
   }
 
   const list = getLocal<import('../types').NewsItem[]>(ADMIN_STORAGE_KEYS.NEWS, platformNewsList);
@@ -5470,13 +5442,23 @@ export async function saveAdminNews(news: Partial<import('../types').NewsItem>, 
 }
 
 export async function deleteAdminNews(newsId: string, adminId: string): Promise<boolean> {
-  if (isSupabaseConfigured && supabase) {
-    try {
-      await supabase.from('platform_news').delete().eq('id', newsId);
-    } catch (e) {
-      console.warn('Supabase deleteAdminNews error:', e);
+  try {
+    const res = await fetch('/api/admin/news/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: newsId, adminId }),
+    });
+    const json = await res.json();
+    if (json.success) {
+      const list = getLocal<import('../types').NewsItem[]>(ADMIN_STORAGE_KEYS.NEWS, platformNewsList);
+      const filtered = list.filter((n) => n.id !== newsId);
+      saveLocal(ADMIN_STORAGE_KEYS.NEWS, filtered);
+      return true;
     }
+  } catch (err) {
+    console.warn('Backend deleteAdminNews error, fallback:', err);
   }
+
   const list = getLocal<import('../types').NewsItem[]>(ADMIN_STORAGE_KEYS.NEWS, platformNewsList);
   const filtered = list.filter((n) => n.id !== newsId);
   saveLocal(ADMIN_STORAGE_KEYS.NEWS, filtered);
@@ -5678,6 +5660,16 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
  * Admin Banner Management & Public Active Banners
  */
 export async function fetchAdminBanners(): Promise<import('../types').BannerItem[]> {
+  try {
+    const res = await fetch('/api/banners');
+    const json = await res.json();
+    if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+      return json.data;
+    }
+  } catch (err) {
+    console.warn('Backend fetchAdminBanners error, fallback:', err);
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase
@@ -5734,24 +5726,24 @@ export async function saveAdminBanner(
     targetTab: banner.targetTab || banner.linkUrl || '/purchase',
   };
 
-  if (isSupabaseConfigured && supabase) {
-    try {
-      await supabase.from('banners').upsert({
-        id: item.id,
-        title: item.title,
-        cta_text: item.ctaText,
-        image_url: item.imageUrl || null,
-        link_url: item.linkUrl || null,
-        target_tab: item.targetTab || null,
-        priority: item.priority || 1,
-        sort_order: item.priority || 1,
-        is_active: item.isActive,
-        active: item.isActive,
-        updated_at: new Date().toISOString(),
-      });
-    } catch (e) {
-      console.warn('Supabase banner save error:', e);
+  try {
+    const res = await fetch('/api/admin/banners/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ banner: item, adminId }),
+    });
+    const json = await res.json();
+    if (json.success && json.data) {
+      const saved = { ...item, ...json.data };
+      const list = getLocal<import('../types').BannerItem[]>(ADMIN_STORAGE_KEYS.BANNERS, homeBanners);
+      const idx = list.findIndex((b) => b.id === bannerId || b.id === banner.id);
+      if (idx >= 0) list[idx] = saved;
+      else list.unshift(saved);
+      saveLocal(ADMIN_STORAGE_KEYS.BANNERS, list);
+      return saved;
     }
+  } catch (err) {
+    console.warn('Backend saveAdminBanner error, fallback:', err);
   }
 
   const list = getLocal<import('../types').BannerItem[]>(ADMIN_STORAGE_KEYS.BANNERS, homeBanners);
@@ -5771,12 +5763,21 @@ export async function saveAdminBanner(
 }
 
 export async function deleteAdminBanner(bannerId: string, adminId: string): Promise<boolean> {
-  if (isSupabaseConfigured && supabase) {
-    try {
-      await supabase.from('banners').delete().eq('id', bannerId);
-    } catch (e) {
-      console.warn('Supabase banner delete error:', e);
+  try {
+    const res = await fetch('/api/admin/banners/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: bannerId, adminId }),
+    });
+    const json = await res.json();
+    if (json.success) {
+      const list = getLocal<import('../types').BannerItem[]>(ADMIN_STORAGE_KEYS.BANNERS, homeBanners);
+      const filtered = list.filter((b) => b.id !== bannerId);
+      saveLocal(ADMIN_STORAGE_KEYS.BANNERS, filtered);
+      return true;
     }
+  } catch (err) {
+    console.warn('Backend deleteAdminBanner error, fallback:', err);
   }
 
   const list = getLocal<import('../types').BannerItem[]>(ADMIN_STORAGE_KEYS.BANNERS, homeBanners);
@@ -7186,6 +7187,26 @@ export async function fetchWalletLedger(userId?: string): Promise<import('../typ
  * Fetch all Gift Codes
  */
 export async function fetchGiftCodes(filters?: { status?: string; query?: string }): Promise<GiftCode[]> {
+  try {
+    const res = await fetch('/api/gift-codes');
+    const json = await res.json();
+    if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+      let list: GiftCode[] = json.data;
+      if (filters?.status && filters.status !== 'ALL') {
+        list = list.filter((c) => c.status === filters.status);
+      }
+      if (filters?.query) {
+        const q = filters.query.toLowerCase().trim();
+        list = list.filter((c) =>
+          c.code.toLowerCase().includes(q) || (c.description || '').toLowerCase().includes(q)
+        );
+      }
+      return list;
+    }
+  } catch (err) {
+    console.warn('Backend fetchGiftCodes error, fallback to local:', err);
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
       let query = supabase.from('gift_codes').select('*').order('created_at', { ascending: false });
@@ -7309,12 +7330,6 @@ export async function createGiftCode(
     }
   }
 
-  // Check uniqueness
-  const existingList = await fetchGiftCodes();
-  if (existingList.some((c) => c.code.toUpperCase() === normalizedCode)) {
-    throw new Error(`A gift code with the code "${normalizedCode}" already exists.`);
-  }
-
   const generatedUuid = crypto.randomUUID();
   const newCode: GiftCode = {
     id: generatedUuid,
@@ -7338,33 +7353,22 @@ export async function createGiftCode(
     updatedAt: new Date().toISOString(),
   };
 
-  if (isSupabaseConfigured && supabase) {
-    try {
-      await supabase.from('gift_codes').insert({
-        id: generatedUuid,
-        code: newCode.code,
-        amount_type: newCode.amountType,
-        reward_type: newCode.amountType,
-        amount: newCode.amount || null,
-        min_amount: newCode.minAmount || null,
-        max_amount: newCode.maxAmount || null,
-        total_pool: newCode.totalPool,
-        remaining_pool: newCode.remainingPool,
-        total_uses: newCode.totalUses,
-        max_claims: newCode.totalUses,
-        claimed_uses: 0,
-        claims_count: 0,
-        per_user_limit: newCode.perUserLimit,
-        is_active: newCode.status === 'ACTIVE',
-        status: newCode.status,
-        wallet_destination: newCode.walletDestination,
-        wallet_type: newCode.walletDestination === 'WITHDRAW_WALLET' ? 'WITHDRAW' : 'TOPUP',
-        created_at: newCode.createdAt,
-        updated_at: newCode.updatedAt,
-      });
-    } catch (e) {
-      console.warn('Supabase gift code insert error:', e);
+  try {
+    const res = await fetch('/api/admin/gift-codes/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ giftCode: newCode, adminId }),
+    });
+    const json = await res.json();
+    if (json.success && json.data) {
+      const saved = { ...newCode, ...json.data, id: json.data.id || newCode.id };
+      const list = getLocal<GiftCode[]>(STORAGE_KEYS.GIFT_CODES, initialGiftCodes);
+      list.unshift(saved);
+      saveLocal(STORAGE_KEYS.GIFT_CODES, list);
+      return saved;
     }
+  } catch (err) {
+    console.warn('Backend createGiftCode error, fallback to local:', err);
   }
 
   const list = getLocal<GiftCode[]>(STORAGE_KEYS.GIFT_CODES, initialGiftCodes);
@@ -7392,43 +7396,39 @@ export async function updateGiftCode(
 ): Promise<GiftCode> {
   const list = getLocal<GiftCode[]>(STORAGE_KEYS.GIFT_CODES, initialGiftCodes);
   const index = list.findIndex((c) => c.id === id);
-  if (index === -1) {
-    throw new Error('Gift code not found.');
-  }
 
-  const current = list[index];
+  const current = index !== -1 ? list[index] : { id, code: 'GIFT' } as any;
   const updated: GiftCode = {
     ...current,
     ...updates,
     updatedAt: new Date().toISOString(),
   };
 
-  if (isSupabaseConfigured && supabase) {
-    try {
-      await supabase.from('gift_codes').update({
-        code: updated.code,
-        amount_type: updated.amountType,
-        amount: updated.amount,
-        min_amount: updated.minAmount,
-        max_amount: updated.maxAmount,
-        total_pool: updated.totalPool,
-        remaining_pool: updated.remainingPool,
-        total_uses: updated.totalUses,
-        per_user_limit: updated.perUserLimit,
-        start_date: updated.startDate,
-        expiry_date: updated.expiryDate,
-        status: updated.status,
-        description: updated.description,
-        wallet_destination: updated.walletDestination,
-        updated_at: updated.updatedAt,
-      }).eq('id', id);
-    } catch (e) {
-      console.warn('Supabase gift code update error:', e);
+  try {
+    const res = await fetch('/api/admin/gift-codes/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ giftCode: { id, ...updated }, adminId }),
+    });
+    const json = await res.json();
+    if (json.success && json.data) {
+      const saved = { ...updated, ...json.data };
+      if (index !== -1) {
+        list[index] = saved;
+      } else {
+        list.unshift(saved);
+      }
+      saveLocal(STORAGE_KEYS.GIFT_CODES, list);
+      return saved;
     }
+  } catch (err) {
+    console.warn('Backend updateGiftCode error, fallback to local:', err);
   }
 
-  list[index] = updated;
-  saveLocal(STORAGE_KEYS.GIFT_CODES, list);
+  if (index !== -1) {
+    list[index] = updated;
+    saveLocal(STORAGE_KEYS.GIFT_CODES, list);
+  }
 
   await recordAuditLog(
     adminId,
@@ -7450,12 +7450,18 @@ export async function deleteGiftCode(id: string, adminId: string): Promise<boole
   const filtered = list.filter((c) => c.id !== id);
   saveLocal(STORAGE_KEYS.GIFT_CODES, filtered);
 
-  if (isSupabaseConfigured && supabase) {
-    try {
-      await supabase.from('gift_codes').delete().eq('id', id);
-    } catch (e) {
-      console.warn('Supabase gift code delete error:', e);
+  try {
+    const res = await fetch('/api/admin/gift-codes/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, adminId }),
+    });
+    const json = await res.json();
+    if (json.success) {
+      return true;
     }
+  } catch (err) {
+    console.warn('Backend deleteGiftCode error, fallback to client:', err);
   }
 
   if (target) {
@@ -7586,6 +7592,66 @@ export async function claimGiftCode(
   const cleanCode = (rawCode || '').trim().toUpperCase();
   if (!cleanCode) {
     throw new Error('Please enter a valid gift code.');
+  }
+
+  // 0. Attempt Server-Side Atomic Redemption
+  try {
+    const res = await fetch('/api/gift-codes/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: cleanCode, userId }),
+    });
+    const json = await res.json();
+    if (json.success) {
+      // Sync local wallet and claim cache
+      const userProfile = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {
+        mobile: '9500667390',
+        membershipNumber: '2829906',
+        walletBalance: 0,
+        deviceEarnings: 0,
+      } as any);
+      const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+        id: 'w_' + userId,
+        userId,
+        topupBalance: 0,
+        withdrawBalance: 0,
+        availableBalance: 0,
+        rechargeBalance: 0,
+        earnedBalance: 0,
+        pendingBalance: 0,
+        totalEarned: 0,
+        totalWithdrawn: 0,
+      } as any);
+
+      const dest = json.destination || 'TOPUP_WALLET';
+      const isTopup = dest === 'TOPUP_WALLET' || dest === 'TOPUP' || dest === 'RECHARGE_BALANCE';
+      if (isTopup) {
+        wallet.topupBalance = json.newBalance;
+        wallet.rechargeBalance = json.newBalance;
+      } else {
+        wallet.withdrawBalance = json.newBalance;
+        wallet.earnedBalance = json.newBalance;
+        wallet.availableBalance = json.newBalance;
+        userProfile.walletBalance = json.newBalance;
+      }
+      saveLocal(STORAGE_KEYS.WALLET, wallet);
+      saveLocal(STORAGE_KEYS.PROFILE, userProfile);
+
+      return {
+        success: true,
+        rewardAmount: json.rewardAmount,
+        code: json.code,
+        destination: dest,
+        newBalance: json.newBalance,
+      };
+    } else if (json.error) {
+      throw new Error(json.error);
+    }
+  } catch (err: any) {
+    if (err.message && !err.message.includes('Failed to fetch') && !err.message.includes('NetworkError')) {
+      throw err;
+    }
+    console.warn('Backend claimGiftCode error, falling back to local simulation:', err);
   }
 
   // 1. Fetch code & validate exists
@@ -8441,43 +8507,35 @@ export async function performDailyCheckIn(userId: string): Promise<{
 
 /**
  * Fetch dynamic About Platform rules and section settings.
- * Loads from Supabase 'about_platform_config' or local cache.
+ * Loads from Server / Supabase 'about_platform_config' or local cache.
  */
 export async function fetchAboutPlatformConfig(): Promise<AboutPlatformConfig> {
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const { data, error } = await supabase
-        .from('about_platform_config')
-        .select('*')
-        .order('updated_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (!error && data) {
-        return {
-          id: data.id,
-          pageTitle: data.page_title || defaultAboutPlatformConfig.pageTitle,
-          pageSubtitle: data.page_subtitle || defaultAboutPlatformConfig.pageSubtitle,
-          heroBadge: data.hero_badge || defaultAboutPlatformConfig.heroBadge,
-          companyName: data.company_name || defaultAboutPlatformConfig.companyName,
-          appVersion: data.app_version || defaultAboutPlatformConfig.appVersion,
-          supportEmail: data.support_email || defaultAboutPlatformConfig.supportEmail,
-          supportTelegram: data.support_telegram || defaultAboutPlatformConfig.supportTelegram,
-          supportWhatsapp: data.support_whatsapp || defaultAboutPlatformConfig.supportWhatsapp,
-          supportHours: data.support_hours || defaultAboutPlatformConfig.supportHours,
-          investingSteps: data.investing_steps || defaultAboutPlatformConfig.investingSteps,
-          customRules: data.custom_rules || defaultAboutPlatformConfig.customRules,
-          sections: data.sections || defaultAboutPlatformConfig.sections,
-          topupWalletNotes: data.topup_wallet_notes || defaultAboutPlatformConfig.topupWalletNotes,
-          withdrawWalletNotes: data.withdraw_wallet_notes || defaultAboutPlatformConfig.withdrawWalletNotes,
-          giftCodeNotes: data.gift_code_notes || defaultAboutPlatformConfig.giftCodeNotes,
-          updatedAt: data.updated_at,
-          updatedBy: data.updated_by,
-        };
-      }
-    } catch (e) {
-      console.warn('Supabase fetchAboutPlatformConfig fallback:', e);
+  try {
+    const res = await fetch('/api/about-platform');
+    const json = await res.json();
+    if (json.success && json.data) {
+      return {
+        id: json.data.id || defaultAboutPlatformConfig.id,
+        pageTitle: json.data.pageTitle || defaultAboutPlatformConfig.pageTitle,
+        pageSubtitle: json.data.pageSubtitle || defaultAboutPlatformConfig.pageSubtitle,
+        heroBadge: json.data.heroBadge || defaultAboutPlatformConfig.heroBadge,
+        companyName: json.data.companyName || defaultAboutPlatformConfig.companyName,
+        appVersion: json.data.platformVersion || json.data.appVersion || defaultAboutPlatformConfig.appVersion,
+        supportEmail: json.data.supportEmail || defaultAboutPlatformConfig.supportEmail,
+        supportTelegram: json.data.supportTelegram || defaultAboutPlatformConfig.supportTelegram,
+        supportWhatsapp: json.data.supportWhatsapp || defaultAboutPlatformConfig.supportWhatsapp,
+        supportHours: json.data.supportHours || defaultAboutPlatformConfig.supportHours,
+        investingSteps: json.data.investingSteps || defaultAboutPlatformConfig.investingSteps,
+        customRules: json.data.customRules || defaultAboutPlatformConfig.customRules,
+        sections: json.data.sections || defaultAboutPlatformConfig.sections,
+        topupWalletNotes: json.data.topupWalletNotes || defaultAboutPlatformConfig.topupWalletNotes,
+        withdrawWalletNotes: json.data.withdrawWalletNotes || defaultAboutPlatformConfig.withdrawWalletNotes,
+        giftCodeNotes: json.data.giftCodeNotes || defaultAboutPlatformConfig.giftCodeNotes,
+        updatedAt: json.data.updatedAt,
+      };
     }
+  } catch (err) {
+    console.warn('Backend fetchAboutPlatformConfig error, fallback to local:', err);
   }
 
   return getLocal<AboutPlatformConfig>(
@@ -8488,7 +8546,7 @@ export async function fetchAboutPlatformConfig(): Promise<AboutPlatformConfig> {
 
 /**
  * Update dynamic About Platform configuration (Admin only).
- * Saves to Supabase and persists across users.
+ * Saves to Server / Supabase and persists across users.
  */
 export async function updateAboutPlatformConfig(
   config: AboutPlatformConfig,
@@ -8500,39 +8558,19 @@ export async function updateAboutPlatformConfig(
     updatedBy: adminId,
   };
 
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const payload = {
-        id: updated.id || 'cfg_about_platform_01',
-        page_title: updated.pageTitle,
-        page_subtitle: updated.pageSubtitle,
-        hero_badge: updated.heroBadge,
-        company_name: updated.companyName,
-        app_version: updated.appVersion,
-        support_email: updated.supportEmail,
-        support_telegram: updated.supportTelegram,
-        support_whatsapp: updated.supportWhatsapp,
-        support_hours: updated.supportHours,
-        investing_steps: updated.investingSteps,
-        custom_rules: updated.customRules,
-        sections: updated.sections,
-        topup_wallet_notes: updated.topupWalletNotes,
-        withdraw_wallet_notes: updated.withdrawWalletNotes,
-        gift_code_notes: updated.giftCodeNotes,
-        updated_at: updated.updatedAt,
-        updated_by: adminId,
-      };
-
-      const { error } = await supabase
-        .from('about_platform_config')
-        .upsert(payload, { onConflict: 'id' });
-
-      if (error) {
-        console.warn('Supabase upsert about_platform_config notice:', error.message);
-      }
-    } catch (e) {
-      console.warn('Supabase updateAboutPlatformConfig fallback:', e);
+  try {
+    const res = await fetch('/api/admin/about-platform', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: updated, adminId }),
+    });
+    const json = await res.json();
+    if (json.success && json.data) {
+      saveLocal(STORAGE_KEYS.ABOUT_PLATFORM, updated);
+      return updated;
     }
+  } catch (err) {
+    console.warn('Backend updateAboutPlatformConfig error, fallback to local:', err);
   }
 
   saveLocal(STORAGE_KEYS.ABOUT_PLATFORM, updated);
@@ -8555,9 +8593,19 @@ export async function updateAboutPlatformConfig(
 // ==============================================================================
 
 /**
- * Fetch all missions (from Supabase or LocalStorage)
+ * Fetch all missions (from Supabase via server endpoint with storage fallback)
  */
 export async function fetchMissions(includeDisabled: boolean = false): Promise<Mission[]> {
+  try {
+    const res = await fetch(`/api/missions?includeDisabled=${includeDisabled}`);
+    const json = await res.json();
+    if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+      return json.data;
+    }
+  } catch (err) {
+    console.warn('Backend fetchMissions error, fallback to local:', err);
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
       let query = supabase
@@ -8620,28 +8668,22 @@ export async function createMission(
     updatedAt: new Date().toISOString(),
   };
 
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const { error } = await supabase.from('missions').insert({
-        id: newMission.id,
-        title: newMission.title,
-        description: newMission.description,
-        required_referrals: newMission.requiredReferrals,
-        reward_amount: newMission.rewardAmount,
-        wallet_type: newMission.walletType,
-        icon: newMission.icon,
-        status: newMission.status,
-        display_order: newMission.displayOrder,
-        created_at: newMission.createdAt,
-        updated_at: newMission.updatedAt,
-      });
-
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase createMission error:', error.message);
-      }
-    } catch (e) {
-      console.warn('Supabase createMission fallback:', e);
+  try {
+    const res = await fetch('/api/admin/missions/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mission: newMission, adminId }),
+    });
+    const json = await res.json();
+    if (json.success && json.data) {
+      const savedMission = { ...newMission, ...json.data, id: json.data.id || newMission.id };
+      allMissions.push(savedMission);
+      allMissions.sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+      saveLocal(STORAGE_KEYS.MISSIONS, allMissions);
+      return savedMission;
     }
+  } catch (err) {
+    console.warn('Backend createMission error, fallback to client:', err);
   }
 
   allMissions.push(newMission);
@@ -8672,45 +8714,41 @@ export async function updateMission(
 ): Promise<Mission> {
   const allMissions = getLocal<Mission[]>(STORAGE_KEYS.MISSIONS, defaultMissions);
   const idx = allMissions.findIndex((m) => m.id === id);
-  if (idx === -1) {
-    throw new Error('Mission not found');
-  }
 
   const updated: Mission = {
-    ...allMissions[idx],
+    ...(idx !== -1 ? allMissions[idx] : { id, title: 'Mission', requiredReferrals: 1, rewardAmount: 50, walletType: 'WITHDRAW_WALLET', icon: 'Target', status: 'ACTIVE', displayOrder: 1, createdAt: new Date().toISOString() }),
     ...payload,
     walletType: 'WITHDRAW_WALLET', // enforce Withdraw Wallet
     updatedAt: new Date().toISOString(),
   };
 
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const { error } = await supabase
-        .from('missions')
-        .update({
-          title: updated.title,
-          description: updated.description,
-          required_referrals: updated.requiredReferrals,
-          reward_amount: updated.rewardAmount,
-          wallet_type: updated.walletType,
-          icon: updated.icon,
-          status: updated.status,
-          display_order: updated.displayOrder,
-          updated_at: updated.updatedAt,
-        })
-        .eq('id', id);
-
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase updateMission error:', error.message);
+  try {
+    const res = await fetch('/api/admin/missions/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mission: { id, ...updated }, adminId }),
+    });
+    const json = await res.json();
+    if (json.success && json.data) {
+      const savedMission = { ...updated, ...json.data };
+      if (idx !== -1) {
+        allMissions[idx] = savedMission;
+      } else {
+        allMissions.push(savedMission);
       }
-    } catch (e) {
-      console.warn('Supabase updateMission fallback:', e);
+      allMissions.sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+      saveLocal(STORAGE_KEYS.MISSIONS, allMissions);
+      return savedMission;
     }
+  } catch (err) {
+    console.warn('Backend updateMission error, fallback to client:', err);
   }
 
-  allMissions[idx] = updated;
-  allMissions.sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
-  saveLocal(STORAGE_KEYS.MISSIONS, allMissions);
+  if (idx !== -1) {
+    allMissions[idx] = updated;
+    allMissions.sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+    saveLocal(STORAGE_KEYS.MISSIONS, allMissions);
+  }
 
   try {
     await recordAuditLog(
@@ -8735,15 +8773,19 @@ export async function deleteMission(id: string, adminId: string = 'adm_root_700'
   const existing = allMissions.find((m) => m.id === id);
   const filtered = allMissions.filter((m) => m.id !== id);
 
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const { error } = await supabase.from('missions').delete().eq('id', id);
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase deleteMission notice:', error.message);
-      }
-    } catch (e) {
-      console.warn('Supabase deleteMission fallback:', e);
+  try {
+    const res = await fetch('/api/admin/missions/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ missionId: id, adminId }),
+    });
+    const json = await res.json();
+    if (json.success) {
+      saveLocal(STORAGE_KEYS.MISSIONS, filtered);
+      return;
     }
+  } catch (err) {
+    console.warn('Backend deleteMission error, fallback to client:', err);
   }
 
   saveLocal(STORAGE_KEYS.MISSIONS, filtered);
@@ -9633,31 +9675,57 @@ export async function saveSiteSettings(config: Partial<SiteSettings>, adminId = 
 
 export async function uploadSiteAsset(file: File, prefix = 'branding'): Promise<string> {
   if (!file) throw new Error('No file provided.');
+
   const ext = file.name.split('.').pop() || 'png';
   const fileName = `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
 
-  if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase.storage
-      .from('site-assets')
-      .upload(fileName, file, { cacheControl: '3600', upsert: true });
-
-    if (error) {
-      console.warn('[SITE ASSET UPLOAD] Supabase upload failed, falling back to base64:', error.message);
-    } else if (data?.path) {
-      const { data: publicData } = supabase.storage
-        .from('site-assets')
-        .getPublicUrl(data.path);
-      return publicData.publicUrl;
-    }
-  }
-
-  // Fallback to base64 if storage is unavailable
-  return new Promise((resolve, reject) => {
+  // First convert to base64 dataUrl
+  const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result as string);
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+
+  try {
+    const res = await fetch('/api/admin/upload-asset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fileName,
+        fileData: dataUrl,
+        contentType: file.type || 'image/png',
+      }),
+    });
+    const json = await res.json();
+    if (json.success && json.url) {
+      return json.url;
+    }
+  } catch (err) {
+    console.warn('[SITE ASSET UPLOAD] Backend upload error, using local dataUrl fallback:', err);
+  }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase.storage
+        .from('site-assets')
+        .upload(fileName, file, { cacheControl: '3600', upsert: true });
+
+      if (!error && data?.path) {
+        const { data: publicData } = supabase.storage
+          .from('site-assets')
+          .getPublicUrl(data.path);
+        if (publicData?.publicUrl) {
+          return publicData.publicUrl;
+        }
+      }
+    } catch (err) {
+      console.warn('[SITE ASSET UPLOAD] Client supabase upload fallback failed:', err);
+    }
+  }
+
+  // Guaranteed fallback to dataUrl
+  return dataUrl;
 }
 
 // ==============================================================================

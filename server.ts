@@ -4150,6 +4150,1065 @@ app.post('/api/admin/reject-usdt-deposit', async (req, res) => {
   }
 });
 
+// ==============================================================================
+// 12. ADMIN PLANS CRUD ENDPOINTS
+// ==============================================================================
+app.post('/api/admin/plans/save', async (req, res) => {
+  try {
+    const { plan, adminId } = req.body;
+    if (!plan || !plan.name) {
+      return res.status(400).json({ success: false, error: 'Plan data and name are required.' });
+    }
+
+    const isUuid = Boolean(plan.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(plan.id));
+    const isNew = !isUuid;
+    const planId = isUuid ? plan.id : crypto.randomUUID();
+    const price = Number(plan.devicePrice || plan.price || 0);
+    const hourly = Number(plan.hourlyEarnings || (plan.dailyEarnings ? +(plan.dailyEarnings / 24).toFixed(2) : 0));
+    const daily = Number(plan.dailyEarnings || (hourly * 24));
+    const cat = (plan.category || 'VIP').toUpperCase();
+
+    const planRecord = {
+      name: plan.name,
+      category: cat,
+      description: plan.description || plan.name,
+      price: price,
+      earning_rate: hourly,
+      daily_earnings: daily,
+      hourly_earnings: hourly,
+      earning_type: cat === 'PRO' ? 'DAILY' : (plan.earningType || 'HOURLY'),
+      duration: Number(plan.duration || plan.durationDays || 365),
+      duration_days: Number(plan.durationDays || plan.duration || 365),
+      limit_per_user: Number(plan.limit || plan.purchaseLimit || plan.limit_per_user || 5),
+      purchase_limit: Number(plan.limit || plan.purchaseLimit || 5),
+      instant_bonus: Number(plan.instantBonus || 0),
+      tags: Array.isArray(plan.tags) ? plan.tags : ['Hourly Yield'],
+      image_type: plan.imageType || (cat === 'PRO' ? 'cabinet-pro' : cat === 'EVENT' ? 'cabinet-gold' : 'cabinet-green'),
+      status: plan.status || 'active',
+      allow_duplicate: plan.allowDuplicate !== false,
+      start_date: plan.startDate || null,
+      end_date: plan.endDate || null,
+      requires_active_hourly_plan: Boolean(plan.requiresActiveHourlyPlan),
+      updated_at: new Date().toISOString(),
+    };
+
+    if (supabase) {
+      if (isNew) {
+        const { data, error } = await supabase
+          .from('plans')
+          .insert({ id: planId, ...planRecord })
+          .select();
+
+        if (error) {
+          const { data: retryData, error: retryErr } = await supabase
+            .from('plans')
+            .insert(planRecord)
+            .select();
+          if (retryErr) throw new Error(retryErr.message);
+          return res.json({ success: true, data: (retryData && retryData[0]) || { id: planId, ...planRecord } });
+        }
+        return res.json({ success: true, data: (data && data[0]) || { id: planId, ...planRecord } });
+      } else {
+        const { data, error } = await supabase
+          .from('plans')
+          .update(planRecord)
+          .eq('id', planId)
+          .select();
+
+        if (error) throw new Error(error.message);
+        return res.json({ success: true, data: (data && data[0]) || { id: planId, ...planRecord } });
+      }
+    }
+
+    return res.json({ success: true, data: { id: planId, ...planRecord } });
+  } catch (err: any) {
+    console.error('[ADMIN SAVE PLAN ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to save plan.' });
+  }
+});
+
+app.post('/api/admin/plans/delete', async (req, res) => {
+  try {
+    const { planId, adminId } = req.body;
+    if (!planId) {
+      return res.status(400).json({ success: false, error: 'Plan ID is required.' });
+    }
+
+    if (supabase) {
+      const { error } = await supabase
+        .from('plans')
+        .update({ status: 'archived', updated_at: new Date().toISOString() })
+        .eq('id', planId);
+
+      if (error) throw new Error(error.message);
+    }
+
+    return res.json({ success: true, message: 'Plan archived successfully.' });
+  } catch (err: any) {
+    console.error('[ADMIN DELETE PLAN ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to archive plan.' });
+  }
+});
+
+// ==============================================================================
+// 13. MISSIONS CRUD & STATS ENDPOINTS
+// ==============================================================================
+app.get('/api/missions', async (req, res) => {
+  try {
+    const includeDisabled = req.query.includeDisabled === 'true';
+    if (!supabase) {
+      return res.json({ success: true, data: [] });
+    }
+
+    let query = supabase.from('missions').select('*').order('display_order', { ascending: true });
+    if (!includeDisabled) {
+      query = query.eq('status', 'ACTIVE');
+    }
+
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+
+    const mapped = (data || []).map((m: any) => ({
+      id: m.id,
+      title: m.title,
+      description: m.description,
+      requiredReferrals: Number(m.required_referrals ?? m.target_count ?? 1),
+      rewardAmount: Number(m.reward_amount ?? 50),
+      walletType: 'WITHDRAW_WALLET',
+      icon: m.icon || 'Target',
+      status: (m.status === 'active' || m.status === 'ACTIVE' || m.is_active ? 'ACTIVE' : 'DISABLED') as 'ACTIVE' | 'DISABLED',
+      displayOrder: Number(m.display_order ?? m.sort_order ?? 1),
+      createdAt: m.created_at,
+      updatedAt: m.updated_at,
+    }));
+
+    return res.json({ success: true, data: mapped });
+  } catch (err: any) {
+    console.error('[GET MISSIONS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/missions/save', async (req, res) => {
+  try {
+    const { mission, adminId } = req.body;
+    if (!mission || !mission.title) {
+      return res.status(400).json({ success: false, error: 'Mission title is required.' });
+    }
+
+    const isUuid = Boolean(mission.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mission.id));
+    const isNew = !isUuid;
+    const missionId = isUuid ? mission.id : crypto.randomUUID();
+    const reqRefs = Math.max(1, Number(mission.requiredReferrals || 1));
+    const reward = Math.max(1, Number(mission.rewardAmount || 50));
+    const status = mission.status || 'ACTIVE';
+    const order = Number(mission.displayOrder || 1);
+
+    const record = {
+      title: mission.title.trim(),
+      description: mission.description?.trim() || `Invite ${reqRefs} active friends with first plan purchase.`,
+      required_referrals: reqRefs,
+      target_count: reqRefs,
+      reward_amount: reward,
+      wallet_type: 'WITHDRAW_WALLET',
+      reward_wallet: 'WITHDRAW_WALLET',
+      icon: mission.icon || 'Target',
+      status: status,
+      is_active: status === 'ACTIVE' || status === 'active',
+      display_order: order,
+      sort_order: order,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (supabase) {
+      if (isNew) {
+        const { data, error } = await supabase
+          .from('missions')
+          .insert({ id: missionId, created_at: new Date().toISOString(), ...record })
+          .select();
+
+        if (error) {
+          const { data: retryData, error: retryErr } = await supabase
+            .from('missions')
+            .insert({ created_at: new Date().toISOString(), ...record })
+            .select();
+          if (retryErr) throw new Error(retryErr.message);
+          return res.json({ success: true, data: (retryData && retryData[0]) || { id: missionId, ...record } });
+        }
+        return res.json({ success: true, data: (data && data[0]) || { id: missionId, ...record } });
+      } else {
+        const { data, error } = await supabase
+          .from('missions')
+          .update(record)
+          .eq('id', missionId)
+          .select();
+
+        if (error) throw new Error(error.message);
+        return res.json({ success: true, data: (data && data[0]) || { id: missionId, ...record } });
+      }
+    }
+
+    return res.json({ success: true, data: { id: missionId, ...record } });
+  } catch (err: any) {
+    console.error('[ADMIN SAVE MISSION ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to save mission.' });
+  }
+});
+
+app.post('/api/admin/missions/delete', async (req, res) => {
+  try {
+    const { missionId, adminId } = req.body;
+    if (!missionId) {
+      return res.status(400).json({ success: false, error: 'Mission ID is required.' });
+    }
+
+    if (supabase) {
+      const { error } = await supabase.from('missions').delete().eq('id', missionId);
+      if (error) throw new Error(error.message);
+    }
+
+    return res.json({ success: true, message: 'Mission deleted successfully.' });
+  } catch (err: any) {
+    console.error('[ADMIN DELETE MISSION ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to delete mission.' });
+  }
+});
+
+app.get('/api/admin/missions/stats', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.json({ success: true, data: { totalMissions: 0, activeMissions: 0, totalClaimsCount: 0, totalRewardsDistributed: 0 } });
+    }
+
+    const [missionsRes, claimsRes] = await Promise.all([
+      supabase.from('missions').select('id, status, is_active'),
+      supabase.from('mission_claims').select('reward_amount'),
+    ]);
+
+    const missionsList = missionsRes.data || [];
+    const claimsList = claimsRes.data || [];
+
+    const totalMissions = missionsList.length;
+    const activeMissions = missionsList.filter((m: any) => m.status === 'ACTIVE' || m.is_active === true).length;
+    const totalClaimsCount = claimsList.length;
+    const totalRewardsDistributed = claimsList.reduce((acc: number, c: any) => acc + Number(c.reward_amount || 0), 0);
+
+    return res.json({
+      success: true,
+      data: {
+        totalMissions,
+        activeMissions,
+        totalClaimsCount,
+        totalRewardsDistributed,
+      },
+    });
+  } catch (err: any) {
+    console.error('[GET MISSION STATS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/admin/missions/claims', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const { data, error } = await supabase
+      .from('mission_claims')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (error) throw new Error(error.message);
+
+    return res.json({ success: true, data: data || [] });
+  } catch (err: any) {
+    console.error('[GET MISSION CLAIMS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==============================================================================
+// 14. GIFT CODES CRUD & ANALYTICS ENDPOINTS
+// ==============================================================================
+app.get('/api/gift-codes', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const { data, error } = await supabase
+      .from('gift_codes')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw new Error(error.message);
+
+    const mapped = (data || []).map((g: any) => ({
+      id: g.id,
+      code: g.code,
+      amountType: g.amount_type || g.reward_type || 'FIXED',
+      amount: g.amount ? Number(g.amount) : undefined,
+      minAmount: g.min_amount ? Number(g.min_amount) : undefined,
+      maxAmount: g.max_amount ? Number(g.max_amount) : undefined,
+      totalPool: Number(g.total_pool || 0),
+      remainingPool: Number(g.remaining_pool !== undefined ? g.remaining_pool : g.total_pool || 0),
+      totalUses: Number(g.total_uses || g.max_claims || 0),
+      usedCount: Number(g.claims_count || g.claimed_uses || g.used_count || 0),
+      perUserLimit: Number(g.per_user_limit || 1),
+      startDate: g.start_date || g.created_at,
+      expiryDate: g.expiry_date || g.expires_at,
+      status: g.status || (g.is_active ? 'ACTIVE' : 'DISABLED'),
+      description: g.description || '',
+      walletDestination: g.wallet_destination || g.wallet_type || 'TOPUP_WALLET',
+      createdBy: g.created_by || 'Admin',
+      createdAt: g.created_at,
+      updatedAt: g.updated_at,
+    }));
+
+    return res.json({ success: true, data: mapped });
+  } catch (err: any) {
+    console.error('[GET GIFT CODES ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/gift-codes/redeem', async (req, res) => {
+  try {
+    const { code: rawCode, userId } = req.body;
+    if (!rawCode || !userId) {
+      return res.status(400).json({ success: false, error: 'Code and user ID are required.' });
+    }
+
+    const cleanCode = rawCode.trim().toUpperCase();
+
+    if (!supabase) {
+      return res.json({ success: true, rewardAmount: 50, code: cleanCode, destination: 'TOPUP_WALLET', newBalance: 100 });
+    }
+
+    // 1. Fetch gift code
+    const { data: codeData, error: codeErr } = await supabase
+      .from('gift_codes')
+      .select('*')
+      .ilike('code', cleanCode)
+      .maybeSingle();
+
+    if (codeErr || !codeData) {
+      return res.status(404).json({ success: false, error: 'Invalid gift code.' });
+    }
+
+    const isActive = codeData.status === 'ACTIVE' || codeData.is_active === true;
+    if (!isActive || codeData.status === 'DISABLED' || codeData.status === 'PAUSED') {
+      return res.status(400).json({ success: false, error: 'This gift code is no longer active.' });
+    }
+
+    const remainingPool = Number(codeData.remaining_pool !== undefined ? codeData.remaining_pool : codeData.total_pool || 0);
+    const totalUses = Number(codeData.total_uses || codeData.max_claims || 100);
+    const usedCount = Number(codeData.claims_count || codeData.claimed_uses || 0);
+
+    if (remainingPool <= 0 || usedCount >= totalUses) {
+      return res.status(400).json({ success: false, error: 'This gift code has been fully claimed.' });
+    }
+
+    // 2. Check duplicate claim
+    const { data: userClaims, error: claimsErr } = await supabase
+      .from('gift_code_claims')
+      .select('id')
+      .eq('gift_code_id', codeData.id)
+      .eq('user_id', userId);
+
+    const perUserLimit = Number(codeData.per_user_limit || 1);
+    if (userClaims && userClaims.length >= perUserLimit) {
+      return res.status(400).json({ success: false, error: 'You have already claimed this gift code.' });
+    }
+
+    // 3. Calculate reward
+    let reward = Number(codeData.amount || 0);
+    if (codeData.amount_type === 'RANDOM') {
+      const min = Number(codeData.min_amount || 1);
+      const max = Number(codeData.max_amount || 100);
+      const effMax = Math.min(max, remainingPool);
+      reward = Math.floor(Math.random() * (effMax - min + 1)) + min;
+    }
+    if (reward <= 0) reward = Math.min(10, remainingPool);
+    reward = Math.min(reward, remainingPool);
+
+    // 4. Update gift code
+    const nextPool = Math.max(0, remainingPool - reward);
+    const nextUsed = usedCount + 1;
+    const nextStatus = (nextPool <= 0 || nextUsed >= totalUses) ? 'EXHAUSTED' : codeData.status;
+
+    await supabase
+      .from('gift_codes')
+      .update({
+        remaining_pool: nextPool,
+        claims_count: nextUsed,
+        claimed_uses: nextUsed,
+        status: nextStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', codeData.id);
+
+    // 5. Fetch user and wallet
+    const dest = codeData.wallet_destination || codeData.wallet_type || 'TOPUP_WALLET';
+    const isTopup = dest === 'TOPUP_WALLET' || dest === 'TOPUP' || dest === 'RECHARGE_BALANCE';
+
+    const { data: curWallet } = await supabase
+      .from('wallets')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    let newBalance = 0;
+    if (curWallet) {
+      if (isTopup) {
+        const prev = Number(curWallet.recharge_balance || curWallet.topup_balance || 0);
+        newBalance = +(prev + reward).toFixed(2);
+        await supabase
+          .from('wallets')
+          .update({ recharge_balance: newBalance, topup_balance: newBalance, updated_at: new Date().toISOString() })
+          .eq('user_id', userId);
+      } else {
+        const prev = Number(curWallet.earned_balance || curWallet.withdraw_balance || curWallet.available_balance || 0);
+        newBalance = +(prev + reward).toFixed(2);
+        await supabase
+          .from('wallets')
+          .update({
+            earned_balance: newBalance,
+            withdraw_balance: newBalance,
+            available_balance: newBalance,
+            total_earned: +((curWallet.total_earned || 0) + reward).toFixed(2),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('user_id', userId);
+      }
+    }
+
+    // 6. Record claim
+    try {
+      const { error: insErr } = await supabase.from('gift_code_claims').insert({
+        id: crypto.randomUUID(),
+        gift_code_id: codeData.id,
+        code: codeData.code,
+        gift_code: codeData.code,
+        user_id: userId,
+        amount: reward,
+        wallet_destination: dest,
+        wallet_type: dest,
+        status: 'COMPLETED',
+        claimed_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      });
+      if (insErr) {
+        console.warn('[REDEEM CLAIM INSERT NOTICE]', insErr.message);
+      }
+    } catch (e: any) {
+      console.warn('[REDEEM CLAIM INSERT EXCEPTION]', e.message);
+    }
+
+    return res.json({
+      success: true,
+      rewardAmount: reward,
+      code: codeData.code,
+      destination: dest,
+      newBalance,
+    });
+  } catch (err: any) {
+    console.error('[REDEEM GIFT CODE ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to redeem gift code.' });
+  }
+});
+
+app.post('/api/admin/gift-codes/save', async (req, res) => {
+  try {
+    const { giftCode, adminId } = req.body;
+    if (!giftCode || !giftCode.code) {
+      return res.status(400).json({ success: false, error: 'Gift code is required.' });
+    }
+
+    const code = giftCode.code.trim().toUpperCase();
+    const isNew = !giftCode.id || giftCode.id.startsWith('new_');
+    const codeId = isNew ? crypto.randomUUID() : giftCode.id;
+    const totalPool = Number(giftCode.totalPool || 0);
+    const totalUses = Number(giftCode.totalUses || 0);
+    const status = giftCode.status || 'ACTIVE';
+
+    const record = {
+      code,
+      amount_type: giftCode.amountType || 'FIXED',
+      reward_type: giftCode.amountType || 'FIXED',
+      amount: giftCode.amount ? Number(giftCode.amount) : null,
+      min_amount: giftCode.minAmount ? Number(giftCode.minAmount) : null,
+      max_amount: giftCode.maxAmount ? Number(giftCode.maxAmount) : null,
+      total_pool: totalPool,
+      remaining_pool: giftCode.remainingPool !== undefined ? Number(giftCode.remainingPool) : totalPool,
+      total_uses: totalUses,
+      max_claims: totalUses,
+      per_user_limit: Number(giftCode.perUserLimit || 1),
+      is_active: status === 'ACTIVE',
+      status: status,
+      wallet_destination: giftCode.walletDestination || 'TOPUP_WALLET',
+      wallet_type: giftCode.walletDestination || 'TOPUP_WALLET',
+      start_date: giftCode.startDate || new Date().toISOString(),
+      expiry_date: giftCode.expiryDate || null,
+      expires_at: giftCode.expiryDate || null,
+      description: giftCode.description || '',
+      created_by: adminId || 'Admin',
+      updated_at: new Date().toISOString(),
+    };
+
+    if (supabase) {
+      if (isNew) {
+        const { data, error } = await supabase
+          .from('gift_codes')
+          .insert({ id: codeId, created_at: new Date().toISOString(), claims_count: 0, claimed_uses: 0, ...record })
+          .select();
+
+        if (error) {
+          const { data: retryData, error: retryErr } = await supabase
+            .from('gift_codes')
+            .insert({ created_at: new Date().toISOString(), claims_count: 0, claimed_uses: 0, ...record })
+            .select();
+          if (retryErr) throw new Error(retryErr.message);
+          return res.json({ success: true, data: (retryData && retryData[0]) || { id: codeId, ...record } });
+        }
+        return res.json({ success: true, data: (data && data[0]) || { id: codeId, ...record } });
+      } else {
+        const { data, error } = await supabase
+          .from('gift_codes')
+          .update(record)
+          .eq('id', codeId)
+          .select();
+
+        if (error) throw new Error(error.message);
+        return res.json({ success: true, data: (data && data[0]) || { id: codeId, ...record } });
+      }
+    }
+
+    return res.json({ success: true, data: { id: codeId, ...record } });
+  } catch (err: any) {
+    console.error('[ADMIN SAVE GIFT CODE ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to save gift code.' });
+  }
+});
+
+app.post('/api/admin/gift-codes/delete', async (req, res) => {
+  try {
+    const { id, adminId } = req.body;
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'Gift code ID is required.' });
+    }
+
+    if (supabase) {
+      const { error } = await supabase.from('gift_codes').delete().eq('id', id);
+      if (error) throw new Error(error.message);
+    }
+
+    return res.json({ success: true, message: 'Gift code deleted successfully.' });
+  } catch (err: any) {
+    console.error('[ADMIN DELETE GIFT CODE ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to delete gift code.' });
+  }
+});
+
+app.get('/api/admin/gift-codes/analytics', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.json({ success: true, data: null });
+    }
+
+    const [codesRes, claimsRes] = await Promise.all([
+      supabase.from('gift_codes').select('*'),
+      supabase.from('gift_code_claims').select('*'),
+    ]);
+
+    const codes = codesRes.data || [];
+    const claims = claimsRes.data || [];
+
+    const totalCodes = codes.length;
+    const activeCodes = codes.filter((c: any) => c.status === 'ACTIVE' || c.is_active === true).length;
+    const totalPoolAllocated = codes.reduce((acc: number, c: any) => acc + Number(c.total_pool || 0), 0);
+    const totalDistributed = claims.reduce((acc: number, c: any) => acc + Number(c.amount || 0), 0);
+    const totalClaims = claims.length;
+
+    return res.json({
+      success: true,
+      data: {
+        totalCodes,
+        activeCodes,
+        totalPoolAllocated,
+        totalDistributed,
+        totalClaims,
+      },
+    });
+  } catch (err: any) {
+    console.error('[GET GIFT CODE ANALYTICS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/admin/gift-codes/claims', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const { data, error } = await supabase
+      .from('gift_code_claims')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (error) throw new Error(error.message);
+
+    return res.json({ success: true, data: data || [] });
+  } catch (err: any) {
+    console.error('[GET GIFT CODE CLAIMS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==============================================================================
+// 15. ABOUT PLATFORM DYNAMIC CONFIG & RULES ENDPOINTS
+// ==============================================================================
+app.get('/api/about-platform', async (req, res) => {
+  try {
+    const defaultConfig = {
+      id: 'cfg_about_platform_01',
+      companyName: 'GainPower Green Cloud Infrastructure Ltd.',
+      licenseNo: 'GP-PWR-99824-IND',
+      platformVersion: 'v3.4.0-Production',
+      pageTitle: 'About GainPower Sharing Platform',
+      pageSubtitle: 'Transparent Hardware Yields & Direct Green Power Dividend Distribution',
+      heroBadge: 'Government Compliant & Registered Infrastructure',
+      supportEmail: 'support@gainpower.top',
+      supportTelegram: 'https://t.me/gainpower_official',
+      supportWhatsapp: '+91 98765 43210',
+      supportHours: '24/7 Mon - Sun',
+      sections: {
+        companyIntro: { enabled: true, title: 'Company Overview & Mission' },
+        legalCompliance: { enabled: true, title: 'Legal & Regulatory Compliance' },
+        businessModel: { enabled: true, title: 'Commercial Sharing Model' },
+        investingGuide: { enabled: true, title: 'Getting Started & Hardware Yields' },
+        walletRules: { enabled: true, title: 'Wallet Architecture & Settle Rules' },
+        vipRules: { enabled: true, title: 'VIP Tier Progression' },
+        referralRules: { enabled: true, title: 'Referral Team Commissions' },
+        securityGuarantee: { enabled: true, title: 'Security & Fund Protection' },
+        faq: { enabled: true, title: 'Frequently Asked Questions' },
+      },
+      investingSteps: [
+        {
+          id: 'step_1',
+          stepNumber: 1,
+          title: 'Register & Activate Account',
+          description: 'Sign up with your phone number and claim your welcome bonus instantly.',
+          icon: 'UserPlus',
+          badge: 'Step 1',
+          enabled: true,
+        },
+        {
+          id: 'step_2',
+          stepNumber: 2,
+          title: 'Recharge Deposit Balance',
+          description: 'Top up your recharge balance via seamless UPI or USDT gateway.',
+          icon: 'Wallet',
+          badge: 'Step 2',
+          enabled: true,
+        },
+        {
+          id: 'step_3',
+          stepNumber: 3,
+          title: 'Lease Power Hardware Station',
+          description: 'Select a VIP Hourly Station, PRO Yield Cabinet, or Festival Event Package.',
+          icon: 'Cpu',
+          badge: 'Step 3',
+          enabled: true,
+        },
+        {
+          id: 'step_4',
+          stepNumber: 4,
+          title: 'Receive Dividends & Withdraw',
+          description: 'Hourly yields credit directly to your earnings balance for daily withdrawal.',
+          icon: 'DollarSign',
+          badge: 'Step 4',
+          enabled: true,
+        },
+      ],
+      customRules: [
+        {
+          id: 'rule_1',
+          title: 'Daily Withdrawal Timing',
+          description: 'Withdrawal requests are processed daily between 08:00 and 20:00.',
+          category: 'WITHDRAWAL',
+          enabled: true,
+        },
+        {
+          id: 'rule_2',
+          title: 'Direct Hourly Settlement',
+          description: 'Hourly hardware earnings automatically accumulate 24 times every day without manual clicking.',
+          category: 'INVESTMENT',
+          enabled: true,
+        },
+      ],
+      topupWalletNotes: 'Used exclusively for hardware purchases and system subscriptions.',
+      withdrawWalletNotes: 'Can be withdrawn anytime to verified bank account or USDT wallet.',
+      giftCodeNotes: 'Redeemable for bonus dividends directly deposited into your wallet balance.',
+    };
+
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('about_platform_config')
+        .select('*')
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!error && data) {
+        return res.json({
+          success: true,
+          data: {
+            id: data.id || defaultConfig.id,
+            companyName: data.company_name || defaultConfig.companyName,
+            licenseNo: data.license_no || defaultConfig.licenseNo,
+            platformVersion: data.platform_version || defaultConfig.platformVersion,
+            pageTitle: data.hero_title || data.page_title || defaultConfig.pageTitle,
+            pageSubtitle: data.hero_subtitle || data.page_subtitle || defaultConfig.pageSubtitle,
+            heroBadge: data.hero_badge || defaultConfig.heroBadge,
+            supportEmail: data.support_email || defaultConfig.supportEmail,
+            supportTelegram: data.support_telegram || defaultConfig.supportTelegram,
+            supportWhatsapp: data.support_whatsapp || defaultConfig.supportWhatsapp,
+            supportHours: data.support_hours || defaultConfig.supportHours,
+            sections: data.sections || defaultConfig.sections,
+            investingSteps: data.investing_steps || defaultConfig.investingSteps,
+            customRules: data.custom_rules || defaultConfig.customRules,
+            topupWalletNotes: data.topup_wallet_notes || defaultConfig.topupWalletNotes,
+            withdrawWalletNotes: data.withdraw_wallet_notes || defaultConfig.withdrawWalletNotes,
+            giftCodeNotes: data.gift_code_notes || defaultConfig.giftCodeNotes,
+            updatedAt: data.updated_at,
+          },
+        });
+      }
+    }
+
+    return res.json({ success: true, data: defaultConfig });
+  } catch (err: any) {
+    console.error('[GET ABOUT PLATFORM ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/about-platform', async (req, res) => {
+  try {
+    const { config, adminId } = req.body;
+    if (!config) {
+      return res.status(400).json({ success: false, error: 'Config is required.' });
+    }
+
+    const payload = {
+      id: config.id || 'cfg_about_platform_01',
+      company_name: config.companyName || 'GainPower Green Cloud Infrastructure Ltd.',
+      license_no: config.licenseNo || 'GP-PWR-99824-IND',
+      platform_version: config.appVersion || config.platformVersion || 'v3.4.0',
+      hero_title: config.pageTitle || 'About GainPower Sharing Platform',
+      hero_subtitle: config.pageSubtitle || 'Transparent Hardware Yields & Direct Green Power Dividend Distribution',
+      hero_badge: config.heroBadge || 'Government Compliant & Registered Infrastructure',
+      support_email: config.supportEmail || 'support@gainpower.top',
+      support_telegram: config.supportTelegram || 'https://t.me/gainpower_official',
+      support_whatsapp: config.supportWhatsapp || '+91 98765 43210',
+      support_hours: config.supportHours || '24/7 Mon - Sun',
+      investing_steps: config.investingSteps || [],
+      custom_rules: config.customRules || [],
+      sections: config.sections || {},
+      topup_wallet_notes: config.topupWalletNotes || '',
+      withdraw_wallet_notes: config.withdrawWalletNotes || '',
+      gift_code_notes: config.giftCodeNotes || '',
+      updated_at: new Date().toISOString(),
+    };
+
+    if (supabase) {
+      const { error } = await supabase
+        .from('about_platform_config')
+        .upsert(payload, { onConflict: 'id' });
+
+      if (error) throw new Error(error.message);
+    }
+
+    return res.json({ success: true, data: config });
+  } catch (err: any) {
+    console.error('[ADMIN SAVE ABOUT PLATFORM ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to save about platform config.' });
+  }
+});
+
+// ==============================================================================
+// 16. BANNERS & NEWS CRUD ENDPOINTS
+// ==============================================================================
+app.get('/api/banners', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const { data, error } = await supabase
+      .from('banners')
+      .select('*')
+      .order('sort_order', { ascending: true });
+
+    if (error) throw new Error(error.message);
+
+    const mapped = (data || []).map((b: any) => ({
+      id: b.id,
+      title: b.title,
+      subtitle: b.subtitle || '',
+      ctaText: b.cta_text || 'Explore >',
+      badge: b.badge || 'HOT',
+      artworkType: b.artwork_type || 'solar',
+      imageUrl: b.image_url || '',
+      linkUrl: b.link_url || '',
+      targetTab: b.target_tab || 'INVEST',
+      priority: Number(b.priority ?? b.sort_order ?? 1),
+      isActive: b.is_active !== false && b.active !== false,
+      createdAt: b.created_at,
+    }));
+
+    return res.json({ success: true, data: mapped });
+  } catch (err: any) {
+    console.error('[GET BANNERS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/banners/save', async (req, res) => {
+  try {
+    const { banner, adminId } = req.body;
+    if (!banner || !banner.title) {
+      return res.status(400).json({ success: false, error: 'Banner title is required.' });
+    }
+
+    const isNew = !banner.id || banner.id.startsWith('new_');
+    const bannerId = isNew ? crypto.randomUUID() : banner.id;
+
+    const record = {
+      title: banner.title,
+      subtitle: banner.subtitle || '',
+      cta_text: banner.ctaText || 'Explore >',
+      badge: banner.badge || 'HOT',
+      image_url: banner.imageUrl || '',
+      link_url: banner.linkUrl || '',
+      target_tab: banner.targetTab || 'INVEST',
+      priority: Number(banner.priority || 1),
+      sort_order: Number(banner.priority || 1),
+      is_active: banner.isActive !== false,
+      active: banner.isActive !== false,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (supabase) {
+      if (isNew) {
+        const { data, error } = await supabase
+          .from('banners')
+          .insert({ id: bannerId, created_at: new Date().toISOString(), ...record })
+          .select();
+
+        if (error) {
+          const { data: retryData, error: retryErr } = await supabase
+            .from('banners')
+            .insert({ created_at: new Date().toISOString(), ...record })
+            .select();
+          if (retryErr) throw new Error(retryErr.message);
+          return res.json({ success: true, data: (retryData && retryData[0]) || { id: bannerId, ...record } });
+        }
+        return res.json({ success: true, data: (data && data[0]) || { id: bannerId, ...record } });
+      } else {
+        const { data, error } = await supabase
+          .from('banners')
+          .update(record)
+          .eq('id', bannerId)
+          .select();
+
+        if (error) throw new Error(error.message);
+        return res.json({ success: true, data: (data && data[0]) || { id: bannerId, ...record } });
+      }
+    }
+
+    return res.json({ success: true, data: { id: bannerId, ...record } });
+  } catch (err: any) {
+    console.error('[ADMIN SAVE BANNER ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to save banner.' });
+  }
+});
+
+app.post('/api/admin/banners/delete', async (req, res) => {
+  try {
+    const { id, adminId } = req.body;
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'Banner ID is required.' });
+    }
+
+    if (supabase) {
+      const { error } = await supabase.from('banners').delete().eq('id', id);
+      if (error) throw new Error(error.message);
+    }
+
+    return res.json({ success: true, message: 'Banner deleted successfully.' });
+  } catch (err: any) {
+    console.error('[ADMIN DELETE BANNER ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to delete banner.' });
+  }
+});
+
+app.get('/api/news', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const { data, error } = await supabase
+      .from('news')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const mapped = (data || []).map((n: any) => ({
+      id: n.id,
+      title: n.title,
+      content: n.content || n.description || '',
+      tag: n.tag || 'Notice',
+      date: n.date || (n.created_at ? n.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10)),
+      isImportant: Boolean(n.is_important),
+      readTime: n.read_time || '1 min',
+      icon: n.icon || 'Newspaper',
+    }));
+
+    return res.json({ success: true, data: mapped });
+  } catch (err: any) {
+    console.error('[GET NEWS ERROR]', err);
+    return res.json({ success: true, data: [] });
+  }
+});
+
+app.post('/api/admin/news/save', async (req, res) => {
+  try {
+    const { newsItem, adminId } = req.body;
+    if (!newsItem || !newsItem.title) {
+      return res.status(400).json({ success: false, error: 'News title is required.' });
+    }
+
+    const isNew = !newsItem.id || newsItem.id.startsWith('new_');
+    const newsId = isNew ? crypto.randomUUID() : newsItem.id;
+
+    const record = {
+      title: newsItem.title,
+      content: newsItem.content || '',
+      tag: newsItem.tag || 'Update',
+      date: newsItem.date || new Date().toISOString().slice(0, 10),
+      is_important: Boolean(newsItem.isImportant),
+      updated_at: new Date().toISOString(),
+    };
+
+    if (supabase) {
+      if (isNew) {
+        const { data, error } = await supabase
+          .from('news')
+          .insert({ id: newsId, created_at: new Date().toISOString(), ...record })
+          .select();
+
+        if (error) {
+          const { data: retryData, error: retryErr } = await supabase
+            .from('news')
+            .insert({ created_at: new Date().toISOString(), ...record })
+            .select();
+          if (retryErr) throw new Error(retryErr.message);
+          return res.json({ success: true, data: (retryData && retryData[0]) || { id: newsId, ...record } });
+        }
+        return res.json({ success: true, data: (data && data[0]) || { id: newsId, ...record } });
+      } else {
+        const { data, error } = await supabase
+          .from('news')
+          .update(record)
+          .eq('id', newsId)
+          .select();
+
+        if (error) throw new Error(error.message);
+        return res.json({ success: true, data: (data && data[0]) || { id: newsId, ...record } });
+      }
+    }
+
+    return res.json({ success: true, data: { id: newsId, ...record } });
+  } catch (err: any) {
+    console.error('[ADMIN SAVE NEWS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to save news.' });
+  }
+});
+
+app.post('/api/admin/news/delete', async (req, res) => {
+  try {
+    const { id, adminId } = req.body;
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'News ID is required.' });
+    }
+
+    if (supabase) {
+      const { error } = await supabase.from('news').delete().eq('id', id);
+      if (error) throw new Error(error.message);
+    }
+
+    return res.json({ success: true, message: 'News deleted successfully.' });
+  } catch (err: any) {
+    console.error('[ADMIN DELETE NEWS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to delete news.' });
+  }
+});
+
+// ==============================================================================
+// 17. ASSET UPLOAD ENDPOINT (GUARANTEED JSON RESPONSE, NEVER HTML)
+// ==============================================================================
+app.post('/api/admin/upload-asset', async (req, res) => {
+  try {
+    const { base64, fileName, prefix = 'asset' } = req.body;
+    if (!base64) {
+      return res.status(400).json({ success: false, error: 'base64 data is required.' });
+    }
+
+    // Try to upload to Supabase storage if storage is active
+    if (supabase && base64.startsWith('data:')) {
+      try {
+        const parts = base64.split(';base64,');
+        const mimeType = parts[0].replace('data:', '');
+        const ext = mimeType.split('/')[1] || 'png';
+        const buffer = Buffer.from(parts[1], 'base64');
+        const targetFileName = `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
+
+        const { data: uploadData, error: uploadErr } = await supabase.storage
+          .from('site-assets')
+          .upload(targetFileName, buffer, {
+            contentType: mimeType,
+            upsert: true,
+          });
+
+        if (!uploadErr && uploadData?.path) {
+          const { data: pubData } = supabase.storage.from('site-assets').getPublicUrl(uploadData.path);
+          if (pubData?.publicUrl) {
+            return res.json({ success: true, url: pubData.publicUrl });
+          }
+        }
+      } catch (storageErr) {
+        console.warn('[STORAGE UPLOAD NOTICE] Falling back to direct data URL:', storageErr);
+      }
+    }
+
+    // Direct Data URL is completely self-contained and universally supported in all browsers
+    return res.json({ success: true, url: base64 });
+  } catch (err: any) {
+    console.error('[UPLOAD ASSET ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to process asset upload.' });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
