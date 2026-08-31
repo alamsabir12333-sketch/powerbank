@@ -207,13 +207,15 @@ app.post('/api/auth/register', async (req, res) => {
       password,
       email_confirm: true,
       user_metadata: {
-        email_verified: true,
-        full_name: name || cleanUsername,
         name: name || cleanUsername,
+        full_name: name || cleanUsername,
         username: cleanUsername,
-        phone: cleanPhone,
-        mobile: cleanPhone,
         whatsapp_no: cleanPhone,
+        mobile: cleanPhone,
+        phone: cleanPhone,
+        membership_number: memNum,
+        referral_code: memNum,
+        referred_by: referrerDisplayCode,
       },
     });
 
@@ -576,17 +578,9 @@ app.post('/api/auth/onboarding', async (req, res) => {
 
 /**
  * Dedicated function to construct exact Univepay Create Payment MD5 Signature:
- * Authoritative format from supabase/functions/create-payin-order/index.ts
+ * Formula: Amount + Merchno + NotifyUrl + PayCode + Traceno + secretKey
  */
-function generateSortedSignature(params: Record<string, string>, secretKey: string): string {
-  const keys = Object.keys(params)
-    .filter((k) => k !== 'Signature' && params[k] !== undefined && params[k] !== null && params[k] !== '')
-    .sort();
-  const rawString = keys.map((k) => `${k}=${params[k]}`).join('&') + `&${secretKey}`;
-  return crypto.createHash('md5').update(rawString).digest('hex').toUpperCase();
-}
-
-function generatePositionalCreateSignature(
+function generateUnivepayCreateSignature(
   amount: string,
   merchno: string,
   notifyUrl: string,
@@ -595,7 +589,7 @@ function generatePositionalCreateSignature(
   secretKey: string
 ): string {
   const signString = `${amount}${merchno}${notifyUrl}${payCode}${traceno}${secretKey}`;
-  return crypto.createHash('md5').update(signString).digest('hex').toUpperCase();
+  return md5(signString);
 }
 
 // ==============================================================================
@@ -623,43 +617,29 @@ const handleCreatePayment = async (req: express.Request, res: express.Response) 
     return res.status(401).json({ success: false, error: 'Unauthorized. Please login to continue.' });
   }
 
-  const { amount, payCode = 'UPI', customerName, customerEmail, customerPhone } = req.body;
+  const { amount, payCode = '印度UPI-银台' } = req.body;
   const numAmount = Number(amount);
 
   if (!numAmount || numAmount < 100) {
     return res.status(400).json({ success: false, error: 'Minimum top up amount is ₹100' });
   }
 
-  // Load gateway credentials from DB or environment (Authoritative fallback)
-  let merchNo = UNIVEPAY_MERCHANT_NO || process.env.GATEWAY_MERCH_NO || 'C26854';
-  let secretKey = UNIVEPAY_SECRET || process.env.GATEWAY_SECRET_KEY || 'secret';
-  let baseUrl = UNIVEPAY_CREATE_DEPOSIT_URL ? UNIVEPAY_CREATE_DEPOSIT_URL.replace(/\/Payment\/GlobalPay.*$/, '') : 'https://ydpay.univepay.com';
-  let notifyUrl = process.env.GATEWAY_NOTIFY_URL || 'https://evhwqlnymvoduclmzshz.supabase.co/functions/v1/payment-callback';
-  const callbackUrl = process.env.GATEWAY_CALLBACK_URL || 'https://gainpower-top-1.com/wallet?status=success';
-
-  if (supabase) {
-    try {
-      const { data: config } = await supabase.from('gateway_settings').select('*').eq('is_active', true).maybeSingle();
-      if (config) {
-        if (config.merchant_no && !UNIVEPAY_MERCHANT_NO) merchNo = config.merchant_no;
-        if (config.secret_key && !UNIVEPAY_SECRET) secretKey = config.secret_key;
-        if (config.base_url) baseUrl = config.base_url;
-        if (config.notify_url) notifyUrl = config.notify_url;
-      }
-    } catch (_e) {}
-  }
-
   // Server-side unique order number (Traceno)
   const timestamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
   const randomSuffix = Math.floor(100000 + Math.random() * 900000);
-  const traceno = req.body.orderId || req.body.traceno || `DEP${timestamp}${randomSuffix}`;
+  const traceno = `DEP${timestamp}${randomSuffix}`;
   const formattedAmount = numAmount.toFixed(2);
+  const appUrl = process.env.APP_URL || getAppUrl(req) || 'https://gainpower-top-1.com';
+  const supabaseBaseUrl = process.env.SUPABASE_URL || '';
+  const notifyUrl = supabaseBaseUrl
+    ? `${supabaseBaseUrl}/functions/v1/payment-callback`
+    : `${appUrl}/api/payment-callback`;
+  const callbackUrl = process.env.GATEWAY_CALLBACK_URL || 'https://gainpower-top-1.com/wallet?status=success';
 
   // Initialize canonical deposit transaction record and pending wallet transaction record
   if (supabase) {
     try {
       await supabase.from('deposit_transactions').insert({
-        order_id: traceno,
         traceno: traceno,
         merchant_order_id: traceno,
         user_id: authenticatedUserId,
@@ -692,41 +672,59 @@ const handleCreatePayment = async (req: express.Request, res: express.Response) 
     }
   }
 
-  // Build authoritative request payload matching supabase/functions/create-payin-order/index.ts
-  const payload: Record<string, string> = {
-    Merchno: merchNo,
-    Traceno: traceno,
+  // Check if merchant credentials are configured
+  const merchantNo = UNIVEPAY_MERCHANT_NO;
+  const secretKey = UNIVEPAY_SECRET;
+
+  if (!merchantNo || !secretKey) {
+    console.error('[UNIVEPAY][CREATE] UNIVEPAY_MERCHANT_NO or UNIVEPAY_SECRET is not configured.');
+    return res.status(503).json({
+      success: false,
+      error: 'Payment gateway temporarily unavailable. Please try again.',
+      details: 'Gateway merchant credentials not configured.',
+    });
+  }
+
+  // Signature formula: Amount + Merchno + NotifyUrl + PayCode + Traceno + secretKey -> MD5 -> Uppercase
+  const signature = generateUnivepayCreateSignature(
+    formattedAmount,
+    merchantNo,
+    notifyUrl,
+    payCode,
+    traceno,
+    secretKey
+  );
+
+  console.log(`[UNIVEPAY][CREATE] Traceno: ${traceno}, Amount: ${formattedAmount}, Merchno: ${merchantNo}, PayCode: ${payCode}`);
+
+  const requestBody = new URLSearchParams({
+    Merchno: merchantNo,
     Amount: formattedAmount,
-    Pname: customerName || 'Customer',
-    Pemail: customerEmail || 'customer@example.com',
-    Phone: customerPhone || '9876543210',
-    CountryCode: 'india',
-    Currency: 'INR',
-    PayCode: payCode === 'UPI' || payCode === '印度UPI-银台' ? 'UPI' : payCode,
-    GoodsName: 'Wallet TopUp',
+    Traceno: traceno,
+    PayCode: payCode,
     NotifyUrl: notifyUrl,
     CallbackUrl: callbackUrl,
-    BankCode: 'INR',
-    AccNo: customerName || 'Customer',
-  };
-
-  payload.Signature = generateSortedSignature(payload, secretKey);
-
-  console.log(`[UNIVEPAY][CREATE] Traceno: ${traceno}, Amount: ${formattedAmount}, Merchno: ${merchNo}, PayCode: ${payload.PayCode}`);
-
-  const endpointUrl = `${baseUrl.replace(/\/+$/, '')}/Payment/GlobalPay`;
-  const requestBody = new URLSearchParams(payload);
+    Signature: signature,
+  });
 
   try {
     await recordGatewayLog({
-      endpoint: endpointUrl,
+      endpoint: UNIVEPAY_CREATE_DEPOSIT_URL,
       direction: 'OUTBOUND',
       traceno,
       userTransactionId: authenticatedUserId,
-      payload,
+      payload: {
+        Merchno: merchantNo,
+        Amount: formattedAmount,
+        Traceno: traceno,
+        PayCode: payCode,
+        NotifyUrl: notifyUrl,
+        CallbackUrl: callbackUrl,
+        Signature: signature,
+      },
     });
 
-    const response = await fetch(endpointUrl, {
+    const response = await fetch(UNIVEPAY_CREATE_DEPOSIT_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -747,14 +745,14 @@ const handleCreatePayment = async (req: express.Request, res: express.Response) 
     }
 
     await recordGatewayLog({
-      endpoint: endpointUrl,
+      endpoint: UNIVEPAY_CREATE_DEPOSIT_URL,
       direction: 'INBOUND',
       traceno,
       httpStatus: response.status,
       payload: result,
     });
 
-    const isValidSuccessStatus = result && (result.status === '00' || result.status === 'SUCCESS' || result.code === '00' || result.success === true);
+    const isValidSuccessStatus = result && (result.status === '00' || result.status === 'SUCCESS');
     const isValidPayUrl =
       result &&
       typeof result.payUrl === 'string' &&
@@ -785,7 +783,7 @@ const handleCreatePayment = async (req: express.Request, res: express.Response) 
         payData: result.payData || null,
       });
     } else {
-      console.error('[UNIVEPAY][CREATE] Gateway creation response:', result);
+      console.error('[UNIVEPAY][CREATE] Gateway creation error:', result);
       if (supabase) {
         await supabase
           .from('deposit_transactions')
@@ -798,21 +796,10 @@ const handleCreatePayment = async (req: express.Request, res: express.Response) 
           .eq('traceno', traceno);
       }
 
-      // If gateway returns a payUrl directly even without status 00
-      if (result?.payUrl && typeof result.payUrl === 'string') {
-        return res.json({
-          success: true,
-          status: '00',
-          orderId: traceno,
-          traceno,
-          payUrl: result.payUrl,
-        });
-      }
-
       return res.status(400).json({
         success: false,
-        error: result?.msg || result?.message || result?.error || 'Payment gateway temporarily unavailable. Please try again.',
-        details: result,
+        error: 'Payment gateway temporarily unavailable. Please try again.',
+        details: result?.msg || result?.message || result?.error || 'Gateway returned invalid status',
       });
     }
   } catch (networkErr: any) {
@@ -829,7 +816,7 @@ const handleCreatePayment = async (req: express.Request, res: express.Response) 
 
     return res.status(502).json({
       success: false,
-      error: 'Payment gateway temporarily unavailable. Please check your connection and try again.',
+      error: 'Payment gateway temporarily unavailable. Please try again.',
       details: networkErr.message,
     });
   }
@@ -1161,28 +1148,24 @@ async function handlePaymentCallback(req: express.Request, res: express.Response
     payload: body,
   });
 
-  // Load gateway credentials from DB or environment (Authoritative fallback)
-  let secretKey = UNIVEPAY_SECRET || process.env.GATEWAY_SECRET_KEY || 'secret';
-  let merchantNo = UNIVEPAY_MERCHANT_NO || process.env.GATEWAY_MERCH_NO || 'C26854';
+  const secretKey = UNIVEPAY_SECRET;
+  const merchantNo = UNIVEPAY_MERCHANT_NO;
 
-  if (supabase) {
-    try {
-      const { data: config } = await supabase.from('gateway_settings').select('*').eq('is_active', true).maybeSingle();
-      if (config) {
-        if (config.secret_key && !UNIVEPAY_SECRET) secretKey = config.secret_key;
-        if (config.merchant_no && !UNIVEPAY_MERCHANT_NO) merchantNo = config.merchant_no;
-      }
-    } catch (_e) {}
+  // PART 16: SECRET MUST BE REQUIRED (FAIL CLOSED)
+  if (!secretKey) {
+    console.error('[UNIVEPAY][CALLBACK] Fatal: UNIVEPAY_SECRET missing in server environment. Rejecting callback.');
+    return res.status(500).send('SERVER_CONFIGURATION_ERROR');
   }
 
   // PART 15: MERCHANT NUMBER VERIFICATION
-  if (merchantNo && merchno && merchno !== merchantNo) {
-    console.warn(`[UNIVEPAY][CALLBACK] Merchant mismatch warning! Expected: ${merchantNo}, Received: ${merchno}`);
+  if (merchantNo && merchno !== merchantNo) {
+    console.error(`[UNIVEPAY][CALLBACK] Merchant mismatch! Expected: ${merchantNo}, Received: ${merchno}`);
+    return res.status(400).send('MERCHANT_ERROR');
   }
 
   // PART 14: REQUIRED FIELDS CHECK
-  if (!status || !traceno) {
-    console.error('[UNIVEPAY][CALLBACK] Missing required fields in callback (Status or Traceno).');
+  if (!transDate || !merchno || !amount || !payCode || !serialNo || !status || !traceno || !signature) {
+    console.error('[UNIVEPAY][CALLBACK] Missing required fields in callback.');
     return res.status(400).send('MISSING_REQUIRED_FIELDS');
   }
 
@@ -1192,7 +1175,7 @@ async function handlePaymentCallback(req: express.Request, res: express.Response
     const { data, error: fetchErr } = await supabase
       .from('deposit_transactions')
       .select('*')
-      .or(`traceno.eq.${traceno},merchant_order_id.eq.${traceno},order_id.eq.${traceno}`)
+      .or(`traceno.eq.${traceno},merchant_order_id.eq.${traceno}`)
       .maybeSingle();
 
     if (fetchErr || !data) {
@@ -1203,34 +1186,28 @@ async function handlePaymentCallback(req: express.Request, res: express.Response
   }
 
   // PART 18: AMOUNT VERIFICATION
-  if (dbOrder && amount) {
+  if (dbOrder) {
     const callbackAmountNum = parseFloat(amount);
     const dbAmountNum = parseFloat(dbOrder.amount);
-    if (!isNaN(callbackAmountNum) && !isNaN(dbAmountNum) && Math.abs(callbackAmountNum - dbAmountNum) > 0.01) {
-      console.warn(`[UNIVEPAY][CALLBACK] Amount mismatch notice! DB: ${dbAmountNum}, Callback: ${callbackAmountNum}`);
+    if (isNaN(callbackAmountNum) || isNaN(dbAmountNum) || Math.abs(callbackAmountNum - dbAmountNum) > 0.001) {
+      console.error(`[UNIVEPAY][CALLBACK] Amount mismatch! DB: ${dbAmountNum}, Callback: ${callbackAmountNum}`);
+      return res.status(400).send('AMOUNT_ERROR');
     }
   }
 
-  // PART 17: SIGNATURE VERIFICATION (Dual support: Sorted params formula & Positional string formula)
-  if (signature) {
-    const sortedSig = generateSortedSignature(body, secretKey);
-    const positionalSig = generatePositionalCreateSignature(amount, merchno, '', payCode, traceno, secretKey);
-    const positionalFullSig = crypto.createHash('md5').update(`${amount}${merchno}${payCode}${serialNo}${status}${traceno}${transDate}${secretKey}`).digest('hex').toUpperCase();
+  // PART 17: SIGNATURE VERIFICATION: Amount + Merchno + PayCode + SerialNo + Status + Traceno + TransDate + secretKey -> MD5 -> Uppercase
+  const signString = `${amount}${merchno}${payCode}${serialNo}${status}${traceno}${transDate}${secretKey}`;
+  const calculatedSignature = md5(signString);
 
-    const isSigValid =
-      signature.toUpperCase() === sortedSig ||
-      signature.toUpperCase() === positionalSig ||
-      signature.toUpperCase() === positionalFullSig;
-
-    if (!isSigValid) {
-      console.warn(`[UNIVEPAY][CALLBACK] Signature mismatch warning. Received: ${signature}, SortedCalc: ${sortedSig}, PositionalCalc: ${positionalFullSig}`);
-    }
+  if (calculatedSignature.toUpperCase() !== signature.toUpperCase()) {
+    console.error(`[UNIVEPAY][CALLBACK] Signature mismatch! Calculated: ${calculatedSignature}, Received: ${signature}`);
+    return res.status(400).send('SIGNATURE_ERROR');
   }
 
   console.log('[UNIVEPAY][VERIFY] Merchant verified: OK, Order verified: OK, Amount verified: OK, Signature verified: OK');
 
   // PART 20 & 21: ATOMIC & IDEMPOTENT SETTLEMENT
-  if ((status === 'SUCCESS' || status === '00' || status === 'PAID') && traceno) {
+  if (status === 'SUCCESS' && traceno) {
     const settlementRes = await settleDepositSuccess(traceno, serialNo, body, remark);
     if (!settlementRes.success && !settlementRes.alreadyProcessed) {
       console.error('[GATEWAY][SETTLEMENT] Error crediting deposit:', settlementRes.error);
@@ -3693,7 +3670,7 @@ app.post('/api/usdt-deposit', async (req, res) => {
         proof_url: proofPath,
         receipt_url: proofPath,
         reference_id: `USDT:${calcUsdt}@${cleanRate}${walletAddress ? '|' + walletAddress : ''}`,
-        status: 'PENDING_VERIFICATION',
+        status: 'PENDING',
         rejection_reason: note ? `Note: ${note}` : null,
         created_at: nowIso,
         updated_at: nowIso,
@@ -4158,14 +4135,6 @@ app.get('/api/health', (req, res) => {
     paymentGateway: 'UNIVEPAY',
     merchantConfigured: Boolean(UNIVEPAY_MERCHANT_NO && UNIVEPAY_SECRET),
     supabaseConnected: Boolean(supabase),
-  });
-});
-
-// CRITICAL: Prevent any /api/* route from falling through to HTML index
-app.all('/api/*', (req, res) => {
-  res.status(404).json({
-    success: false,
-    error: `API route not found: ${req.method} ${req.originalUrl}`,
   });
 });
 

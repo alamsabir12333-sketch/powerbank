@@ -1,0 +1,22 @@
+project_id = "gainpower"
+
+[functions.create-univepay-payment]
+verify_jwt = true
+
+[functions.univepay-payment-callback]
+verify_jwt = false
+
+[functions.univepay-order-query]
+verify_jwt = false
+
+[functions.univepay-withdrawal]
+verify_jwt = true
+
+[functions.univepay-withdrawal-callback]
+verify_jwt = false
+
+[functions.univepay-withdrawal-query]
+verify_jwt = false
+
+[functions.univepay-balance-query]
+verify_jwt = false
