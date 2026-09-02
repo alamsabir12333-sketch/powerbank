@@ -106,7 +106,7 @@ export const TeamPage: React.FC<TeamPageProps> = ({
 
   const handleShareWhatsApp = () => {
     const text = encodeURIComponent(
-      `Join power bank investment and earn daily income! Use my invitation code: ${teamSummary.referralCode}\n${teamSummary.referralLink}`
+      `Join GAIN POWER investment and earn daily income! Use my invitation code: ${teamSummary.referralCode}\n${teamSummary.referralLink}`
     );
     window.open(`https://api.whatsapp.com/send?text=${text}`, '_blank');
     onShowToast('Opening WhatsApp...');
@@ -114,7 +114,7 @@ export const TeamPage: React.FC<TeamPageProps> = ({
 
   const handleShareTelegram = () => {
     const text = encodeURIComponent(
-      `Join power bank investment and earn daily income! Use my invitation code: ${teamSummary.referralCode}`
+      `Join GAIN POWER investment and earn daily income! Use my invitation code: ${teamSummary.referralCode}`
     );
     const url = encodeURIComponent(teamSummary.referralLink);
     window.open(`https://t.me/share/url?url=${url}&text=${text}`, '_blank');
@@ -125,8 +125,8 @@ export const TeamPage: React.FC<TeamPageProps> = ({
     if (navigator.share) {
       try {
         await navigator.share({
-          title: 'Join & Earn Daily',
-          text: `Join power bank investment with my referral code ${teamSummary.referralCode}`,
+          title: 'Join GAIN POWER & Earn Daily',
+          text: `Join GAIN POWER investment with my referral code ${teamSummary.referralCode}`,
           url: teamSummary.referralLink,
         });
       } catch {

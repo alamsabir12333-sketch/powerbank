@@ -209,15 +209,16 @@ function AppContent() {
         }
       }
 
-      // Check for /invite/:referralCode
-      if (!refParam && path.includes('/invite/')) {
-        const segments = path.split('/invite/');
+      // Check for /invite/:referralCode or /register/:referralCode
+      if (!refParam && (path.includes('/invite/') || path.startsWith('/register/'))) {
+        const prefix = path.includes('/invite/') ? '/invite/' : '/register/';
+        const segments = path.split(prefix);
         if (segments[1]) {
           refParam = segments[1].split('/')[0].split('?')[0].trim();
         }
       }
 
-      // Handle referral links (both /invite/:code and /register?ref=:code)
+      // Handle referral links (both /invite/:code, /register?ref=:code, and /auth?ref=:code)
       if (refParam) {
         const cleanRef = refParam.toUpperCase();
         setInviteCode(cleanRef);
@@ -227,7 +228,15 @@ function AppContent() {
         localStorage.setItem('pb_pending_invite_code', cleanRef);
       } else if (path === '/login') {
         setAuthMode('login');
-      } else if (path === '/register') {
+      } else if (path === '/register' || path.startsWith('/register/')) {
+        setAuthMode('register');
+        const savedInvite =
+          sessionStorage.getItem('pb_pending_invite_code') || localStorage.getItem('pb_pending_invite_code');
+        if (savedInvite) {
+          setInviteCode(savedInvite.toUpperCase());
+          setIsInviteReadOnly(true);
+        }
+      } else if (path === '/auth' || path.startsWith('/auth')) {
         setAuthMode('register');
         const savedInvite =
           sessionStorage.getItem('pb_pending_invite_code') || localStorage.getItem('pb_pending_invite_code');
@@ -282,14 +291,27 @@ function AppContent() {
       const path = window.location.pathname;
       const lastAuthAction = sessionStorage.getItem('pb_last_auth_action');
       if (isAuthenticated) {
-        if (path === '/register' || path === '/login' || path.startsWith('/invite/')) {
+        if (
+          path === '/register' ||
+          path === '/login' ||
+          path === '/auth' ||
+          path.startsWith('/auth') ||
+          path.startsWith('/invite/') ||
+          path.startsWith('/register/')
+        ) {
           window.history.replaceState({}, '', '/');
           setCurrentPath('/');
         }
       } else {
         if (path === '/login' || lastAuthAction === 'logout') {
           setAuthMode('login');
-        } else if (path === '/register' || path.includes('/invite/')) {
+        } else if (
+          path === '/register' ||
+          path.includes('/invite/') ||
+          path === '/auth' ||
+          path.startsWith('/auth') ||
+          path.startsWith('/register/')
+        ) {
           setAuthMode('register');
         }
       }
@@ -316,6 +338,9 @@ function AppContent() {
   const isAuthRoute =
     currentPath === '/login' ||
     currentPath === '/register' ||
+    currentPath.startsWith('/register/') ||
+    currentPath === '/auth' ||
+    currentPath.startsWith('/auth') ||
     currentPath.startsWith('/invite/');
 
   // =========================================================================
@@ -338,7 +363,7 @@ function AppContent() {
                   <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#FF6000] to-amber-500 flex items-center justify-center shadow-lg shadow-orange-950/40 mb-4 animate-pulse">
                     <ShieldCheck className="w-9 h-9 text-white" />
                   </div>
-                  <h1 className="text-xl font-bold text-white">Power Bank Admin</h1>
+                  <h1 className="text-xl font-bold text-white">GAIN POWER Admin</h1>
                   <p className="text-gray-400 text-xs mt-1.5 flex items-center gap-2">
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-[#FF6000]" />
                     <span>Loading Control Terminal...</span>
@@ -405,7 +430,7 @@ function AppContent() {
           <Zap className="w-9 h-9 fill-current" />
         </div>
         <div className="text-center space-y-1">
-          <h2 className="text-xl font-black tracking-tight">Power Bank</h2>
+          <h2 className="text-xl font-black tracking-tight">GAIN POWER</h2>
           <p className="text-xs text-gray-400 font-medium flex items-center justify-center gap-1.5">
             <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#FF6200]" />
             <span>Connecting to secure network...</span>

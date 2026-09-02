@@ -242,7 +242,7 @@ export const HomePage: React.FC<HomePageProps> = ({
       {/* 1. Header with Notification Bell */}
       <Header
         isDark={true}
-        title="Power Bank"
+        title="GAIN POWER"
         unreadCount={unreadCount}
         onOpenNotifications={() => onNavigateTab('notifications')}
         onOpenLanguageModal={() => setIsLanguageOpen(true)}
@@ -277,7 +277,7 @@ export const HomePage: React.FC<HomePageProps> = ({
         onRevenueCourseClick={() =>
           showPlaceholder(
             'Revenue Course',
-            'Tutorial: Power Bank sharing revenue is calculated on an hourly basis and settled automatically into your balance.'
+            'Tutorial: GAIN POWER sharing revenue is calculated on an hourly basis and settled automatically into your balance.'
           )
         }
       />

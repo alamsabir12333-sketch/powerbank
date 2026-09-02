@@ -200,6 +200,7 @@ export interface PurchaseItem {
   durationDays?: number;
   totalPlanHours?: number;
   claimedHours?: number;
+  claimedAmount?: number;
   status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
   startedAt: string;
   expiresAt?: string;

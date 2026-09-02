@@ -337,14 +337,82 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
               </div>
 
               <div>
-                <label className="block text-gray-300 font-semibold mb-1">Banner Image URL (Optional)</label>
-                <input
-                  type="text"
-                  placeholder="https://example.com/banner.png"
-                  value={editingBanner.imageUrl || ''}
-                  onChange={(e) => setEditingBanner({ ...editingBanner, imageUrl: e.target.value })}
-                  className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
-                />
+                <label className="block text-gray-300 font-semibold mb-1">Banner Image</label>
+                <div className="space-y-3">
+                  <input
+                    ref={bannerFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      try {
+                        setUploadingBannerImg(true);
+                        const url = await uploadSiteAsset(file, 'banner');
+                        setEditingBanner((prev) => (prev ? { ...prev, imageUrl: url } : { imageUrl: url }));
+                      } catch (err: any) {
+                        alert(err.message || 'Failed to upload banner image.');
+                      } finally {
+                        setUploadingBannerImg(false);
+                      }
+                    }}
+                  />
+
+                  {editingBanner.imageUrl ? (
+                    <div className="relative rounded-xl border border-gray-700 overflow-hidden bg-black/40 p-2 flex flex-col gap-2">
+                      <img
+                        src={editingBanner.imageUrl}
+                        alt="Banner Preview"
+                        className="w-full h-36 object-cover rounded-lg"
+                      />
+                      <div className="flex items-center justify-between px-1">
+                        <span className="text-xs text-emerald-400 font-medium truncate max-w-[200px]">
+                          ✓ Image Uploaded
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => bannerFileInputRef.current?.click()}
+                            disabled={uploadingBannerImg}
+                            className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-xs text-white rounded-lg transition-colors flex items-center gap-1"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            Change
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingBanner({ ...editingBanner, imageUrl: '' })}
+                            className="px-3 py-1 bg-red-900/40 hover:bg-red-900/60 text-xs text-red-300 rounded-lg transition-colors flex items-center gap-1"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => bannerFileInputRef.current?.click()}
+                      disabled={uploadingBannerImg}
+                      className="w-full border-2 border-dashed border-gray-700 hover:border-emerald-500 rounded-xl p-6 flex flex-col items-center justify-center gap-2 transition-all bg-gray-900/30 hover:bg-gray-900/60 text-gray-400 hover:text-emerald-400"
+                    >
+                      {uploadingBannerImg ? (
+                        <>
+                          <RefreshCw className="w-8 h-8 animate-spin text-emerald-400" />
+                          <span className="text-xs font-semibold text-emerald-400">Uploading banner to storage...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-8 h-8" />
+                          <span className="text-sm font-semibold text-gray-200">Click to Upload Banner Image</span>
+                          <span className="text-xs text-gray-400">Supports PNG, JPG, WebP (Optimized for banners)</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">

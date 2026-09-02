@@ -384,7 +384,7 @@ export const defaultReferralSettings: import('../types').ReferralSettings = {
     {
       tier: 1,
       name: 'Tier 1 (Direct A)',
-      percentage: 7,
+      percentage: 10,
       minTopup: 0,
       maxTopup: 0,
       enabled: true,
@@ -392,7 +392,7 @@ export const defaultReferralSettings: import('../types').ReferralSettings = {
     {
       tier: 2,
       name: 'Tier 2 (Indirect B)',
-      percentage: 2,
+      percentage: 5,
       minTopup: 0,
       maxTopup: 0,
       enabled: true,
@@ -400,7 +400,7 @@ export const defaultReferralSettings: import('../types').ReferralSettings = {
     {
       tier: 3,
       name: 'Tier 3 (Indirect C)',
-      percentage: 1,
+      percentage: 2,
       minTopup: 0,
       maxTopup: 0,
       enabled: true,

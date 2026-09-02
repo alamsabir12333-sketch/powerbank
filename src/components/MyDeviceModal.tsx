@@ -167,7 +167,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
               </div>
               <div>
                 <h3 className="font-extrabold text-sm text-white tracking-tight">
-                  My Power Bank Devices
+                  My GAIN POWER Devices
                 </h3>
                 <span className="text-[10.5px] text-gray-400">
                   {activeDevices.length} Active Node{activeDevices.length !== 1 ? 's' : ''} Online
@@ -294,7 +294,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                 <div>
                   <h4 className="font-bold text-white text-sm">No Devices Activated Yet</h4>
                   <p className="text-xs text-gray-400 max-w-xs mx-auto mt-1">
-                    Visit the Purchase Hall to activate Hourly or PRO power bank sharing cabinets.
+                    Visit the Purchase Hall to activate VIP, PRO or EVENT power stations.
                   </p>
                 </div>
                 <button
@@ -399,34 +399,6 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                       </div>
                     )}
 
-                    {/* Claim action per device */}
-                    {status.isActive && (
-                      <div className="p-2 rounded-xl bg-[#181818] border border-[#2c2c2c] flex items-center justify-between">
-                        <div className="text-[11px]">
-                          <span className="text-gray-400">Ready to Claim: </span>
-                          <strong className="text-amber-400 font-extrabold">₹{status.claimableAmount.toFixed(2)}</strong>
-                          <span className="text-gray-500 text-[10px] ml-1">({status.unclaimedHours} hr{status.unclaimedHours !== 1 ? 's' : ''})</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleClaim}
-                          disabled={isClaiming || claimableData.totalClaimable <= 0}
-                          className={`px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer ${
-                            status.claimableAmount > 0 || claimableData.totalClaimable > 0
-                              ? 'bg-gradient-to-r from-[#FF6000] to-[#FFA000] text-white hover:brightness-110 shadow-sm shadow-orange-500/20 active:scale-95'
-                              : 'bg-[#282828] text-gray-500 cursor-not-allowed border border-[#383838]'
-                          }`}
-                        >
-                          {isClaiming ? (
-                            <RefreshCw className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Coins className="w-3 h-3" />
-                          )}
-                          <span>CLAIM</span>
-                        </button>
-                      </div>
-                    )}
-
                     {/* Footer Info */}
                     <div className="flex items-center justify-between text-[10px] text-gray-400 pt-0.5">
                       <span>
@@ -502,7 +474,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                 </div>
 
                 <div className="p-3.5 bg-orange-500/10 rounded-2xl border border-orange-500/30 text-center">
-                  <span className="text-xs text-orange-300 font-semibold block">Credited to Your Wallet:</span>
+                  <span className="text-xs text-orange-300 font-semibold block">Credited to Withdraw Wallet:</span>
                   <span className="text-2xl font-black text-amber-400 mt-0.5 block">
                     +₹{claimSuccessModal.amount.toFixed(2)}
                   </span>

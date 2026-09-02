@@ -82,7 +82,7 @@ export const AdminLoginPage: React.FC<AdminLoginPageProps> = ({
             <ShieldCheck className="w-9 h-9 text-white" />
           </div>
           <h1 className="text-2xl font-black tracking-tight text-white">
-            Power Bank <span className="text-[#FF6000]">Admin</span>
+            GAIN POWER <span className="text-[#FF6000]">Admin</span>
           </h1>
           <p className="text-gray-400 text-xs mt-1">
             Authorized Platform Security & Operations Terminal

@@ -234,7 +234,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-extrabold text-sm text-white tracking-wide">POWERBANK</span>
+                <span className="font-extrabold text-sm text-white tracking-wide">GAIN POWER</span>
                 <span className="text-[10px] uppercase font-black px-1.5 py-0.5 rounded bg-red-950/80 text-red-400 border border-red-800/40">
                   ADMIN CONSOLE
                 </span>

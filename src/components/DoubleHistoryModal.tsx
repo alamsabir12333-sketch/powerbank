@@ -142,7 +142,7 @@ export const DoubleHistoryModal: React.FC<DoubleHistoryModalProps> = ({
                     No Double History Records
                   </p>
                   <p className="text-[11px] text-gray-500 mt-1 max-w-[220px] leading-relaxed">
-                    You do not have any active or past 2X power bank records. Activate hardware devices to start earning.
+                    You do not have any active or past 2X GAIN POWER records. Activate hardware devices to start earning.
                   </p>
                   {onNavigatePurchase && (
                     <button

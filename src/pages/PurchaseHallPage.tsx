@@ -3,7 +3,7 @@ import { ProductCabinetArtwork } from '../components/Artworks';
 import { FloatingContact } from '../components/FloatingContact';
 import { CustomerSupportModal } from '../components/CustomerSupportModal';
 import { ProductItem, TabType, Wallet, PlanCategory } from '../types';
-import { fetchPlans, purchasePlanWithWallet, checkProEligibility, fetchPurchases } from '../services/api';
+import { fetchPlans, purchasePlanWithWallet, checkProEligibility, fetchPurchases, fetchUserVipStatus } from '../services/api';
 import { playCoinSound, playSuccessChime } from '../utils/audio';
 import { Zap, ShieldCheck, AlertCircle, ArrowRight, Sparkles, Gift, Lock, CheckCircle2, ChevronRight, Flame, Calendar, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -30,6 +30,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ProductItem | null>(null);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
+  const [userVipLevel, setUserVipLevel] = useState<number>(0);
   const [insufficientBalanceModal, setInsufficientBalanceModal] = useState<{
     isOpen: boolean;
     required: number;
@@ -37,9 +38,10 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
   }>({ isOpen: false, required: 0, available: 0 });
   const [eligibilityModal, setEligibilityModal] = useState<{
     isOpen: boolean;
+    title: string;
     reason: string;
-    activeHourlyCount: number;
-  }>({ isOpen: false, reason: '', activeHourlyCount: 0 });
+    activeVipCount: number;
+  }>({ isOpen: false, title: 'Plan Locked', reason: '', activeVipCount: 0 });
   const [purchasing, setPurchasing] = useState(false);
   const [proEligibility, setProEligibility] = useState<{
     eligible: boolean;
@@ -53,17 +55,19 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
     setLoading(true);
     setLoadError(null);
     try {
-      const [fetchedPlans, eligibility] = await Promise.all([
+      const [fetchedPlans, eligibility, vipStatus] = await Promise.all([
         fetchPlans(),
         checkProEligibility(userId),
+        fetchUserVipStatus(userId),
       ]);
-      // Filter out archived and ensure no standard plan leak
+      setUserVipLevel(Number(vipStatus?.currentLevel?.levelNumber || 0));
+      // Filter out archived and normalize to VIP, PRO, EVENT
       const validPlans = (fetchedPlans || [])
         .filter((p) => p.status !== 'archived')
         .map((p) => {
           let cat = (p.category || '').toUpperCase();
           if (cat === 'STANDARD' || cat === 'HOURLY' || !cat) {
-            cat = 'VIP';
+            cat = (p.name || '').toUpperCase().includes('PRO') ? 'PRO' : 'VIP';
           }
           return { ...p, category: cat as PlanCategory };
         });
@@ -93,28 +97,40 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
     return plans.filter((p) => {
       let cat = (p.category || '').toUpperCase();
       if (cat === 'STANDARD' || cat === 'HOURLY' || !cat) {
-        cat = 'VIP';
+        cat = (p.name || '').toUpperCase().includes('PRO') ? 'PRO' : 'VIP';
       }
       return cat === selectedCategory;
     });
   }, [plans, selectedCategory]);
 
   const handleBuyClick = async (product: ProductItem) => {
-    const isPro = (product.category || '').toUpperCase() === 'PRO' || product.name.toUpperCase().includes('PRO');
-    const isEvent = (product.category || '').toUpperCase() === 'EVENT' || product.name.toUpperCase().includes('EVENT');
+    let cat = (product.category || '').toUpperCase();
+    if (cat === 'STANDARD' || cat === 'HOURLY' || !cat) {
+      cat = (product.name || '').toUpperCase().includes('PRO') ? 'PRO' : 'VIP';
+    }
+    const isPro = cat === 'PRO';
+    const isEvent = cat === 'EVENT';
     const price = product.devicePrice || product.price || 0;
 
-    // Check PRO eligibility (requires active VIP plan)
-    if (isPro) {
-      const check = await checkProEligibility(userId, product.id);
-      if (!check.eligible) {
-        setEligibilityModal({
-          isOpen: true,
-          reason: check.reason || 'Active VIP Plan required to activate PRO Plans.',
-          activeHourlyCount: check.activeHourlyCount,
-        });
-        return;
-      }
+    // VIP Level Eligibility Checks
+    if (isPro && userVipLevel < 1 && !proEligibility.eligible) {
+      setEligibilityModal({
+        isOpen: true,
+        title: 'Unlock at VIP Level 1',
+        reason: 'PRO Plans require VIP Level 1. Activate at least 1 VIP Plan to unlock PRO Plans.',
+        activeVipCount: proEligibility.activeHourlyCount,
+      });
+      return;
+    }
+
+    if (isEvent && userVipLevel < 2) {
+      setEligibilityModal({
+        isOpen: true,
+        title: 'Unlock at VIP Level 2',
+        reason: `Limited Event Plans require VIP Level 2 (Your current level: VIP ${userVipLevel}). Upgrade your VIP tier to unlock.`,
+        activeVipCount: proEligibility.activeHourlyCount,
+      });
+      return;
     }
 
     // Check Event Plan active time window
@@ -232,8 +248,11 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                     {count}
                   </span>
                 )}
-                {isPro && !proEligibility.eligible && (
+                {isPro && (userVipLevel < 1 || !proEligibility.eligible) && (
                   <Lock className="w-3 h-3 text-amber-900/60" />
+                )}
+                {isEvent && userVipLevel < 2 && (
+                  <Lock className="w-3 h-3 text-rose-900/60" />
                 )}
               </button>
             );
@@ -657,7 +676,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
         )}
       </AnimatePresence>
 
-      {/* PRO Plan Locked / Ineligible Modal */}
+      {/* Plan Locked / Ineligible Modal */}
       <AnimatePresence>
         {eligibilityModal.isOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -665,7 +684,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setEligibilityModal({ isOpen: false, reason: '', activeHourlyCount: 0 })}
+              onClick={() => setEligibilityModal({ isOpen: false, title: 'Plan Locked', reason: '', activeVipCount: 0 })}
               className="absolute inset-0 bg-black/60 backdrop-blur-xs"
             />
             <motion.div
@@ -679,7 +698,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
               </div>
               <div className="space-y-1">
                 <h3 className="text-base font-bold text-gray-900">
-                  PRO Plan Locked
+                  {eligibilityModal.title || 'Plan Locked'}
                 </h3>
                 <p className="text-xs text-gray-600 leading-relaxed">
                   {eligibilityModal.reason}
@@ -687,18 +706,18 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
               </div>
               <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-left space-y-1">
                 <div className="flex justify-between">
-                  <span className="text-gray-600">Active Hourly Plans:</span>
-                  <span className="font-bold text-gray-900">{eligibilityModal.activeHourlyCount}</span>
+                  <span className="text-gray-600">Your Current VIP Level:</span>
+                  <span className="font-bold text-gray-900">VIP {userVipLevel}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-600">Hourly Plan Required:</span>
-                  <span className="font-bold text-amber-800">At least 1 active</span>
+                  <span className="text-gray-600">Active VIP Devices:</span>
+                  <span className="font-bold text-gray-900">{eligibilityModal.activeVipCount}</span>
                 </div>
               </div>
               <div className="flex items-center gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setEligibilityModal({ isOpen: false, reason: '', activeHourlyCount: 0 })}
+                  onClick={() => setEligibilityModal({ isOpen: false, title: 'Plan Locked', reason: '', activeVipCount: 0 })}
                   className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-700 font-bold text-xs hover:bg-gray-200 transition-colors"
                 >
                   Close
@@ -706,12 +725,12 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setEligibilityModal({ isOpen: false, reason: '', activeHourlyCount: 0 });
-                    setSelectedCategory('HOURLY');
+                    setEligibilityModal({ isOpen: false, title: 'Plan Locked', reason: '', activeVipCount: 0 });
+                    setSelectedCategory('VIP');
                   }}
                   className="flex-1 py-2.5 rounded-xl bg-[#FF6000] text-white font-bold text-xs shadow-md shadow-orange-500/25 hover:bg-[#E65100] active:scale-95 transition-all"
                 >
-                  View Hourly Plans
+                  View VIP Plans
                 </button>
               </div>
             </motion.div>

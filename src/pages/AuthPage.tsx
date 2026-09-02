@@ -209,7 +209,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         }
       }
 
-      onShowToast?.('Account created successfully! Welcome to Power Bank.');
+      onShowToast?.('Account created successfully! Welcome to GAIN POWER.');
 
       if (!result?.profile) {
         throw new Error('User profile was not returned from database.');
@@ -324,7 +324,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
             </div>
           </div>
           <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight flex items-center gap-1.5">
-            Power Bank
+            GAIN POWER
             <span className="text-[#FF7A00] inline-block">⚡</span>
           </h1>
           <p className="text-xs text-gray-400 font-medium mt-1">

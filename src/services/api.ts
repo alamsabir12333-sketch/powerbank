@@ -394,7 +394,7 @@ export async function verifyReferralCode(code: string): Promise<{
     const { data, error } = await supabase
       .from('profiles')
       .select('user_id, username, membership_number, referral_code')
-      .or(`referral_code.eq.${cleanCode},membership_number.eq.${cleanCode}`)
+      .or(`referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode}`)
       .limit(1);
 
     if (error || !data || data.length === 0) {
@@ -423,12 +423,12 @@ export async function verifyReferralCode(code: string): Promise<{
         referrerName: match.username || match.membershipNumber,
       };
     }
-    // Also accept default PB888999 for test / demo convenience
-    if (cleanCode === 'PB888999' || cleanCode.startsWith('PB')) {
+    // Also accept default GP888999 or legacy PB for test / demo convenience
+    if (cleanCode === 'GP888999' || cleanCode === 'PB888999' || cleanCode.startsWith('GP') || cleanCode.startsWith('PB')) {
       return {
         valid: true,
         referrerId: 'usr_demo_01',
-        referrerName: 'Power Bank Admin',
+        referrerName: 'GAIN POWER Admin',
       };
     }
     return { valid: false };
@@ -499,7 +499,7 @@ export async function registerUserAccount(formData: RegisterFormData) {
   }
   verifiedReferrerId = refCheck.referrerId || cleanRefCode;
 
-  const membershipNumber = 'PB' + Math.floor(100000 + Math.random() * 900000);
+  const membershipNumber = 'GP' + Math.floor(100000 + Math.random() * 900000);
   const userReferralCode = membershipNumber;
 
   if (isSupabaseConfigured && supabase) {
@@ -720,7 +720,7 @@ export async function loginUser(identifier: string, password: string) {
             const meta = data.user.user_metadata || {};
             const recUsername = meta.username || cleanId.split('@')[0] || 'Member';
             const recWhatsApp = (meta.whatsapp_no || cleanDigits || '9876543210').replace(/\D/g, '');
-            const recMemNo = meta.membership_number || 'PB' + Math.floor(100000 + Math.random() * 900000);
+            const recMemNo = meta.membership_number || 'GP' + Math.floor(100000 + Math.random() * 900000);
             const recRefCode = meta.referral_code || recMemNo;
 
             try {
@@ -875,8 +875,8 @@ export async function fetchUserProfile(userId: string): Promise<UserProfile> {
           name: profile.username || profile.name || localProfile.name || 'Member',
           mobile: profile.whatsapp_no || profile.mobile || localProfile.mobile || '9876543210',
           email: profile.email || localProfile.email || '',
-          membershipNumber: profile.membership_number || localProfile.membershipNumber || 'PB888999',
-          referralCode: profile.referral_code || profile.membership_number || localProfile.referralCode || 'PB888999',
+          membershipNumber: profile.membership_number || localProfile.membershipNumber || 'GP888999',
+          referralCode: profile.referral_code || profile.membership_number || localProfile.referralCode || 'GP888999',
           referredBy: profile.referred_by || localProfile.referredBy,
           role: profile.role || localProfile.role || 'user',
           status: profile.status || localProfile.status || 'active',
@@ -902,8 +902,8 @@ export async function fetchUserProfile(userId: string): Promise<UserProfile> {
     name: localProfile.username || localProfile.name || 'Member',
     mobile: localProfile.whatsappNo || localProfile.mobile || '9876543210',
     email: localProfile.email || '',
-    membershipNumber: localProfile.membershipNumber || 'PB888999',
-    referralCode: localProfile.referralCode || 'PB888999',
+    membershipNumber: localProfile.membershipNumber || 'GP888999',
+    referralCode: localProfile.referralCode || 'GP888999',
     role: localProfile.role || 'user',
     status: localProfile.status || 'active',
     walletBalance: localWallet.availableBalance || 0,
@@ -938,8 +938,8 @@ export async function fetchWallet(userId: string): Promise<Wallet> {
       }
 
       if (data) {
-        const topup = Number(data.topup_balance ?? data.recharge_balance ?? 0);
-        const withdraw = Number(data.withdraw_balance ?? data.earned_balance ?? data.available_balance ?? 0);
+        const topup = Number(data.recharge_balance !== undefined && data.recharge_balance !== null ? data.recharge_balance : (data.topup_balance ?? 0));
+        const withdraw = Number(data.withdraw_balance !== undefined && data.withdraw_balance !== null ? data.withdraw_balance : (data.earned_balance ?? data.available_balance ?? 0));
         const totalEarned = Number(data.total_earned || 0);
 
         return {
@@ -962,7 +962,7 @@ export async function fetchWallet(userId: string): Promise<Wallet> {
     }
   }
 
-  const topup = localWallet.topupBalance !== undefined ? localWallet.topupBalance : (localWallet.rechargeBalance || 0);
+  const topup = localWallet.rechargeBalance !== undefined ? localWallet.rechargeBalance : (localWallet.topupBalance || 0);
   const withdraw = localWallet.withdrawBalance !== undefined ? localWallet.withdrawBalance : (localWallet.earnedBalance !== undefined ? localWallet.earnedBalance : (localWallet.availableBalance || 0));
 
   return {
@@ -2050,7 +2050,187 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
   const myCode = profile.referralCode || profile.membershipNumber || '2829906';
   const settings = await fetchReferralSettings();
 
-  // Load all users to construct 3-tier subordinate hierarchy
+  // 1. Live Supabase Query (when configured)
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const [profilesRes, referralsRes, purchasesRes, txsRes] = await Promise.all([
+        supabase.from('profiles').select('*'),
+        supabase.from('referrals').select('*'),
+        supabase.from('purchases').select('*'),
+        supabase
+          .from('wallet_transactions')
+          .select('*')
+          .eq('user_id', userId)
+          .in('type', ['COMMISSION', 'REFERRAL_BONUS', 'REFERRAL_REWARD']),
+      ]);
+
+      const dbProfiles: any[] = profilesRes.data || [];
+      const dbReferrals: any[] = referralsRes.data || [];
+      const dbPurchases: any[] = purchasesRes.data || [];
+      const dbTxs: any[] = txsRes.data || [];
+
+      if (dbProfiles.length > 0) {
+        // Direct Level 1
+        const l1RefereeIds = new Set<string>();
+        dbReferrals
+          .filter((r) => r.referrer_id === userId && Number(r.level || 1) === 1)
+          .forEach((r) => l1RefereeIds.add(r.referee_id));
+
+        const level1Users = dbProfiles.filter(
+          (u) =>
+            u.user_id !== userId &&
+            u.id !== userId &&
+            (l1RefereeIds.has(u.user_id) ||
+              l1RefereeIds.has(u.id) ||
+              (u.referred_by &&
+                (u.referred_by.toUpperCase() === myCode.toUpperCase() ||
+                  u.referred_by.toUpperCase() === (profile.membershipNumber || '').toUpperCase() ||
+                  u.referred_by === userId ||
+                  u.referred_by === profile.id)))
+        );
+
+        const level1UserIds = new Set(level1Users.flatMap((u) => [u.user_id, u.id].filter(Boolean)));
+        const level1Codes = new Set(
+          level1Users.flatMap((u) => [u.referral_code, u.membership_number, u.user_id, u.id].filter(Boolean).map((s: string) => s.toUpperCase()))
+        );
+
+        // Level 2 (Indirect B)
+        const l2RefereeIds = new Set<string>();
+        dbReferrals
+          .filter((r) => r.referrer_id === userId && Number(r.level) === 2)
+          .forEach((r) => l2RefereeIds.add(r.referee_id));
+
+        const level2Users = dbProfiles.filter(
+          (u) =>
+            u.user_id !== userId &&
+            u.id !== userId &&
+            !level1UserIds.has(u.user_id) &&
+            !level1UserIds.has(u.id) &&
+            (l2RefereeIds.has(u.user_id) ||
+              l2RefereeIds.has(u.id) ||
+              (u.referred_by && level1Codes.has(u.referred_by.toUpperCase())))
+        );
+
+        const level2UserIds = new Set(level2Users.flatMap((u) => [u.user_id, u.id].filter(Boolean)));
+        const level2Codes = new Set(
+          level2Users.flatMap((u) => [u.referral_code, u.membership_number, u.user_id, u.id].filter(Boolean).map((s: string) => s.toUpperCase()))
+        );
+
+        // Level 3 (Indirect C)
+        const l3RefereeIds = new Set<string>();
+        dbReferrals
+          .filter((r) => r.referrer_id === userId && Number(r.level) === 3)
+          .forEach((r) => l3RefereeIds.add(r.referee_id));
+
+        const level3Users = dbProfiles.filter(
+          (u) =>
+            u.user_id !== userId &&
+            u.id !== userId &&
+            !level1UserIds.has(u.user_id) &&
+            !level1UserIds.has(u.id) &&
+            !level2UserIds.has(u.user_id) &&
+            !level2UserIds.has(u.id) &&
+            (l3RefereeIds.has(u.user_id) ||
+              l3RefereeIds.has(u.id) ||
+              (u.referred_by && level2Codes.has(u.referred_by.toUpperCase())))
+        );
+
+        const mapDbMember = (u: any, tier: 1 | 2 | 3): TeamMemberItem => {
+          const uId = u.user_id || u.id;
+          const userPurchases = dbPurchases.filter((p) => p.user_id === uId && p.status === 'ACTIVE');
+          const totalInvested = dbPurchases
+            .filter((p) => p.user_id === uId)
+            .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
+          const mobileRaw = u.whatsapp_no || u.phone || u.mobile || '9800000000';
+          const maskedMobile =
+            mobileRaw.length >= 10
+              ? `${mobileRaw.substring(0, 4)}****${mobileRaw.substring(mobileRaw.length - 2)}`
+              : mobileRaw;
+
+          const refEntry = dbReferrals.find((r) => r.referrer_id === userId && r.referee_id === uId);
+          const commEarned = Number(refEntry?.commission_earned || 0);
+
+          return {
+            id: u.id || u.user_id,
+            userId: u.user_id || u.id,
+            username: u.username || 'Member',
+            mobile: maskedMobile,
+            joined: u.created_at ? u.created_at.split('T')[0] : '2026-08-20',
+            devices: userPurchases.length,
+            totalInvested,
+            totalCommissionEarned: +commEarned.toFixed(2),
+            tier,
+          };
+        };
+
+        const l1Items = level1Users.map((u) => mapDbMember(u, 1));
+        const l2Items = level2Users.map((u) => mapDbMember(u, 2));
+        const l3Items = level3Users.map((u) => mapDbMember(u, 3));
+
+        const level1Comm = +dbTxs
+          .filter((t) => (t.description || '').includes('Level 1') || (t.description || '').includes('Tier 1') || (t.description || '').includes('Direct'))
+          .reduce((sum, t) => sum + Number(t.amount || 0), 0)
+          .toFixed(2);
+
+        const level2Comm = +dbTxs
+          .filter((t) => (t.description || '').includes('Level 2') || (t.description || '').includes('Tier 2'))
+          .reduce((sum, t) => sum + Number(t.amount || 0), 0)
+          .toFixed(2);
+
+        const level3Comm = +dbTxs
+          .filter((t) => (t.description || '').includes('Level 3') || (t.description || '').includes('Tier 3'))
+          .reduce((sum, t) => sum + Number(t.amount || 0), 0)
+          .toFixed(2);
+
+        const totalComm = +(dbTxs.reduce((sum, t) => sum + Number(t.amount || 0), 0) || (level1Comm + level2Comm + level3Comm)).toFixed(2);
+
+        const activeDevices =
+          l1Items.reduce((s, m) => s + m.devices, 0) +
+          l2Items.reduce((s, m) => s + m.devices, 0) +
+          l3Items.reduce((s, m) => s + m.devices, 0);
+
+        const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://gainpower-top-1.com';
+        const referralLink = `${baseUrl}/invite/${myCode}`;
+
+        const rewardHistory: ReferralRewardLog[] = dbTxs.map((t) => ({
+          id: t.id,
+          referrerUserId: userId,
+          refereeUserId: t.reference_id || '',
+          rewardType: 'TOPUP_COMMISSION',
+          amount: Number(t.amount || 0),
+          status: 'CREDITED',
+          description: t.description || 'Referral Commission',
+          idempotencyKey: t.reference_id || t.id,
+          txId: t.id,
+          createdAt: t.created_at,
+        }));
+
+        return {
+          referralCode: myCode,
+          referralLink,
+          totalMembers: l1Items.length + l2Items.length + l3Items.length,
+          directMembers: l1Items.length,
+          activeDevices,
+          totalCommission: totalComm,
+          level1Commission: level1Comm,
+          level2Commission: level2Comm,
+          level3Commission: level3Comm,
+          subordinates: {
+            1: l1Items,
+            2: l2Items,
+            3: l3Items,
+          },
+          rewardHistory,
+          settings,
+        };
+      }
+    } catch (dbErr) {
+      console.warn('fetchUserTeamSummary DB read fallback:', dbErr);
+    }
+  }
+
+  // 2. Load all users to construct 3-tier subordinate hierarchy locally (fallback)
   const allUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
   const allPurchases = getLocal<PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
   const allRewards = getLocal<ReferralRewardLog[]>(STORAGE_KEYS.REFERRAL_REWARDS, []);
@@ -2137,8 +2317,8 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
     l2Items.reduce((s, m) => s + m.devices, 0) +
     l3Items.reduce((s, m) => s + m.devices, 0);
 
-  const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://powerbank.app';
-  const referralLink = `${baseUrl}/register?ref=${myCode}`;
+  const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://gainpower-top-1.com';
+  const referralLink = `${baseUrl}/invite/${myCode}`;
 
   return {
     referralCode: myCode,
@@ -2475,14 +2655,17 @@ export async function fetchPurchases(userId: string): Promise<PurchaseItem[]> {
           amount: Number(p.amount),
           instantBonus: Number(p.instant_bonus || 0),
           dailyEarnings: Number(p.daily_earnings || (Number(p.earning_rate || 0) * 24)),
-          hourlyEarnings: Number(p.earning_rate),
-          earningRate: Number(p.earning_rate),
+          hourlyEarnings: Number(p.earning_rate || (Number(p.daily_earnings || 0) / 24)),
+          earningRate: Number(p.earning_rate || (Number(p.daily_earnings || 0) / 24)),
           earningType: p.earning_type || 'HOURLY',
           durationDays: p.duration_days || 365,
           status: p.status,
           startedAt: p.started_at,
           expiresAt: p.expires_at,
           totalEarned: Number(p.total_earned || 0),
+          claimedAmount: Number(p.claimed_amount || 0),
+          claimedHours: Number(p.claimed_hours || (Number(p.earning_rate || 0) > 0 ? Math.round(Number(p.claimed_amount || 0) / Number(p.earning_rate)) : 0)),
+          lastClaimedAt: p.last_claimed_at,
           lastSettledAt: p.last_settled_at,
         }));
       }
@@ -2497,8 +2680,27 @@ export async function fetchPurchases(userId: string): Promise<PurchaseItem[]> {
 
 export async function purchasePlanWithWallet(userId: string, plan: ProductItem) {
   const planPrice = plan.devicePrice || plan.price || 0;
-  const isPro = (plan.category || '').toUpperCase() === 'PRO' || plan.name.toUpperCase().includes('PRO');
-  const isEvent = (plan.category || '').toUpperCase() === 'EVENT' || plan.name.toUpperCase().includes('EVENT');
+  let planCat = (plan.category || '').toUpperCase();
+  if (planCat === 'STANDARD' || planCat === 'HOURLY' || !planCat) {
+    planCat = (plan.name || '').toUpperCase().includes('PRO') ? 'PRO' : 'VIP';
+  }
+  const isPro = planCat === 'PRO';
+  const isEvent = planCat === 'EVENT';
+
+  // 1. Authoritative VIP Level Enforcement
+  // VIP Level 0: VIP Plan unlocked, PRO & EVENT locked
+  // VIP Level 1: VIP & PRO unlocked, EVENT locked
+  // VIP Level 2+: All unlocked
+  const userVipStatus = await fetchUserVipStatus(userId);
+  const userVipLevel = Number(userVipStatus?.currentLevel?.levelNumber || 0);
+
+  if (isPro && userVipLevel < 1) {
+    throw new Error('Unlock at VIP Level 1 (Your level: VIP 0). Activate at least 1 VIP Plan to unlock PRO Plans.');
+  }
+
+  if (isEvent && userVipLevel < 2) {
+    throw new Error(`Unlock at VIP Level 2 (Your level: VIP ${userVipLevel}). Upgrade to VIP Level 2 to unlock Limited Event Plans.`);
+  }
 
   // Check Eligibility if PRO plan
   if (isPro) {
@@ -2535,6 +2737,32 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
     const existing = userPurchases.find((p) => p.planId === plan.id && p.status === 'ACTIVE');
     if (existing) {
       throw new Error('You already have an active instance of this plan. Duplicate purchases are not allowed.');
+    }
+  }
+
+  // 2. Try Server API endpoint
+  try {
+    const res = await fetch('/api/plans/purchase', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-user-id': userId },
+      body: JSON.stringify({ userId, planId: plan.id }),
+    });
+    if (res.ok) {
+      const resData = await res.json();
+      if (resData.success) {
+        return resData;
+      } else {
+        throw new Error(resData.error || 'Failed to purchase plan');
+      }
+    } else {
+      const errData = await res.json().catch(() => ({}));
+      if (errData.error) {
+        throw new Error(errData.error);
+      }
+    }
+  } catch (e: any) {
+    if (e.message && (e.message.includes('Unlock at VIP') || e.message.includes('Insufficient') || e.message.includes('limit') || e.message.includes('Duplicate') || e.message.includes('Event Plan'))) {
+      throw e;
     }
   }
 
@@ -2973,13 +3201,25 @@ export function calculateDeviceHourlyStatus(device: PurchaseItem, now: number = 
 
   // Discrete formula: FLOOR( elapsed_seconds / 3600 ) - Never CEIL, never round up
   const totalCompletedHours = Math.min(totalPlanHours, Math.floor(elapsedSeconds / 3600));
-  const claimedHours = device.claimedHours || 0;
+  
+  // Authoritative claimed hours
+  const claimedAmount = Number(device.claimedAmount || 0);
+  const claimedHours = device.claimedHours !== undefined && device.claimedHours !== null
+    ? Number(device.claimedHours)
+    : (hourlyEarnings > 0 ? Math.round(claimedAmount / hourlyEarnings) : 0);
+
   const unclaimedHours = Math.max(0, totalCompletedHours - claimedHours);
-  const claimableAmount = Number((unclaimedHours * hourlyEarnings).toFixed(2));
-  const totalEarnedAmount = Number((device.totalEarned || 0).toFixed(2));
-  const remainingHours = Math.max(0, totalPlanHours - totalCompletedHours);
   const isExpired = now >= expiresMs || totalCompletedHours >= totalPlanHours;
-  const isActive = device.status === 'ACTIVE' && !isExpired;
+  const isActive = (device.status === 'ACTIVE' || (device.status as string) === 'active') && !isExpired;
+
+  // SINGLE COMPLETED HOURLY CYCLE RULE:
+  // ONE COMPLETED HOURLY CYCLE = ONE CLAIMABLE HOURLY EARNING UNIT.
+  // The system must NEVER add already-claimed amounts back into the current claimable amount.
+  // If at least 1 completed cycle is unclaimed, claimable amount is exactly 1 * hourlyEarnings.
+  const isEligibleCycle = unclaimedHours >= 1 && isActive;
+  const claimableAmount = isEligibleCycle ? hourlyEarnings : 0;
+  const totalEarnedAmount = Number((device.totalEarned || claimedAmount || 0).toFixed(2));
+  const remainingHours = Math.max(0, totalPlanHours - totalCompletedHours);
 
   // Next Earning Time calculation
   let nextEarningTimestamp: number | undefined = undefined;
@@ -2996,7 +3236,7 @@ export function calculateDeviceHourlyStatus(device: PurchaseItem, now: number = 
       const timeStr = new Date(nextEarningTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       nextEarningTimeFormatted = `${timeStr} (in ${diffMinutes}m)`;
     } else {
-      nextEarningTimeFormatted = 'Processing cycle...';
+      nextEarningTimeFormatted = isEligibleCycle ? 'Cycle ready to claim' : 'Processing cycle...';
     }
   }
 
@@ -3016,7 +3256,7 @@ export function calculateDeviceHourlyStatus(device: PurchaseItem, now: number = 
     totalPlanHours,
     totalCompletedHours,
     claimedHours,
-    unclaimedHours,
+    unclaimedHours: isEligibleCycle ? 1 : 0,
     claimableAmount,
     totalEarnedAmount,
     remainingHours,
@@ -3127,8 +3367,14 @@ export async function fetchClaimableEarnings(userId: string): Promise<{
   records: EarningRecord[];
   deviceStatuses: DeviceHourlyStatus[];
 }> {
-  const purchases = getLocal<PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
-  const userPurchases = purchases.filter((p) => p.userId === userId);
+  let userPurchases: PurchaseItem[] = [];
+  try {
+    userPurchases = await fetchPurchases(userId);
+  } catch {
+    const purchases = getLocal<PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
+    userPurchases = purchases.filter((p) => p.userId === userId);
+  }
+
   const now = Date.now();
   let total = 0;
   let unclaimedCyclesCount = 0;
@@ -3137,8 +3383,10 @@ export async function fetchClaimableEarnings(userId: string): Promise<{
   userPurchases.forEach((p) => {
     const status = calculateDeviceHourlyStatus(p, now);
     deviceStatuses.push(status);
-    total += status.claimableAmount;
-    unclaimedCyclesCount += status.unclaimedHours;
+    if (status.isActive && status.claimableAmount > 0) {
+      total += status.claimableAmount;
+      unclaimedCyclesCount += 1;
+    }
   });
 
   const earnings = getLocal<EarningRecord[]>(STORAGE_KEYS.EARNINGS, []);
@@ -3164,6 +3412,38 @@ export async function claimUserEarnings(userId: string): Promise<{
   newBalance: number;
   itemsCount: number;
 }> {
+  // 1. Try authoritative server endpoint first
+  try {
+    const res = await fetch('/api/earnings/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-user-id': userId },
+      body: JSON.stringify({ userId }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success) {
+        return {
+          success: true,
+          amount: Number(data.amount),
+          claimBatchId: data.claimBatchId,
+          newBalance: Number(data.newWithdrawBalance),
+          itemsCount: Number(data.itemsCount || 1),
+        };
+      } else {
+        throw new Error(data.error || 'Failed to claim device earnings');
+      }
+    } else {
+      const errData = await res.json().catch(() => ({}));
+      if (errData.error) {
+        throw new Error(errData.error);
+      }
+    }
+  } catch (e: any) {
+    if (e.message && (e.message.includes('No completed') || e.message.includes('No active'))) {
+      throw e;
+    }
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase.rpc('claim_user_earnings', { p_user_id: userId });
@@ -3191,15 +3471,16 @@ export async function claimUserEarnings(userId: string): Promise<{
   let totalClaimAmount = 0;
   let eligibleCyclesCount = 0;
 
-  // 1. Calculate claimable amount per device and update claimedHours without resetting startedAt
+  // 1. Calculate claimable amount per device and update claimedAmount without resetting startedAt
   userPurchases.forEach((p) => {
     const status = calculateDeviceHourlyStatus(p, now);
-    if (status.claimableAmount > 0 && status.unclaimedHours > 0) {
+    if (status.isActive && status.claimableAmount > 0) {
       totalClaimAmount = Number((totalClaimAmount + status.claimableAmount).toFixed(2));
-      eligibleCyclesCount += status.unclaimedHours;
+      eligibleCyclesCount += 1;
 
-      // Advance claimedHours to totalCompletedHours
-      p.claimedHours = status.totalCompletedHours;
+      // Advance claimedAmount and claimedHours
+      p.claimedAmount = Number(((p.claimedAmount || 0) + status.claimableAmount).toFixed(2));
+      p.claimedHours = Number((p.claimedHours || 0) + 1);
       p.totalEarned = Number(((p.totalEarned || 0) + status.claimableAmount).toFixed(2));
       p.lastClaimedAt = claimedTimestamp;
       p.lastSettledAt = claimedTimestamp;
@@ -5472,8 +5753,30 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
   promotionEarnings: number;
   activePlansCount: number;
 }> {
+  // 1. Try server earnings summary first
+  try {
+    const sumRes = await fetch(`/api/user/earnings-summary?userId=${userId}`);
+    if (sumRes.ok) {
+      const sumJson = await sumRes.json();
+      if (sumJson.success) {
+        // Also fetch promotion earnings
+        let promoEarnings = 0;
+        try {
+          const prof = await fetchUserProfile(userId);
+          promoEarnings = Number(prof?.teamEarnings || 0);
+        } catch {}
+        return {
+          remainingHours: sumJson.remainingHours || 0,
+          totalAssets: Number(sumJson.totalAssets || 0),
+          todayEarnings: Number(sumJson.todayEarnings || 0),
+          promotionEarnings: promoEarnings,
+          activePlansCount: sumJson.activeDevicesCount || 0,
+        };
+      }
+    }
+  } catch {}
+
   const now = Date.now();
-  const todayStr = new Date().toISOString().split('T')[0];
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
 
@@ -5517,6 +5820,9 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
           id: walRes.data.id,
           userId: walRes.data.user_id,
           availableBalance: Number(walRes.data.available_balance || 0),
+          rechargeBalance: Number(walRes.data.recharge_balance !== undefined ? walRes.data.recharge_balance : (walRes.data.topup_balance || 0)),
+          withdrawBalance: Number(walRes.data.withdraw_balance !== undefined ? walRes.data.withdraw_balance : (walRes.data.earned_balance || 0)),
+          topupBalance: Number(walRes.data.recharge_balance !== undefined ? walRes.data.recharge_balance : (walRes.data.topup_balance || 0)),
           pendingBalance: Number(walRes.data.pending_balance || 0),
           totalEarned: Number(walRes.data.total_earned || 0),
           totalWithdrawn: Number(walRes.data.total_withdrawn || 0),
@@ -5586,7 +5892,7 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
   }
 
   // 1. Calculate Remaining Hours across all active plans
-  const activePurchases = purchases.filter((p) => p.status === 'ACTIVE');
+  const activePurchases = purchases.filter((p) => p.status === 'ACTIVE' || (p.status as string) === 'active');
   let remainingHours = 0;
 
   if (activePurchases.length > 0) {
@@ -5596,40 +5902,26 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
       const endTime = p.expiresAt ? new Date(p.expiresAt).getTime() : startTime + durationHours * 3600 * 1000;
       return Math.max(0, Math.ceil((endTime - now) / 3600000));
     });
-    // Active earning duration window (max remaining hours across active devices)
     remainingHours = Math.max(...planHours);
   }
 
-  // 2. Calculate Total Assets (Active Device Investments + Wallet Available Balance)
-  const activeDeviceInvestments = activePurchases.reduce((acc, p) => acc + Number(p.amount || 0), 0);
-  const walletBalance = Number(userWallet?.availableBalance || 0);
-  const totalAssets = +(activeDeviceInvestments + walletBalance).toFixed(2);
+  // 2. Authoritative Total Assets (Live Total Wallet: Recharge/Topup + Withdraw/Available)
+  const curTopup = Number(userWallet?.rechargeBalance !== undefined ? userWallet.rechargeBalance : (userWallet?.topupBalance || 0));
+  const curWithdraw = Number(userWallet?.withdrawBalance !== undefined ? userWallet.withdrawBalance : (userWallet?.earnedBalance !== undefined ? userWallet.earnedBalance : userWallet?.availableBalance || 0));
+  const totalAssets = Number((curTopup + curWithdraw).toFixed(2));
 
-  // 3. Calculate Today's Earnings from today's real earning records & daily settlements
-  const todayEarningsList = earnings.filter((e) => {
-    if (e.earningDate && e.earningDate === todayStr) return true;
-    if (e.createdAt && new Date(e.createdAt).getTime() >= todayStart.getTime()) return true;
-    return false;
+  // 3. Today's Earnings = SUM of successful claims made TODAY
+  const claimsToday = transactions.filter((t) => {
+    const isClaim = t.type === 'EARNING_CLAIM' || (t.type as string) === 'EARNINGS_CLAIM' || (t as any).transaction_type === 'DEVICE_EARNING_CLAIM';
+    const isToday = t.createdAt && new Date(t.createdAt).getTime() >= todayStart.getTime();
+    return isClaim && isToday;
   });
 
-  let todayEarnings = todayEarningsList.reduce((acc, e) => acc + Number(e.amount || 0), 0);
-
-  // If no static records created yet today but active devices are generating yield, calculate today's accrued rate
-  if (todayEarnings === 0 && activePurchases.length > 0) {
-    const todayDailyYield = activePurchases.reduce((acc, p) => {
-      const isPro = (p.planCategory || '').toUpperCase() === 'PRO';
-      const dailyRate = isPro ? Number(p.dailyEarnings || 0) : Number(p.earningRate || 0) * 24;
-      return acc + dailyRate;
-    }, 0);
-    todayEarnings = +todayDailyYield.toFixed(2);
-  } else {
-    todayEarnings = +todayEarnings.toFixed(2);
-  }
+  const todayEarnings = Number(claimsToday.reduce((sum, t) => sum + Number(t.amount || 0), 0).toFixed(2));
 
   // 4. Calculate Promotion Earnings from referral/team earnings
   let promotionEarnings = Number(userProfile?.teamEarnings || 0);
   if (promotionEarnings === 0) {
-    // Check referral earnings in earnings / transactions
     const referralEarningsSum = earnings
       .filter((e) => (e.earningType || '').toUpperCase().includes('REFERRAL') || (e.earningType || '').toUpperCase().includes('TEAM'))
       .reduce((acc, e) => acc + Number(e.amount || 0), 0);
@@ -7186,7 +7478,7 @@ export async function fetchGiftCodes(filters?: { status?: string; query?: string
   try {
     const res = await fetch('/api/gift-codes');
     const json = await res.json();
-    if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+    if (json.success && Array.isArray(json.data)) {
       let list: GiftCode[] = json.data;
       if (filters?.status && filters.status !== 'ALL') {
         list = list.filter((c) => c.status === filters.status);

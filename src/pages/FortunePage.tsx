@@ -6,6 +6,7 @@ import {
   settleAndCalculateEarnings,
   fetchDailyCheckInStatus,
   performDailyCheckIn,
+  fetchWallet,
 } from '../services/api';
 import {
   Wallet,
@@ -50,8 +51,13 @@ export const FortunePage: React.FC<FortunePageProps> = ({
   const [loadingCheckIn, setLoadingCheckIn] = useState(true);
   const [claiming, setClaiming] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [liveWallet, setLiveWallet] = useState<WalletType | null>(wallet);
 
   const userId = userProfile?.userId || userProfile?.id || '';
+
+  useEffect(() => {
+    setLiveWallet(wallet);
+  }, [wallet]);
 
   const loadPageData = async () => {
     if (!userId) {
@@ -61,6 +67,12 @@ export const FortunePage: React.FC<FortunePageProps> = ({
     try {
       // Settle any pending yield calculation in background so stats are up to date
       await settleAndCalculateEarnings(userId);
+
+      // Fetch fresh wallet
+      const freshWallet = await fetchWallet(userId);
+      if (freshWallet) {
+        setLiveWallet(freshWallet);
+      }
 
       // Load dynamic Daily Check-in status
       const status = await fetchDailyCheckInStatus(userId);
@@ -105,16 +117,30 @@ export const FortunePage: React.FC<FortunePageProps> = ({
 
   const activePurchases = purchases.filter((p) => p.status === 'ACTIVE');
   const activeDeviceInvestments = activePurchases.reduce((acc, p) => acc + (p.amount || 0), 0);
-  const topupBalance = Number(wallet?.topupBalance || 0);
+  const topupBalance = Number(
+    liveWallet?.rechargeBalance !== undefined
+      ? liveWallet.rechargeBalance
+      : liveWallet?.topupBalance !== undefined
+      ? liveWallet.topupBalance
+      : wallet?.rechargeBalance !== undefined
+      ? wallet.rechargeBalance
+      : wallet?.topupBalance || 0
+  );
   const withdrawBalance = Number(
-    wallet?.withdrawBalance !== undefined
+    liveWallet?.withdrawBalance !== undefined
+      ? liveWallet.withdrawBalance
+      : liveWallet?.earnedBalance !== undefined
+      ? liveWallet.earnedBalance
+      : liveWallet?.availableBalance !== undefined
+      ? liveWallet.availableBalance
+      : wallet?.withdrawBalance !== undefined
       ? wallet.withdrawBalance
       : wallet?.earnedBalance !== undefined
       ? wallet.earnedBalance
       : wallet?.availableBalance || 0
   );
   const withdrawableEarnings = withdrawBalance;
-  const totalAssets = +(activeDeviceInvestments + topupBalance + withdrawBalance).toFixed(2);
+  const totalAssets = Number((topupBalance + withdrawBalance).toFixed(2));
   const todayEstimatedEarnings = activePurchases.reduce((acc, p) => {
     const daily = p.dailyEarnings || (p.earningRate * 24) || 0;
     return acc + daily;

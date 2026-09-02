@@ -211,7 +211,7 @@ export const AboutPlatformPage: React.FC<AboutPlatformPageProps> = ({
                 <ShieldCheck className="w-3.5 h-3.5 text-amber-200" />
                 <span>Automated Smart Yield Settlement</span>
               </div>
-              <span className="font-bold">{config.companyName || 'Power Bank Network'}</span>
+              <span className="font-bold">{config.companyName || 'GAIN POWER Global Network'}</span>
             </div>
           </div>
         </div>
@@ -699,7 +699,7 @@ export const AboutPlatformPage: React.FC<AboutPlatformPageProps> = ({
         <div className="p-4 rounded-2xl bg-gray-100/80 border border-gray-200 text-center space-y-2">
           <div className="text-xs font-bold text-gray-800">Need Further Assistance?</div>
           <p className="text-[11px] text-gray-500">
-            Support Hours: {config.supportHours || '09:00 – 21:00 IST'} • {config.supportEmail || 'support@powerbank-energy.com'}
+            Support Hours: {config.supportHours || '09:00 – 21:00 IST'} • {config.supportEmail || 'support@gainpower.io'}
           </p>
           {config.supportTelegram && (
             <a

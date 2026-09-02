@@ -1,6 +1,6 @@
 import React from 'react';
 import { Globe, Bell } from 'lucide-react';
-import { PowerBankLogo } from './Artworks';
+import { useSiteBranding } from '../context/SiteBrandingContext';
 
 interface HeaderProps {
   onOpenLanguageModal?: () => void;
@@ -14,21 +14,33 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenLanguageModal,
   onOpenNotifications,
   unreadCount = 0,
-  title = 'Power Bank',
+  title,
   isDark = true,
 }) => {
+  const { siteSettings } = useSiteBranding();
+  const [logoLoadError, setLogoLoadError] = React.useState(false);
+
+  const displayTitle = title || siteSettings?.siteTitle || 'GAIN POWER';
+  const logoUrl = siteSettings?.logoUrl;
+
   return (
     <header className={`w-full px-4 py-3 flex items-center justify-between transition-colors ${
       isDark ? 'bg-[#121212] text-white' : 'bg-white text-gray-900 border-b border-gray-100'
     }`}>
-      {/* Left: Brand logo & name */}
-      <div className="flex items-center gap-2">
-        <div className="w-6 h-6 bg-[#FF6000] rounded-full flex items-center justify-center shadow-xs">
-          <span className="text-[10px] text-white font-bold">PB</span>
-        </div>
-        <span className={`text-[15px] font-bold tracking-tight ${isDark ? 'text-white' : 'text-gray-900'}`}>
-          {title}
-        </span>
+      {/* Left: Brand logo area (ONLY uploaded logo image, no adjacent text title) */}
+      <div className="flex items-center">
+        {logoUrl && !logoLoadError ? (
+          <img
+            src={logoUrl}
+            alt={displayTitle || 'Platform Logo'}
+            className="h-8 max-h-8 w-auto max-w-[140px] object-contain rounded-sm shadow-xs"
+            onError={() => setLogoLoadError(true)}
+          />
+        ) : (
+          <div className="w-7 h-7 bg-[#FF6000] rounded-full flex items-center justify-center shadow-xs">
+            <span className="text-[11px] text-white font-bold tracking-tight">GP</span>
+          </div>
+        )}
       </div>
 
       {/* Right controls: Notification Bell & Language Selector */}

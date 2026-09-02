@@ -107,8 +107,8 @@ export const MissionBonusPage: React.FC<MissionBonusPageProps> = ({
 
   const copyReferralLink = () => {
     const code = userProfile?.referralCode || userProfile?.membershipNumber || '2829906';
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    const shareUrl = `${origin}/?ref=${code}`;
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'https://gainpower-top-1.com';
+    const shareUrl = `${origin}/invite/${code}`;
     
     if (navigator.clipboard) {
       navigator.clipboard.writeText(shareUrl).then(() => {

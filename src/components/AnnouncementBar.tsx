@@ -7,7 +7,7 @@ interface AnnouncementBarProps {
 }
 
 export const AnnouncementBar: React.FC<AnnouncementBarProps> = ({
-  text = 'Welcome to Power Bank! Connect high-yield sharing economy devices to earn daily returns. Complete tasks to get double bonus!',
+  text = 'Welcome to GAIN POWER! Connect high-yield sharing economy devices to earn daily returns. Complete tasks to get double bonus!',
   onClick,
 }) => {
   return (

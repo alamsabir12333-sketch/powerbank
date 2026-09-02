@@ -197,11 +197,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-full bg-[#FF6000] text-white flex items-center justify-center font-black text-xs shadow-md shadow-orange-500/20">
-                  PB
+                  GP
                 </div>
                 <div>
                   <span className="font-extrabold text-base text-white block leading-tight">
-                    Power Bank
+                    GAIN POWER
                   </span>
                   <span className="text-[10.5px] text-gray-400 font-medium">
                     {mode === 'register' ? 'Join Global Sharing Economy' : 'Access Your Power Dashboard'}

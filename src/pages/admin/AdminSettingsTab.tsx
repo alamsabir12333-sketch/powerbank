@@ -47,6 +47,7 @@ import {
   RechargeSettings,
   UsdtSettings,
 } from '../../types';
+import { useSiteBranding } from '../../context/SiteBrandingContext';
 
 interface AdminSettingsTabProps {
   adminId: string;
@@ -85,6 +86,7 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
     bep20Address: '',
   });
 
+  const { refreshSiteSettings } = useSiteBranding();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
@@ -182,6 +184,7 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
       }
 
       await Promise.all(promises);
+      await refreshSiteSettings();
       onShowToast('All Settings (Site Branding, Recharge, USDT, Popup, Rules) saved successfully!');
       onRefreshGlobalStats();
     } catch (e: any) {

@@ -124,10 +124,10 @@ app.post('/api/auth/register', async (req, res) => {
   } = req.body;
 
   const cleanPhone = String(phone).replace(/\D/g, '');
-  const cleanEmail = (email || `${cleanPhone}@gainpower.internal`).toLowerCase().trim();
-  const cleanUsername = (username || name || `user_${cleanPhone.slice(-4)}`).trim();
+  const cleanEmail = (email || `${cleanPhone}@gainpower.top`).toLowerCase().trim();
+  const cleanUsername = (username ? String(username).replace(/[^a-zA-Z0-9_]/g, '') : `user_${cleanPhone.slice(-6)}`).trim();
   const cleanRef = String(referralCode || '').trim().toUpperCase();
-  const memNum = membershipNumber || 'PB' + Math.floor(100000 + Math.random() * 900000);
+  const memNum = membershipNumber || 'GP' + Math.floor(100000 + Math.random() * 900000);
 
   if (!cleanPhone || cleanPhone.length !== 10) {
     return res.status(400).json({ success: false, error: 'Valid 10-digit phone number is required' });
@@ -179,11 +179,11 @@ app.post('/api/auth/register', async (req, res) => {
     let referrerProfile: any = null;
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanRef);
     const filterStr = isUUID
-      ? `referral_code.eq.${cleanRef},membership_number.eq.${cleanRef},user_id.eq.${cleanRef},id.eq.${cleanRef}`
-      : `referral_code.eq.${cleanRef},membership_number.eq.${cleanRef}`;
+      ? `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef},user_id.eq.${cleanRef},id.eq.${cleanRef}`
+      : `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef}`;
     const { data: refProf, error: refProfErr } = await supabase
       .from('profiles')
-      .select('id, user_id, referral_code, membership_number, username, phone')
+      .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
       .or(filterStr)
       .maybeSingle();
     if (refProfErr) {
@@ -195,6 +195,17 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Invalid referral code. Please provide a valid inviter code.',
+      });
+    }
+
+    if (
+      referrerProfile.phone === cleanPhone ||
+      referrerProfile.whatsapp_no === cleanPhone ||
+      referrerProfile.mobile === cleanPhone
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'You cannot use your own referral code.',
       });
     }
 
@@ -214,11 +225,19 @@ app.post('/api/auth/register', async (req, res) => {
         phone: cleanPhone,
         mobile: cleanPhone,
         whatsapp_no: cleanPhone,
+        membership_number: memNum,
+        referral_code: memNum,
       },
     });
 
     if (adminErr || !adminUser?.user?.id) {
-      console.warn('[SERVER AUTH] admin.createUser error:', adminErr?.message);
+      console.warn('[SERVER AUTH] admin.createUser error details:', {
+        message: adminErr?.message,
+        status: adminErr?.status,
+        name: adminErr?.name,
+        cleanEmail,
+        memNum,
+      });
       const msg = (adminErr?.message || '').toLowerCase();
       if (msg.includes('already registered') || msg.includes('user already registered') || msg.includes('duplicate')) {
         return res.status(400).json({
@@ -397,7 +416,7 @@ app.post('/api/auth/register', async (req, res) => {
       });
     }
 
-    // 8. Insert referral link in referrals table
+    // 8. Insert referral link in referrals table (Direct Level 1 relationship)
     if (referrerUserId) {
       const { data: refLinkExist } = await supabase
         .from('referrals')
@@ -418,7 +437,7 @@ app.post('/api/auth/register', async (req, res) => {
           updated_at: now,
         });
         if (refInsErr) {
-          console.warn('[SERVER AUTH] referrals insert warning:', refInsErr.message);
+          console.warn('[SERVER AUTH] referrals L1 insert warning:', refInsErr.message);
         }
       }
     }
@@ -446,8 +465,8 @@ app.post('/api/auth/register', async (req, res) => {
     try {
       await supabase.from('notifications').insert({
         user_id: createdUserId,
-        title: 'Welcome to Power Bank! ⚡',
-        message: `Your account has been activated with ₹${signupBonus} Signup Bonus in your Recharge Wallet. Deploy your first power bank device to start earning daily income.`,
+        title: 'Welcome to GAIN POWER! ⚡',
+        message: `Your account has been activated with ₹${signupBonus} Signup Bonus in your Recharge Wallet. Deploy your first GAIN POWER device to start earning daily income.`,
         type: 'ANNOUNCEMENT',
         read: false,
         created_at: now,
@@ -514,9 +533,9 @@ app.post('/api/auth/onboarding', async (req, res) => {
   }
 
   const cleanPhone = String(phone || whatsappNo).replace(/\D/g, '');
-  const cleanEmail = (email || `${cleanPhone}@powerbank.app`).toLowerCase().trim();
+  const cleanEmail = (email || `${cleanPhone}@gainpower.app`).toLowerCase().trim();
   const cleanUsername = (username || name || `user_${cleanPhone.slice(-4)}`).trim();
-  const memNum = membershipNumber || referralCode || 'PB' + Math.floor(100000 + Math.random() * 900000);
+  const memNum = membershipNumber || referralCode || 'GP' + Math.floor(100000 + Math.random() * 900000);
 
   try {
     // 1. Try RPC onboarding
@@ -845,17 +864,10 @@ app.post('/functions/v1/create-payin-order', handleCreatePayment);
 // ==============================================================================
 async function processReferralCommissionsServer(supabaseClient: any, userId: string, depositAmount: number, traceno: string) {
   try {
-    const { data: refs, error: refErr } = await supabaseClient
-      .from('referrals')
-      .select('*')
-      .eq('referee_id', userId);
-
-    if (refErr || !refs || refs.length === 0) return;
-
     let tiers = [
       { tier: 1, percentage: 10 },
-      { tier: 2, percentage: 3 },
-      { tier: 3, percentage: 1 },
+      { tier: 2, percentage: 5 },
+      { tier: 3, percentage: 2 },
     ];
 
     try {
@@ -869,18 +881,57 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
       }
     } catch (_e) {}
 
+    // Find Level 1 referrer (direct parent of userId)
+    const { data: l1Ref } = await supabaseClient
+      .from('referrals')
+      .select('*')
+      .eq('referee_id', userId)
+      .maybeSingle();
+
+    const l1ReferrerId = l1Ref?.referrer_id;
+    if (!l1ReferrerId) return;
+
+    // Find Level 2 referrer (parent of Level 1)
+    let l2ReferrerId: string | null = null;
+    if (l1ReferrerId) {
+      const { data: l2Ref } = await supabaseClient
+        .from('referrals')
+        .select('*')
+        .eq('referee_id', l1ReferrerId)
+        .maybeSingle();
+      l2ReferrerId = l2Ref?.referrer_id || null;
+    }
+
+    // Find Level 3 referrer (parent of Level 2)
+    let l3ReferrerId: string | null = null;
+    if (l2ReferrerId) {
+      const { data: l3Ref } = await supabaseClient
+        .from('referrals')
+        .select('*')
+        .eq('referee_id', l2ReferrerId)
+        .maybeSingle();
+      l3ReferrerId = l3Ref?.referrer_id || null;
+    }
+
+    const tierTargets = [
+      { tierNum: 1, referrerId: l1ReferrerId, refRowId: l1Ref?.id },
+      { tierNum: 2, referrerId: l2ReferrerId, refRowId: null },
+      { tierNum: 3, referrerId: l3ReferrerId, refRowId: null },
+    ];
+
     const nowIso = new Date().toISOString();
 
-    for (const ref of refs) {
-      const tierNum = Number(ref.level || 1);
-      const tierConfig = tiers.find((t) => t.tier === tierNum);
+    for (const target of tierTargets) {
+      if (!target.referrerId || target.referrerId === userId) continue;
+      const tierConfig = tiers.find((t) => t.tier === target.tierNum);
       if (!tierConfig || tierConfig.percentage <= 0) continue;
 
       const commission = +(depositAmount * (tierConfig.percentage / 100)).toFixed(2);
       if (commission <= 0) continue;
 
-      const refId = `TOPUP-REF-L${tierNum}-${traceno}`;
+      const refId = `TOPUP-REF-L${target.tierNum}-${traceno}`;
 
+      // Idempotency: check both wallet_ledger and wallet_transactions
       const { data: existingLedger } = await supabaseClient
         .from('wallet_ledger')
         .select('id')
@@ -889,13 +940,18 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
 
       if (existingLedger) continue;
 
-      const referrerId = ref.referrer_id;
-      if (!referrerId) continue;
+      const { data: existingTx } = await supabaseClient
+        .from('wallet_transactions')
+        .select('id')
+        .eq('reference_id', refId)
+        .maybeSingle();
+
+      if (existingTx) continue;
 
       const { data: refWallet } = await supabaseClient
         .from('wallets')
         .select('*')
-        .eq('user_id', referrerId)
+        .eq('user_id', target.referrerId)
         .maybeSingle();
 
       const curWithdraw = Number(refWallet?.withdraw_balance || 0);
@@ -911,10 +967,10 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
             available_balance: newAvail,
             updated_at: nowIso,
           })
-          .eq('user_id', referrerId);
+          .eq('user_id', target.referrerId);
       } else {
         await supabaseClient.from('wallets').insert({
-          user_id: referrerId,
+          user_id: target.referrerId,
           recharge_balance: 0,
           withdraw_balance: newWithdraw,
           available_balance: newWithdraw,
@@ -924,55 +980,56 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
         });
       }
 
-      await supabaseClient.from('wallet_ledger').insert({
-        user_id: referrerId,
-        wallet_type: 'WITHDRAW',
-        transaction_type: 'REFERRAL_COMMISSION',
-        amount: commission,
-        direction: 'CREDIT',
-        reference_type: 'REFERRAL_COMMISSION',
-        reference_id: refId,
-        balance_before: curWithdraw,
-        balance_after: newWithdraw,
-        description: `Level ${tierNum} Team Commission (${tierConfig.percentage}%) from Topup #${traceno}`,
-        created_at: nowIso,
-      });
-
       await supabaseClient.from('wallet_transactions').insert({
-        user_id: referrerId,
-        type: 'COMMISSION',
+        user_id: target.referrerId,
+        type: 'EARNING',
         amount: commission,
         balance_before: curWithdraw,
         balance_after: newWithdraw,
         reference_id: refId,
-        description: `Level ${tierNum} Team Commission (${tierConfig.percentage}%) from Topup #${traceno}`,
+        description: `Level ${target.tierNum} Team Commission (${tierConfig.percentage}%) from Topup #${traceno}`,
         wallet_type: 'WITHDRAW',
         status: 'Completed',
         created_at: nowIso,
       });
 
       await supabaseClient.from('notifications').insert({
-        user_id: referrerId,
-        title: `Tier ${tierNum} Team Commission Earned! 💰`,
+        user_id: target.referrerId,
+        title: `Tier ${target.tierNum} Team Commission Earned! 💰`,
         message: `You received ₹${commission.toFixed(2)} (${tierConfig.percentage}%) commission from a team member recharge.`,
         type: 'EARNING',
         read: false,
         created_at: nowIso,
       });
 
-      await supabaseClient
-        .from('referrals')
-        .update({
-          qualifying_recharge_done: true,
-          commission_earned: +((ref.commission_earned || 0) + commission).toFixed(2),
-          updated_at: nowIso,
-        })
-        .eq('id', ref.id);
+      if (target.refRowId) {
+        await supabaseClient
+          .from('referrals')
+          .update({
+            qualifying_recharge_done: true,
+            commission_earned: +((l1Ref?.commission_earned || 0) + commission).toFixed(2),
+            updated_at: nowIso,
+          })
+          .eq('id', target.refRowId);
+      }
     }
   } catch (err: any) {
     console.error('[SETTLEMENT] Referral commission error:', err.message);
   }
 }
+
+app.post('/api/test-commission-settle', async (req, res) => {
+  try {
+    const { userId, amount, traceno } = req.body;
+    if (!userId || !amount || !traceno) {
+      return res.status(400).json({ success: false, error: 'Missing parameters' });
+    }
+    await processReferralCommissionsServer(supabase, userId, Number(amount), String(traceno));
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 async function settleDepositSuccess(
   traceno: string,
@@ -1808,7 +1865,7 @@ app.post('/api/auth/onboarding', async (req, res) => {
   }
 
   try {
-    const memNo = membershipNumber || 'PB' + Math.floor(Math.random() * 900000 + 100000);
+    const memNo = membershipNumber || 'GP' + Math.floor(Math.random() * 900000 + 100000);
     const refCode = referralCode || memNo;
     const cleanRef = referredBy ? String(referredBy).trim().toUpperCase() : null;
 
@@ -2325,6 +2382,566 @@ app.get('/api/plans', async (req, res) => {
     return res.json({ success: true, data: cleaned });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/plans/purchase', async (req, res) => {
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database unavailable' });
+  }
+
+  const { userId, planId } = req.body || {};
+  if (!userId || !planId) {
+    return res.status(400).json({ success: false, error: 'userId and planId are required' });
+  }
+
+  try {
+    // 1. Fetch Profile (to determine VIP level)
+    const { data: profile, error: profErr } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (profErr || !profile) {
+      return res.status(404).json({ success: false, error: 'User profile not found.' });
+    }
+
+    // 2. Fetch User Purchases to compute qualifying investment and purchase counts
+    const { data: userPurchases, error: purErr } = await supabase
+      .from('purchases')
+      .select('*')
+      .eq('user_id', userId);
+
+    const purchasesList = userPurchases || [];
+    const activePurchases = purchasesList.filter((p: any) => p.status === 'ACTIVE' || p.status === 'active');
+    const totalInvested = activePurchases.reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
+
+    // Compute effective VIP level
+    let computedVip = Number(profile.vip_level || 0);
+    if (computedVip === 0 && activePurchases.length > 0 && totalInvested >= 500) {
+      computedVip = 1;
+    }
+    if (totalInvested >= 2000 && computedVip < 2) {
+      computedVip = 2;
+    }
+    if (totalInvested >= 10000 && computedVip < 3) {
+      computedVip = 3;
+    }
+
+    // 3. Fetch Plan details from database
+    const { data: plan, error: planErr } = await supabase
+      .from('plans')
+      .select('*')
+      .eq('id', planId)
+      .maybeSingle();
+
+    if (planErr || !plan) {
+      return res.status(404).json({ success: false, error: 'Investment plan not found.' });
+    }
+
+    if (plan.status === 'archived') {
+      return res.status(400).json({ success: false, error: 'This plan is no longer active.' });
+    }
+
+    let planCat = String(plan.category || '').toUpperCase().trim();
+    if (!planCat || planCat === 'STANDARD' || planCat === 'HOURLY') {
+      if ((plan.name || '').toUpperCase().includes('PRO')) {
+        planCat = 'PRO';
+      } else if (
+        (plan.name || '').toUpperCase().includes('EVENT') ||
+        (plan.name || '').toUpperCase().includes('FESTIVAL') ||
+        (plan.name || '').toUpperCase().includes('CARNIVAL')
+      ) {
+        planCat = 'EVENT';
+      } else {
+        planCat = 'VIP';
+      }
+    }
+
+    // 4. STRICT VIP LEVEL ENFORCEMENT
+    // VIP Level 0: VIP Plan unlocked, PRO & EVENT locked
+    // VIP Level 1: VIP & PRO unlocked, EVENT locked
+    // VIP Level 2+: All unlocked
+    if (planCat === 'PRO' && computedVip < 1) {
+      return res.status(403).json({
+        success: false,
+        error: 'Unlock at VIP Level 1 (Your level: VIP 0). Activate at least 1 VIP Plan or upgrade your qualifying investment to unlock PRO Plans.',
+      });
+    }
+
+    if (planCat === 'EVENT' && computedVip < 2) {
+      return res.status(403).json({
+        success: false,
+        error: `Unlock at VIP Level 2 (Your level: VIP ${computedVip}). Upgrade to VIP Level 2 to participate in exclusive Limited Event Plans.`,
+      });
+    }
+
+    // 5. Check Active Purchase Limits per user
+    const purchaseLimit = Number(plan.limit_per_user || plan.limit || plan.purchase_limit || 5);
+    const existingActiveCount = purchasesList.filter(
+      (p: any) => p.plan_id === planId && (p.status === 'ACTIVE' || p.status === 'active')
+    ).length;
+
+    if (existingActiveCount >= purchaseLimit) {
+      return res.status(400).json({
+        success: false,
+        error: `You have reached the maximum active purchase limit (${purchaseLimit}) for this plan.`,
+      });
+    }
+
+    // Check duplicate restriction if allow_duplicate is false
+    if (plan.allow_duplicate === false && existingActiveCount >= 1) {
+      return res.status(400).json({
+        success: false,
+        error: 'You already have an active instance of this plan. Duplicate purchases are not permitted.',
+      });
+    }
+
+    // 6. Check Event Window if applicable
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    if (plan.start_date && nowMs < new Date(plan.start_date).getTime()) {
+      return res.status(400).json({ success: false, error: 'This Event Plan has not started yet.' });
+    }
+    if (plan.end_date && nowMs > new Date(plan.end_date).getTime()) {
+      return res.status(400).json({ success: false, error: 'This Event Plan has already concluded.' });
+    }
+
+    // 7. Check User Wallet Balance (Topup / Recharge Wallet)
+    const { data: wallet, error: walErr } = await supabase
+      .from('wallets')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (walErr || !wallet) {
+      return res.status(404).json({ success: false, error: 'User wallet not found.' });
+    }
+
+    const planPrice = Number(plan.price || plan.device_price || 0);
+    const curTopup = Number(wallet.recharge_balance !== undefined ? wallet.recharge_balance : (wallet.topup_balance !== undefined ? wallet.topup_balance : wallet.available_balance || 0));
+
+    if (curTopup < planPrice) {
+      return res.status(400).json({
+        success: false,
+        error: `Insufficient Topup Balance. Required: ₹${planPrice.toFixed(2)}, Available: ₹${curTopup.toFixed(2)}. Please recharge first.`,
+      });
+    }
+
+    // 8. Deduct Topup Wallet Balance
+    const newTopup = Number((curTopup - planPrice).toFixed(2));
+    const newAvailable = Number(((wallet.available_balance || 0) - planPrice).toFixed(2));
+
+    const durationDays = Number(plan.duration_days || (planCat === 'PRO' ? 7 : planCat === 'EVENT' ? 15 : 30));
+    const earningRate = Number(plan.earning_rate || (Number(plan.daily_earnings || 0) / 24) || 0);
+    const dailyEarnings = Number(plan.daily_earnings || (earningRate * 24) || 0);
+    const instantBonus = Number(plan.instant_bonus || 0);
+
+    const expiresAt = new Date(nowMs + durationDays * 24 * 3600 * 1000).toISOString();
+
+    const { error: walUpdErr } = await supabase
+      .from('wallets')
+      .update({
+        recharge_balance: newTopup,
+        available_balance: newAvailable,
+        updated_at: nowIso,
+      })
+      .eq('user_id', userId);
+
+    if (walUpdErr) {
+      return res.status(500).json({ success: false, error: 'Failed to update wallet balance: ' + walUpdErr.message });
+    }
+
+    // 9. Insert into purchases table
+    const { data: newPur, error: purInsErr } = await supabase
+      .from('purchases')
+      .insert({
+        user_id: userId,
+        plan_id: planId,
+        plan_name: plan.name,
+        plan_category: planCat,
+        amount: planPrice,
+        instant_bonus: instantBonus,
+        daily_earnings: dailyEarnings,
+        earning_rate: earningRate,
+        duration_days: durationDays,
+        status: 'ACTIVE',
+        started_at: nowIso,
+        expires_at: expiresAt,
+        total_earned: 0,
+        claimed_amount: 0,
+        last_settled_at: nowIso,
+        created_at: nowIso,
+      })
+      .select()
+      .single();
+
+    if (purInsErr) {
+      console.warn('Purchase insert notice:', purInsErr.message);
+    }
+
+    const purchaseId = newPur?.id || ('pur_' + Date.now());
+
+    // 10. Record Purchase Transaction in wallet_transactions
+    await supabase.from('wallet_transactions').insert({
+      user_id: userId,
+      type: 'PLAN_PURCHASE',
+      amount: planPrice,
+      balance_before: curTopup,
+      balance_after: newTopup,
+      wallet_type: 'TOPUP',
+      status: 'COMPLETED',
+      reference_id: purchaseId,
+      description: `Lease ${plan.name} (${planCat}) for ${durationDays} Days`,
+      created_at: nowIso,
+    });
+
+    // 11. Credit Instant Bonus to WITHDRAW WALLET if applicable
+    if (instantBonus > 0) {
+      const curWithdraw = Number(wallet.withdraw_balance !== undefined ? wallet.withdraw_balance : (wallet.earned_balance || 0));
+      const newWithdraw = Number((curWithdraw + instantBonus).toFixed(2));
+      await supabase
+        .from('wallets')
+        .update({
+          withdraw_balance: newWithdraw,
+          available_balance: Number(((newAvailable || 0) + instantBonus).toFixed(2)),
+          updated_at: nowIso,
+        })
+        .eq('user_id', userId);
+
+      await supabase.from('wallet_transactions').insert({
+        user_id: userId,
+        type: 'INSTANT_BONUS',
+        amount: instantBonus,
+        balance_before: curWithdraw,
+        balance_after: newWithdraw,
+        wallet_type: 'WITHDRAW',
+        status: 'COMPLETED',
+        reference_id: `BONUS-${purchaseId}`,
+        description: `🎁 Instant Cashback Bonus for activating ${plan.name}`,
+        created_at: nowIso,
+      });
+    }
+
+    // 12. Send Notification
+    try {
+      await supabase.from('notifications').insert({
+        user_id: userId,
+        title: 'Device Lease Activated 🎉',
+        message: `Successfully leased ${plan.name}! Generating hourly earnings for ${durationDays} days.${instantBonus > 0 ? ` ₹${instantBonus} cashback bonus credited to your Withdraw wallet!` : ''}`,
+        type: 'SUCCESS',
+        read: false,
+        created_at: nowIso,
+      });
+    } catch {}
+
+    return res.json({
+      success: true,
+      purchaseId,
+      planName: plan.name,
+      planCategory: planCat,
+      amount: planPrice,
+      instantBonus,
+      newTopupBalance: newTopup,
+      message: `🎉 Successfully acquired ${plan.name}! Yield generating now.`,
+    });
+  } catch (err: any) {
+    console.error('Plan purchase error:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to process plan purchase.' });
+  }
+});
+
+// In-memory concurrency lock for exact-once earnings claims
+const activeEarningsClaimLocks = new Set<string>();
+
+app.post('/api/earnings/claim', async (req, res) => {
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database unavailable' });
+  }
+
+  const { userId } = req.body || {};
+  if (!userId) {
+    return res.status(400).json({ success: false, error: 'userId is required' });
+  }
+
+  if (activeEarningsClaimLocks.has(userId)) {
+    return res.status(429).json({ success: false, error: 'A claim request is already in progress. Please wait.' });
+  }
+  activeEarningsClaimLocks.add(userId);
+
+  try {
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+
+    // 1. Fetch user purchases
+    const { data: purchases, error: purErr } = await supabase
+      .from('purchases')
+      .select('*')
+      .eq('user_id', userId);
+
+    if (purErr || !purchases || purchases.length === 0) {
+      return res.status(400).json({ success: false, error: 'No active device purchases found.' });
+    }
+
+    let totalClaimAmount = 0;
+    let totalEligibleCycles = 0;
+    const purchasesToUpdate: any[] = [];
+
+    purchases.forEach((p: any) => {
+      const durationDays = Number(p.duration_days || 365);
+      const totalPlanHours = durationDays * 24;
+      const startedMs = new Date(p.started_at || nowMs).getTime();
+      const expiresMs = p.expires_at ? new Date(p.expires_at).getTime() : startedMs + totalPlanHours * 3600 * 1000;
+
+      const dailyEarnings = Number(p.daily_earnings || (Number(p.earning_rate || 0) * 24) || 0);
+      const hourlyEarnings = Number(p.earning_rate || (dailyEarnings > 0 ? dailyEarnings / 24 : 0));
+
+      const effectiveEndMs = Math.min(nowMs, expiresMs);
+      const elapsedSeconds = Math.max(0, Math.floor((effectiveEndMs - startedMs) / 1000));
+      const totalCompletedHours = Math.min(totalPlanHours, Math.floor(elapsedSeconds / 3600));
+
+      const claimedAmount = Number(p.claimed_amount || 0);
+      const claimedHours = Number(p.claimed_hours || (hourlyEarnings > 0 ? Math.round(claimedAmount / hourlyEarnings) : 0));
+      const unclaimedHours = Math.max(0, totalCompletedHours - claimedHours);
+      const isExpired = nowMs >= expiresMs || totalCompletedHours >= totalPlanHours;
+      const isActive = (p.status === 'ACTIVE' || p.status === 'active') && !isExpired;
+
+      // SINGLE COMPLETED HOURLY CYCLE RULE:
+      // One completed hourly cycle = ONE claimable hourly earning unit.
+      // Do NOT combine multiple cycles or add previously claimed amounts.
+      if (unclaimedHours >= 1 && hourlyEarnings > 0 && isActive) {
+        const deviceClaimAmount = Number(hourlyEarnings.toFixed(2));
+        totalClaimAmount = Number((totalClaimAmount + deviceClaimAmount).toFixed(2));
+        totalEligibleCycles += 1;
+
+        const newClaimedAmount = Number(((Number(p.claimed_amount || 0)) + deviceClaimAmount).toFixed(2));
+        const newTotalEarned = Number(((Number(p.total_earned || 0)) + deviceClaimAmount).toFixed(2));
+
+        purchasesToUpdate.push({
+          id: p.id,
+          claimed_amount: newClaimedAmount,
+          total_earned: newTotalEarned,
+          last_claimed_at: nowIso,
+          last_settled_at: nowIso,
+          status: isExpired ? 'COMPLETED' : p.status,
+        });
+      }
+    });
+
+    if (totalClaimAmount <= 0 || totalEligibleCycles <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No completed hourly earnings available to claim. Earnings generate only after each full 1-hour cycle.',
+      });
+    }
+
+    // 2. Fetch User Wallet
+    const { data: wallet, error: walErr } = await supabase
+      .from('wallets')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (walErr || !wallet) {
+      return res.status(404).json({ success: false, error: 'User wallet not found.' });
+    }
+
+    const curWithdraw = Number(wallet.withdraw_balance !== undefined ? wallet.withdraw_balance : (wallet.earned_balance !== undefined ? wallet.earned_balance : wallet.available_balance || 0));
+    const newWithdraw = Number((curWithdraw + totalClaimAmount).toFixed(2));
+    const newAvailable = Number(((wallet.available_balance || 0) + totalClaimAmount).toFixed(2));
+    const newTotalEarned = Number(((wallet.total_earned || 0) + totalClaimAmount).toFixed(2));
+
+    // 3. Update Wallet: credit strictly to WITHDRAW WALLET
+    const { error: walUpdErr } = await supabase
+      .from('wallets')
+      .update({
+        withdraw_balance: newWithdraw,
+        earned_balance: newWithdraw,
+        available_balance: newAvailable,
+        total_earned: newTotalEarned,
+        updated_at: nowIso,
+      })
+      .eq('user_id', userId);
+
+    if (walUpdErr) {
+      return res.status(500).json({ success: false, error: 'Failed to credit Withdraw wallet: ' + walUpdErr.message });
+    }
+
+    // 4. Update Purchases in DB
+    for (const purUpd of purchasesToUpdate) {
+      await supabase
+        .from('purchases')
+        .update({
+          claimed_amount: purUpd.claimed_amount,
+          total_earned: purUpd.total_earned,
+          last_claimed_at: purUpd.last_claimed_at,
+          last_settled_at: purUpd.last_settled_at,
+          status: purUpd.status,
+          updated_at: nowIso,
+        })
+        .eq('id', purUpd.id);
+    }
+
+    // 5. Create Claim Batch & Transaction Record
+    const claimBatchId = 'CLM-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+    try {
+      await supabase.from('claim_batches').insert({
+        user_id: userId,
+        amount: totalClaimAmount,
+        total_amount: totalClaimAmount,
+        item_count: totalEligibleCycles,
+        claimed_at: nowIso,
+        status: 'COMPLETED',
+      });
+    } catch (cbErr) {
+      console.warn('claim_batches insert warning:', cbErr);
+    }
+
+    // Record in wallet_transactions
+    await supabase.from('wallet_transactions').insert({
+      user_id: userId,
+      type: 'EARNING',
+      amount: totalClaimAmount,
+      balance_before: curWithdraw,
+      balance_after: newWithdraw,
+      wallet_type: 'WITHDRAW',
+      status: 'COMPLETED',
+      reference_id: claimBatchId,
+      description: `Device Hourly Yield Claim (${claimBatchId}) • ${totalEligibleCycles} cycle(s)`,
+      created_at: nowIso,
+    });
+
+    // Record in wallet_ledger if exists
+    try {
+      await supabase.from('wallet_ledger').insert({
+        user_id: userId,
+        wallet_type: 'WITHDRAW',
+        transaction_type: 'DEVICE_EARNING_CLAIM',
+        amount: totalClaimAmount,
+        direction: 'CREDIT',
+        reference_type: 'CLAIM_BATCH',
+        reference_id: claimBatchId,
+        description: `Hourly Device Claim ${claimBatchId}`,
+        created_at: nowIso,
+      });
+    } catch {}
+
+    // 6. Send Notification
+    try {
+      await supabase.from('notifications').insert({
+        user_id: userId,
+        title: 'Device Earnings Claimed 🎉',
+        message: `₹${totalClaimAmount.toFixed(2)} (${totalEligibleCycles} cycle${totalEligibleCycles !== 1 ? 's' : ''}) has been credited to your Withdraw Wallet!`,
+        type: 'SUCCESS',
+        read: false,
+        created_at: nowIso,
+      });
+    } catch {}
+
+    return res.json({
+      success: true,
+      amount: totalClaimAmount,
+      claimBatchId,
+      itemsCount: totalEligibleCycles,
+      newWithdrawBalance: newWithdraw,
+      newAvailableBalance: newAvailable,
+      message: `🎉 Claimed ₹${totalClaimAmount.toFixed(2)} to your Withdraw Wallet!`,
+    });
+  } catch (err: any) {
+    console.error('Earnings claim error:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to claim device earnings.' });
+  } finally {
+    activeEarningsClaimLocks.delete(userId);
+  }
+});
+
+app.get('/api/user/earnings-summary', async (req, res) => {
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database unavailable' });
+  }
+
+  const userId = (req.query.userId || req.headers['x-user-id'] || '').toString().trim();
+  if (!userId) {
+    return res.status(400).json({ success: false, error: 'userId is required' });
+  }
+
+  try {
+    const nowMs = Date.now();
+    const todayStr = new Date(nowMs).toISOString().split('T')[0];
+    const todayStart = todayStr + 'T00:00:00.000Z';
+
+    const [walRes, purRes, claimsTodayRes] = await Promise.all([
+      supabase.from('wallets').select('*').eq('user_id', userId).maybeSingle(),
+      supabase.from('purchases').select('*').eq('user_id', userId),
+      supabase
+        .from('wallet_transactions')
+        .select('amount, created_at')
+        .eq('user_id', userId)
+        .in('type', ['EARNING', 'EARNING_CLAIM'])
+        .gte('created_at', todayStart),
+    ]);
+
+    const wallet = walRes.data || {};
+    const purchases = purRes.data || [];
+    const claimsToday = claimsTodayRes.data || [];
+
+    // Sum of successful claims made TODAY
+    const todayEarnings = claimsToday.reduce((sum: number, c: any) => sum + (Number(c.amount) || 0), 0);
+
+    // Live Wallet Balances from authoritative database
+    const topupBalance = Number(wallet.recharge_balance !== undefined ? wallet.recharge_balance : (wallet.topup_balance || 0));
+    const withdrawBalance = Number(wallet.withdraw_balance !== undefined ? wallet.withdraw_balance : (wallet.earned_balance !== undefined ? wallet.earned_balance : wallet.available_balance || 0));
+    const totalAssets = Number((topupBalance + withdrawBalance).toFixed(2));
+    const totalEarned = Number(wallet.total_earned || 0);
+
+    // Calculate claimable earnings across active devices (1 single cycle per eligible device)
+    let totalClaimable = 0;
+    let maxRemainingHours = 0;
+    const activePurchases = purchases.filter((p: any) => p.status === 'ACTIVE' || p.status === 'active');
+
+    activePurchases.forEach((p: any) => {
+      const durationDays = Number(p.duration_days || 365);
+      const totalPlanHours = durationDays * 24;
+      const startedMs = new Date(p.started_at || nowMs).getTime();
+      const expiresMs = p.expires_at ? new Date(p.expires_at).getTime() : startedMs + totalPlanHours * 3600 * 1000;
+
+      const dailyEarnings = Number(p.daily_earnings || (Number(p.earning_rate || 0) * 24) || 0);
+      const hourlyEarnings = Number(p.earning_rate || (dailyEarnings > 0 ? dailyEarnings / 24 : 0));
+
+      const effectiveEndMs = Math.min(nowMs, expiresMs);
+      const elapsedSeconds = Math.max(0, Math.floor((effectiveEndMs - startedMs) / 1000));
+      const totalCompletedHours = Math.min(totalPlanHours, Math.floor(elapsedSeconds / 3600));
+
+      const claimedAmount = Number(p.claimed_amount || 0);
+      const claimedHours = Number(p.claimed_hours || (hourlyEarnings > 0 ? Math.round(claimedAmount / hourlyEarnings) : 0));
+      const unclaimedHours = Math.max(0, totalCompletedHours - claimedHours);
+      const isExpired = nowMs >= expiresMs || totalCompletedHours >= totalPlanHours;
+
+      if (unclaimedHours >= 1 && hourlyEarnings > 0 && !isExpired) {
+        totalClaimable = Number((totalClaimable + hourlyEarnings).toFixed(2));
+      }
+
+      const remainingHours = Math.max(0, Math.ceil((expiresMs - nowMs) / 3600000));
+      if (remainingHours > maxRemainingHours) {
+        maxRemainingHours = remainingHours;
+      }
+    });
+
+    return res.json({
+      success: true,
+      totalAssets,
+      topupBalance,
+      withdrawBalance,
+      todayEarnings: Number(todayEarnings.toFixed(2)),
+      totalClaimable: Number(totalClaimable.toFixed(2)),
+      totalEarned,
+      remainingHours: maxRemainingHours,
+      activeDevicesCount: activePurchases.length,
+    });
+  } catch (err: any) {
+    console.error('Earnings summary error:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to fetch earnings summary.' });
   }
 });
 
@@ -4730,8 +5347,9 @@ app.post('/api/admin/gift-codes/save', async (req, res) => {
     }
 
     const codeId = (!rawId || isNew) ? (rawId && !rawId.startsWith('new_') ? rawId : crypto.randomUUID()) : rawId;
-    const totalPool = Number(giftCode.totalPool || 0);
-    const totalUses = Number(giftCode.totalUses || giftCode.total_uses || giftCode.max_claims || 0);
+    const totalUses = Number(giftCode.totalUses || giftCode.total_uses || giftCode.max_claims || 10);
+    const amountVal = giftCode.amount !== undefined && giftCode.amount !== null ? Number(giftCode.amount) : 0;
+    const totalPool = Number(giftCode.totalPool || giftCode.total_pool || (amountVal > 0 ? amountVal * totalUses : 1000));
     const status = giftCode.status || 'ACTIVE';
 
     const record = {
@@ -4880,90 +5498,201 @@ app.get('/api/admin/gift-codes/claims', async (req, res) => {
 // ==============================================================================
 // 15. ABOUT PLATFORM DYNAMIC CONFIG & RULES ENDPOINTS
 // ==============================================================================
+const defaultAboutSections = {
+  investingSteps: {
+    id: 'investing_steps',
+    title: 'How Investing Works',
+    description: 'Simple 4-step automated revenue workflow from recharge to daily returns.',
+    enabled: true,
+    displayOrder: 1,
+    icon: 'Zap',
+  },
+  planRules: {
+    id: 'plan_rules',
+    title: 'Plan & Return Rules',
+    description: 'Active investment plans with price, daily rate, duration, and maximum purchase limits.',
+    enabled: true,
+    displayOrder: 2,
+    icon: 'Layers',
+  },
+  vipUnlock: {
+    id: 'vip_unlock',
+    title: 'VIP Unlock & Membership Tiers',
+    description: 'Earn higher daily yield boosters and lower withdrawal fee privileges by unlocking VIP levels.',
+    enabled: true,
+    displayOrder: 3,
+    icon: 'Crown',
+  },
+  topupWallet: {
+    id: 'topup_wallet',
+    title: 'Topup Wallet Rules',
+    description: 'Dedicated wallet used exclusively for funding account activations and purchasing power plans.',
+    enabled: true,
+    displayOrder: 4,
+    icon: 'Wallet',
+    customNotes: 'Topup Wallet is used for deposits, check-in bonuses, signup welcome credits, and gift codes. Topup Wallet balance cannot be withdrawn directly as cash.',
+  },
+  withdrawWallet: {
+    id: 'withdraw_wallet',
+    title: 'Withdraw Wallet Rules',
+    description: 'Dedicated earnings wallet receiving all claim returns and team commissions for cash withdrawal.',
+    enabled: true,
+    displayOrder: 5,
+    icon: 'ArrowUpRight',
+    customNotes: 'Withdraw Wallet receives plan claim returns, team referral commissions, and earning rewards. Cash withdrawal is processed according to official withdrawal rules.',
+  },
+  withdrawRules: {
+    id: 'withdraw_rules',
+    title: 'Withdrawal Rules & Limits',
+    description: 'Configured minimum thresholds, fee percentages, settlement windows, and bank requirements.',
+    enabled: true,
+    displayOrder: 6,
+    icon: 'Coins',
+  },
+  teamCommission: {
+    id: 'team_commission',
+    title: 'Team Referral Commission Structure',
+    description: 'Earn multi-tier commission rewards whenever your invited team members activate and recharge.',
+    enabled: true,
+    displayOrder: 7,
+    icon: 'Users',
+  },
+  bonuses: {
+    id: 'bonuses',
+    title: 'Platform Rewards & Daily Bonuses',
+    description: 'Free daily check-in rewards, signup welcome bonus, and invite bonuses credited directly to your balance.',
+    enabled: true,
+    displayOrder: 8,
+    icon: 'Gift',
+  },
+  giftCode: {
+    id: 'gift_code',
+    title: 'Gift Code Redemption',
+    description: 'Claim surprise bonus codes shared during platform events and community promotions.',
+    enabled: true,
+    displayOrder: 9,
+    icon: 'Sparkles',
+    customNotes: 'Users can redeem available Gift Codes from the Claim Gift Code section. Gift Code reward amount and validity depend on each configured promotion code.',
+  },
+  customRules: {
+    id: 'custom_rules',
+    title: 'Platform Policies & Security Rules',
+    description: 'Operational guidelines, security standards, and device runtime terms.',
+    enabled: true,
+    displayOrder: 10,
+    icon: 'ShieldCheck',
+  },
+};
+
+const defaultInvestingSteps = [
+  {
+    id: 'step_1',
+    stepNumber: 1,
+    title: 'Topup Wallet',
+    description: 'Recharge money into Topup Wallet. Plans are purchased using the configured Topup Wallet balance.',
+    icon: 'CreditCard',
+    badge: 'Step 1',
+    enabled: true,
+  },
+  {
+    id: 'step_2',
+    stepNumber: 2,
+    title: 'Buy a Plan',
+    description: 'Choose the available Hourly / Pro / Event plan and confirm purchase.',
+    icon: 'ShoppingBasket',
+    badge: 'Step 2',
+    enabled: true,
+  },
+  {
+    id: 'step_3',
+    stepNumber: 3,
+    title: 'Active Plan',
+    description: 'The purchased plan becomes active according to the existing plan rules.',
+    icon: 'Zap',
+    badge: 'Step 3',
+    enabled: true,
+  },
+  {
+    id: 'step_4',
+    stepNumber: 4,
+    title: 'Claim Return',
+    description: 'User claims eligible earnings from My Device. The claimed amount goes to the existing Withdraw Wallet.',
+    icon: 'ArrowDownLeft',
+    badge: 'Step 4',
+    enabled: true,
+  },
+];
+
+const defaultCustomRules = [
+  {
+    id: 'custom_rule_1',
+    title: 'Important Account Safety Notice',
+    description: 'Never share your login credentials or OTP with anyone. Official platform staff will never ask for your password.',
+    icon: 'ShieldCheck',
+    displayOrder: 1,
+    enabled: true,
+    badge: 'Security',
+  },
+  {
+    id: 'custom_rule_2',
+    title: 'Device Real-Time Settlement',
+    description: 'Hourly revenue is accrued seamlessly every hour. You can check your active devices and claim accumulated returns anytime from My Device.',
+    icon: 'Cpu',
+    displayOrder: 2,
+    enabled: true,
+    badge: 'Settlement',
+  },
+];
+
+function formatAboutPlatformResponse(data: any) {
+  let parsedSections = { ...defaultAboutSections };
+  if (data?.sections && typeof data.sections === 'object' && !Array.isArray(data.sections) && Object.keys(data.sections).length > 0) {
+    parsedSections = { ...defaultAboutSections, ...data.sections };
+  }
+
+  let steps = defaultInvestingSteps;
+  if (Array.isArray(data?.investing_steps) && data.investing_steps.length > 0) {
+    steps = data.investing_steps;
+  } else if (Array.isArray(data?.investingSteps) && data.investingSteps.length > 0) {
+    steps = data.investingSteps;
+  }
+
+  let rules = defaultCustomRules;
+  if (Array.isArray(data?.custom_rules) && data.custom_rules.length > 0) {
+    rules = data.custom_rules;
+  } else if (Array.isArray(data?.customRules) && data.customRules.length > 0) {
+    rules = data.customRules;
+  }
+
+  return {
+    id: data?.id || 'default',
+    companyName: data?.company_name || data?.companyName || 'GainPower Infrastructure Pvt Ltd',
+    licenseNo: data?.license_no || data?.licenseNo || 'CIN-U72900DL2024PTC394821',
+    platformVersion: data?.platform_version || data?.platformVersion || data?.appVersion || 'v4.8.2-live',
+    appVersion: data?.platform_version || data?.platformVersion || data?.appVersion || 'v4.8.2-live',
+    pageTitle: data?.hero_title || data?.pageTitle || data?.page_title || 'About Platform & Operating Rules',
+    pageSubtitle: data?.hero_subtitle || data?.pageSubtitle || data?.page_subtitle || 'Transparent, automated sharing economy infrastructure guide and platform business rules.',
+    heroBadge: data?.hero_badge || data?.heroBadge || 'OFFICIAL PLATFORM GUIDE',
+    supportEmail: data?.support_email || data?.supportEmail || 'support@gainpower-top-1.com',
+    supportTelegram: data?.support_telegram || data?.supportTelegram || '@GainPowerSupport',
+    supportWhatsapp: data?.support_whatsapp || data?.supportWhatsapp || '+91 98765 43210',
+    supportPhone: data?.support_phone || data?.supportPhone || '+91 98765 43210',
+    supportHours: data?.support_hours || data?.supportHours || '24/7 Priority Support',
+    sections: parsedSections,
+    investingSteps: steps,
+    customRules: rules,
+    aboutUsContent: data?.about_us_content || data?.aboutUsContent || "GainPower is India's leading smart power-bank sharing network.",
+    termsContent: data?.terms_content || data?.termsContent || 'GainPower Terms of Service & Member Sharing Economy Guidelines.',
+    privacyContent: data?.privacy_content || data?.privacyContent || 'GainPower Privacy & Financial Protection Policy.',
+    topupWalletNotes: data?.topup_wallet_notes || data?.topupWalletNotes || 'Used exclusively for hardware purchases and system subscriptions.',
+    withdrawWalletNotes: data?.withdraw_wallet_notes || data?.withdrawWalletNotes || 'Can be withdrawn anytime to verified bank account or USDT wallet.',
+    giftCodeNotes: data?.gift_code_notes || data?.giftCodeNotes || 'Redeemable for bonus dividends directly deposited into your wallet balance.',
+    updatedAt: data?.updated_at || data?.updatedAt || new Date().toISOString(),
+  };
+}
+
 app.get('/api/about-platform', async (req, res) => {
   try {
-    const defaultConfig = {
-      id: 'cfg_about_platform_01',
-      companyName: 'GainPower Green Cloud Infrastructure Ltd.',
-      licenseNo: 'GP-PWR-99824-IND',
-      platformVersion: 'v3.4.0-Production',
-      pageTitle: 'About GainPower Sharing Platform',
-      pageSubtitle: 'Transparent Hardware Yields & Direct Green Power Dividend Distribution',
-      heroBadge: 'Government Compliant & Registered Infrastructure',
-      supportEmail: 'support@gainpower.top',
-      supportTelegram: 'https://t.me/gainpower_official',
-      supportWhatsapp: '+91 98765 43210',
-      supportHours: '24/7 Mon - Sun',
-      sections: {
-        companyIntro: { enabled: true, title: 'Company Overview & Mission' },
-        legalCompliance: { enabled: true, title: 'Legal & Regulatory Compliance' },
-        businessModel: { enabled: true, title: 'Commercial Sharing Model' },
-        investingGuide: { enabled: true, title: 'Getting Started & Hardware Yields' },
-        walletRules: { enabled: true, title: 'Wallet Architecture & Settle Rules' },
-        vipRules: { enabled: true, title: 'VIP Tier Progression' },
-        referralRules: { enabled: true, title: 'Referral Team Commissions' },
-        securityGuarantee: { enabled: true, title: 'Security & Fund Protection' },
-        faq: { enabled: true, title: 'Frequently Asked Questions' },
-      },
-      investingSteps: [
-        {
-          id: 'step_1',
-          stepNumber: 1,
-          title: 'Register & Activate Account',
-          description: 'Sign up with your phone number and claim your welcome bonus instantly.',
-          icon: 'UserPlus',
-          badge: 'Step 1',
-          enabled: true,
-        },
-        {
-          id: 'step_2',
-          stepNumber: 2,
-          title: 'Recharge Deposit Balance',
-          description: 'Top up your recharge balance via seamless UPI or USDT gateway.',
-          icon: 'Wallet',
-          badge: 'Step 2',
-          enabled: true,
-        },
-        {
-          id: 'step_3',
-          stepNumber: 3,
-          title: 'Lease Power Hardware Station',
-          description: 'Select a VIP Hourly Station, PRO Yield Cabinet, or Festival Event Package.',
-          icon: 'Cpu',
-          badge: 'Step 3',
-          enabled: true,
-        },
-        {
-          id: 'step_4',
-          stepNumber: 4,
-          title: 'Receive Dividends & Withdraw',
-          description: 'Hourly yields credit directly to your earnings balance for daily withdrawal.',
-          icon: 'DollarSign',
-          badge: 'Step 4',
-          enabled: true,
-        },
-      ],
-      customRules: [
-        {
-          id: 'rule_1',
-          title: 'Daily Withdrawal Timing',
-          description: 'Withdrawal requests are processed daily between 08:00 and 20:00.',
-          category: 'WITHDRAWAL',
-          enabled: true,
-        },
-        {
-          id: 'rule_2',
-          title: 'Direct Hourly Settlement',
-          description: 'Hourly hardware earnings automatically accumulate 24 times every day without manual clicking.',
-          category: 'INVESTMENT',
-          enabled: true,
-        },
-      ],
-      topupWalletNotes: 'Used exclusively for hardware purchases and system subscriptions.',
-      withdrawWalletNotes: 'Can be withdrawn anytime to verified bank account or USDT wallet.',
-      giftCodeNotes: 'Redeemable for bonus dividends directly deposited into your wallet balance.',
-    };
-
     if (supabase) {
       const { data, error } = await supabase
         .from('about_platform_config')
@@ -4973,33 +5702,13 @@ app.get('/api/about-platform', async (req, res) => {
         .maybeSingle();
 
       if (!error && data) {
-        return res.json({
-          success: true,
-          data: {
-            id: data.id || defaultConfig.id,
-            companyName: data.company_name || defaultConfig.companyName,
-            licenseNo: data.license_no || defaultConfig.licenseNo,
-            platformVersion: data.platform_version || defaultConfig.platformVersion,
-            pageTitle: data.hero_title || data.page_title || defaultConfig.pageTitle,
-            pageSubtitle: data.hero_subtitle || data.page_subtitle || defaultConfig.pageSubtitle,
-            heroBadge: data.hero_badge || defaultConfig.heroBadge,
-            supportEmail: data.support_email || defaultConfig.supportEmail,
-            supportTelegram: data.support_telegram || defaultConfig.supportTelegram,
-            supportWhatsapp: data.support_whatsapp || defaultConfig.supportWhatsapp,
-            supportHours: data.support_hours || defaultConfig.supportHours,
-            sections: data.sections || defaultConfig.sections,
-            investingSteps: data.investing_steps || defaultConfig.investingSteps,
-            customRules: data.custom_rules || defaultConfig.customRules,
-            topupWalletNotes: data.topup_wallet_notes || defaultConfig.topupWalletNotes,
-            withdrawWalletNotes: data.withdraw_wallet_notes || defaultConfig.withdrawWalletNotes,
-            giftCodeNotes: data.gift_code_notes || defaultConfig.giftCodeNotes,
-            updatedAt: data.updated_at,
-          },
-        });
+        const formatted = formatAboutPlatformResponse(data);
+        return res.json({ success: true, data: formatted });
       }
     }
 
-    return res.json({ success: true, data: defaultConfig });
+    const defaultFormatted = formatAboutPlatformResponse({});
+    return res.json({ success: true, data: defaultFormatted });
   } catch (err: any) {
     console.error('[GET ABOUT PLATFORM ERROR]', err);
     return res.status(500).json({ success: false, error: err.message });
@@ -5008,41 +5717,69 @@ app.get('/api/about-platform', async (req, res) => {
 
 app.post('/api/admin/about-platform', async (req, res) => {
   try {
-    const { config, adminId } = req.body;
+    const { config, adminId = 'adm_root' } = req.body;
     if (!config) {
       return res.status(400).json({ success: false, error: 'Config is required.' });
     }
 
-    const payload = {
-      id: config.id || 'cfg_about_platform_01',
-      company_name: config.companyName || 'GainPower Green Cloud Infrastructure Ltd.',
-      license_no: config.licenseNo || 'GP-PWR-99824-IND',
-      platform_version: config.appVersion || config.platformVersion || 'v3.4.0',
-      hero_title: config.pageTitle || 'About GainPower Sharing Platform',
-      hero_subtitle: config.pageSubtitle || 'Transparent Hardware Yields & Direct Green Power Dividend Distribution',
-      hero_badge: config.heroBadge || 'Government Compliant & Registered Infrastructure',
-      support_email: config.supportEmail || 'support@gainpower.top',
-      support_telegram: config.supportTelegram || 'https://t.me/gainpower_official',
-      support_whatsapp: config.supportWhatsapp || '+91 98765 43210',
-      support_hours: config.supportHours || '24/7 Mon - Sun',
-      investing_steps: config.investingSteps || [],
-      custom_rules: config.customRules || [],
-      sections: config.sections || {},
-      topup_wallet_notes: config.topupWalletNotes || '',
-      withdraw_wallet_notes: config.withdrawWalletNotes || '',
-      gift_code_notes: config.giftCodeNotes || '',
-      updated_at: new Date().toISOString(),
+    const nowIso = new Date().toISOString();
+    const formatted = formatAboutPlatformResponse({ ...config, updated_at: nowIso, updatedAt: nowIso });
+
+    const dbPayload = {
+      id: formatted.id || 'default',
+      company_name: formatted.companyName,
+      license_no: formatted.licenseNo,
+      platform_version: formatted.platformVersion,
+      hero_title: formatted.pageTitle,
+      hero_subtitle: formatted.pageSubtitle,
+      hero_badge: formatted.heroBadge,
+      support_email: formatted.supportEmail,
+      support_telegram: formatted.supportTelegram,
+      support_whatsapp: formatted.supportWhatsapp,
+      support_phone: formatted.supportPhone,
+      support_hours: formatted.supportHours,
+      about_us_content: formatted.aboutUsContent,
+      terms_content: formatted.termsContent,
+      privacy_content: formatted.privacyContent,
+      sections: formatted.sections,
+      investing_steps: formatted.investingSteps,
+      custom_rules: formatted.customRules,
+      topup_wallet_notes: typeof formatted.topupWalletNotes === 'string' ? formatted.topupWalletNotes : JSON.stringify(formatted.topupWalletNotes),
+      withdraw_wallet_notes: typeof formatted.withdrawWalletNotes === 'string' ? formatted.withdrawWalletNotes : JSON.stringify(formatted.withdrawWalletNotes),
+      gift_code_notes: formatted.giftCodeNotes || '',
+      updated_at: nowIso,
     };
 
     if (supabase) {
       const { error } = await supabase
         .from('about_platform_config')
-        .upsert(payload, { onConflict: 'id' });
+        .upsert(dbPayload, { onConflict: 'id' });
 
-      if (error) throw new Error(error.message);
+      if (error) {
+        console.error('[ADMIN SAVE ABOUT ERROR]', error);
+        throw new Error(error.message);
+      }
+
+      try {
+        await supabase
+          .from('admin_settings')
+          .upsert({ id: 'about_platform', value: formatted, updated_at: nowIso });
+      } catch (_e) {}
+
+      try {
+        await supabase.from('admin_audit_logs').insert({
+          admin_user_id: adminId,
+          action: 'UPDATE_ABOUT_PLATFORM_CONFIG',
+          target_type: 'settings',
+          target_id: 'about_platform_config',
+          description: `Updated About Platform rules, title="${formatted.pageTitle}", company="${formatted.companyName}"`,
+          details: { id: formatted.id, companyName: formatted.companyName, pageTitle: formatted.pageTitle },
+          created_at: nowIso,
+        });
+      } catch (_e) {}
     }
 
-    return res.json({ success: true, data: config });
+    return res.json({ success: true, data: formatted, message: 'About Platform configuration saved successfully.' });
   } catch (err: any) {
     console.error('[ADMIN SAVE ABOUT PLATFORM ERROR]', err);
     return res.status(500).json({ success: false, error: err.message || 'Failed to save about platform config.' });
@@ -5229,12 +5966,13 @@ app.post('/api/admin/news/save', async (req, res) => {
     const isNew = !newsItem.id || newsItem.id.startsWith('new_');
     const newsId = isNew ? crypto.randomUUID() : newsItem.id;
 
+    const category = newsItem.category || newsItem.tag || 'ANNOUNCEMENT';
     const record = {
       title: newsItem.title,
       content: newsItem.content || '',
-      tag: newsItem.tag || 'Update',
-      date: newsItem.date || new Date().toISOString().slice(0, 10),
-      is_important: Boolean(newsItem.isImportant),
+      category: category,
+      image_url: newsItem.image_url || newsItem.imageUrl || null,
+      published: newsItem.is_active !== undefined ? Boolean(newsItem.is_active) : true,
       updated_at: new Date().toISOString(),
     };
 
@@ -5337,6 +6075,73 @@ app.post('/api/admin/upload-asset', async (req, res) => {
   } catch (err: any) {
     console.error('[UPLOAD ASSET ERROR]', err);
     return res.status(500).json({ success: false, error: err.message || 'Failed to process asset upload.' });
+  }
+});
+
+// User notifications endpoints
+app.get('/api/user/notifications', async (req, res) => {
+  try {
+    const userId = (req.query.userId || req.headers['x-user-id'] || '').toString().trim();
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'User ID is required.' });
+    }
+
+    if (!supabase) {
+      return res.json({ success: true, notifications: [], unreadCount: 0 });
+    }
+
+    const { data, error } = await supabase
+      .from('notifications')
+      .select('*')
+      .or(`user_id.eq.${userId},is_broadcast.eq.true,target_audience.eq.ALL`)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) {
+      console.error('[GET NOTIFICATIONS ERROR]', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    const notifications = (data || []).map((n: any) => ({
+      id: n.id,
+      userId: n.user_id,
+      title: n.title,
+      message: n.message || n.description || '',
+      type: n.type || 'INFO',
+      read: Boolean(n.read || n.is_read),
+      createdAt: n.created_at,
+    }));
+
+    const unreadCount = notifications.filter((n: any) => !n.read).length;
+
+    return res.json({
+      success: true,
+      notifications,
+      unreadCount,
+    });
+  } catch (err: any) {
+    console.error('[GET NOTIFICATIONS EXCEPTION]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to fetch notifications.' });
+  }
+});
+
+app.post('/api/user/notifications/mark-read', async (req, res) => {
+  try {
+    const { notificationId, userId } = req.body;
+    if (!supabase) {
+      return res.json({ success: true, message: 'Marked read.' });
+    }
+
+    if (notificationId) {
+      await supabase.from('notifications').update({ read: true, is_read: true, read_at: new Date().toISOString() }).eq('id', notificationId);
+    } else if (userId) {
+      await supabase.from('notifications').update({ read: true, is_read: true, read_at: new Date().toISOString() }).eq('user_id', userId);
+    }
+
+    return res.json({ success: true, message: 'Notifications marked as read.' });
+  } catch (err: any) {
+    console.error('[MARK READ NOTIFICATIONS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to update notifications.' });
   }
 });
 

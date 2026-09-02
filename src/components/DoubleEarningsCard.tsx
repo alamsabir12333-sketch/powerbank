@@ -39,7 +39,7 @@ export const DoubleEarningsCard: React.FC<DoubleEarningsCardProps> = ({
         <div className="flex items-start justify-between gap-3">
           <div>
             <span className="text-gray-400 text-[10.5px] font-medium block">
-              Duration of Power Bank
+              Duration of GAIN POWER
             </span>
             <h4 className="text-white font-bold text-[16px] leading-tight mt-0.5">
               Double Earnings
