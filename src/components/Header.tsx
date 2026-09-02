@@ -1,9 +1,8 @@
 import React from 'react';
-import { Globe, Bell } from 'lucide-react';
+import { Bell } from 'lucide-react';
 import { useSiteBranding } from '../context/SiteBrandingContext';
 
 interface HeaderProps {
-  onOpenLanguageModal?: () => void;
   onOpenNotifications?: () => void;
   unreadCount?: number;
   title?: string;
@@ -11,7 +10,6 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  onOpenLanguageModal,
   onOpenNotifications,
   unreadCount = 0,
   title,
@@ -43,9 +41,8 @@ export const Header: React.FC<HeaderProps> = ({
         )}
       </div>
 
-      {/* Right controls: Notification Bell & Language Selector */}
+      {/* Right controls: Notification Bell */}
       <div className="flex items-center gap-2">
-        {/* Notification Bell */}
         <button
           onClick={onOpenNotifications}
           aria-label="Notifications"
@@ -61,21 +58,6 @@ export const Header: React.FC<HeaderProps> = ({
               {unreadCount > 99 ? '99+' : unreadCount}
             </span>
           )}
-        </button>
-
-        {/* Language Selector */}
-        <button
-          onClick={onOpenLanguageModal}
-          className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium transition-all opacity-80 hover:opacity-100 active:scale-95 cursor-pointer ${
-            isDark
-              ? 'text-gray-300 hover:text-white'
-              : 'text-gray-600 hover:text-gray-900'
-          }`}
-        >
-          <div className="w-3.5 h-3.5 border border-current rounded-full flex items-center justify-center text-[8px]">
-            <Globe className="w-2.5 h-2.5" />
-          </div>
-          <span className="text-[11px]">English</span>
         </button>
       </div>
     </header>

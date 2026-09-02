@@ -9,7 +9,6 @@ import { NewsDetailModal } from '../components/NewsDetailModal';
 import { FloatingContact } from '../components/FloatingContact';
 import { PlaceholderModal } from '../components/PlaceholderModal';
 import { CustomerSupportModal } from '../components/CustomerSupportModal';
-import { LanguageModal } from '../components/LanguageModal';
 import { DoubleHistoryModal } from '../components/DoubleHistoryModal';
 import { WebsitePopupModal } from '../components/WebsitePopupModal';
 import { homeBanners } from '../data/mockData';
@@ -76,9 +75,7 @@ export const HomePage: React.FC<HomePageProps> = ({
   });
 
   const [isSupportOpen, setIsSupportOpen] = useState(false);
-  const [isLanguageOpen, setIsLanguageOpen] = useState(false);
   const [isDoubleHistoryOpen, setIsDoubleHistoryOpen] = useState(false);
-  const [currentLanguage, setCurrentLanguage] = useState('English');
 
   // Dynamic Banners
   const [activeBanners, setActiveBanners] = useState<BannerItem[]>(homeBanners);
@@ -245,7 +242,6 @@ export const HomePage: React.FC<HomePageProps> = ({
         title="GAIN POWER"
         unreadCount={unreadCount}
         onOpenNotifications={() => onNavigateTab('notifications')}
-        onOpenLanguageModal={() => setIsLanguageOpen(true)}
       />
 
       {/* 2. Top Promotional Banner Carousel */}
@@ -414,16 +410,6 @@ export const HomePage: React.FC<HomePageProps> = ({
       <CustomerSupportModal
         isOpen={isSupportOpen}
         onClose={() => setIsSupportOpen(false)}
-      />
-
-      <LanguageModal
-        isOpen={isLanguageOpen}
-        onClose={() => setIsLanguageOpen(false)}
-        currentLang={currentLanguage}
-        onSelectLang={(lang) => {
-          setCurrentLanguage(lang);
-          onShowToast(`Language set to ${lang}`);
-        }}
       />
 
       <DoubleHistoryModal

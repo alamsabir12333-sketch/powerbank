@@ -508,10 +508,10 @@ export async function registerUserAccount(formData: RegisterFormData) {
     let serverProfile: any = null;
     let serverWallet: any = null;
 
-    // 4. Authoritative Server-Side Registration (Atomic Supabase Admin Creation & DB Onboarding)
+    // 4. Authoritative Registration (Server API with seamless direct Supabase fallback for static domain hosting)
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000);
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
       const regResp = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -529,22 +529,150 @@ export async function registerUserAccount(formData: RegisterFormData) {
       });
       clearTimeout(timeoutId);
 
-      const regData = await regResp.json().catch(() => null);
+      const contentType = regResp.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const regData = await regResp.json().catch(() => null);
 
-      if (!regResp.ok || !regData?.success || !regData?.userId) {
-        const errorMsg = regData?.error || 'Registration failed on server.';
-        if (errorMsg.toLowerCase().includes('already registered') || errorMsg.toLowerCase().includes('duplicate')) {
+        if (regResp.ok && regData?.success && regData?.userId) {
+          effectiveUserId = regData.userId;
+          authUser = regData.user || { id: effectiveUserId, email: cleanEmail };
+          serverProfile = regData.profile;
+          serverWallet = regData.wallet;
+        } else if (regData && !regData.success) {
+          const errorMsg = regData.error || 'Registration failed on server.';
+          if (errorMsg.toLowerCase().includes('already registered') || errorMsg.toLowerCase().includes('duplicate')) {
+            throw new Error('This phone number is already registered. Please login instead.');
+          }
+          throw new Error(errorMsg);
+        }
+      }
+    } catch (serverErr: any) {
+      if (
+        serverErr?.message &&
+        !serverErr.message.includes('failed to fetch') &&
+        !serverErr.message.includes('NetworkError') &&
+        !serverErr.message.includes('aborted') &&
+        serverErr.message !== 'Registration failed on server.' &&
+        !serverErr.message.includes('Unexpected token')
+      ) {
+        throw serverErr;
+      }
+      console.warn('Backend /api/auth/register non-JSON or unreachable, falling back to direct client Supabase registration:', serverErr);
+    }
+
+    // Direct Supabase Client Registration Fallback (if server route unavailable or static host)
+    if (!effectiveUserId) {
+      const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password,
+        options: {
+          data: {
+            full_name: name || cleanUsername,
+            name: name || cleanUsername,
+            username: cleanUsername,
+            phone,
+            mobile: phone,
+            whatsapp_no: phone,
+            membership_number: membershipNumber,
+            referral_code: userReferralCode,
+          },
+        },
+      });
+
+      if (signUpErr || !signUpData?.user?.id) {
+        const msg = (signUpErr?.message || '').toLowerCase();
+        if (msg.includes('already registered') || msg.includes('user already registered') || msg.includes('duplicate')) {
           throw new Error('This phone number is already registered. Please login instead.');
         }
-        throw new Error(errorMsg);
+        throw new Error(signUpErr?.message || 'Failed to create user authentication record.');
       }
 
-      effectiveUserId = regData.userId;
-      authUser = regData.user || { id: effectiveUserId, email: cleanEmail };
-      serverProfile = regData.profile;
-      serverWallet = regData.wallet;
-    } catch (serverErr: any) {
-      throw serverErr;
+      effectiveUserId = signUpData.user.id;
+      authUser = signUpData.user;
+
+      // 1. Create profiles record
+      const profilePayload = {
+        id: effectiveUserId,
+        user_id: effectiveUserId,
+        username: cleanUsername,
+        name: name || cleanUsername,
+        full_name: name || cleanUsername,
+        phone,
+        mobile: phone,
+        whatsapp_no: phone,
+        email: cleanEmail,
+        membership_number: membershipNumber,
+        referral_code: userReferralCode,
+        referred_by: verifiedReferrerId,
+        role: 'user',
+        status: 'active',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      const { data: insertedProfile } = await supabase
+        .from('profiles')
+        .upsert(profilePayload, { onConflict: 'user_id' })
+        .select()
+        .maybeSingle();
+      serverProfile = insertedProfile || profilePayload;
+
+      // 2. Create wallets record with initial 50 balance
+      const walletPayload = {
+        id: 'wal_' + effectiveUserId,
+        user_id: effectiveUserId,
+        available_balance: 50.0,
+        recharge_balance: 50.0,
+        withdraw_balance: 0.0,
+        pending_balance: 0.0,
+        total_earned: 0.0,
+        total_withdrawn: 0.0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      const { data: insertedWallet } = await supabase
+        .from('wallets')
+        .upsert(walletPayload, { onConflict: 'user_id' })
+        .select()
+        .maybeSingle();
+      serverWallet = insertedWallet || walletPayload;
+
+      // 3. Save withdrawal PIN in user_security
+      try {
+        await supabase.from('user_security').upsert({
+          user_id: effectiveUserId,
+          withdrawal_password: withdrawalPassword.trim(),
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'user_id' });
+      } catch (_e) {}
+
+      // 4. Record signup bonus transaction
+      try {
+        await supabase.from('wallet_transactions').insert({
+          user_id: effectiveUserId,
+          type: 'signup_bonus',
+          amount: 50.0,
+          balance_after: 50.0,
+          status: 'approved',
+          description: 'Welcome Registration Bonus',
+          created_at: new Date().toISOString(),
+        });
+      } catch (_e) {}
+
+      // 5. Record referral relationship and process rewards
+      if (verifiedReferrerId) {
+        try {
+          await supabase.from('referrals').insert({
+            referrer_id: verifiedReferrerId,
+            referee_id: effectiveUserId,
+            status: 'registered',
+            commission_earned: 0.0,
+            created_at: new Date().toISOString(),
+          });
+          await processRegistrationReferralReward(effectiveUserId, verifiedReferrerId);
+        } catch (refErr) {
+          console.warn('[REFERRAL] Registration reward processing caught:', refErr);
+        }
+      }
     }
 
     if (!effectiveUserId) {

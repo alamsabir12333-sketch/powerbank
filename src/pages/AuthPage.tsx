@@ -17,8 +17,8 @@ import {
 import { RegisterFormData, LoginFormData, UserProfile } from '../types';
 import { verifyReferralCode } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useSiteBranding } from '../context/SiteBrandingContext';
 import { PowerBankLogo } from '../components/Artworks';
-import { LanguageModal } from '../components/LanguageModal';
 
 interface AuthPageProps {
   initialMode?: 'register' | 'login';
@@ -38,6 +38,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   onModeChange,
 }) => {
   const { signUp, signIn } = useAuth();
+  const { siteSettings } = useSiteBranding();
+  const [logoLoadError, setLogoLoadError] = useState(false);
   const [mode, setMode] = useState<'register' | 'login'>(initialMode);
 
   // Register Fields (Exactly 6 fields per specification)
@@ -64,8 +66,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [referrerName, setReferrerName] = useState<string | null>(null);
-  const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(false);
-  const [selectedLanguage, setSelectedLanguage] = useState('English');
 
   // 1. Synchronize referral code and persistent preferences
   useEffect(() => {
@@ -298,33 +298,30 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
       {/* Main Wrapper Container */}
       <div className="w-full max-w-[420px] relative z-10 flex flex-col items-center">
-        
-        {/* Top Floating Language Selector */}
-        <div className="w-full flex justify-end mb-3">
-          <button
-            id="auth-language-btn"
-            type="button"
-            onClick={() => setIsLanguageModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/15 border border-white/10 text-white/90 text-xs font-semibold backdrop-blur-md transition-all active:scale-95 shadow-sm"
-          >
-            <Globe className="w-3.5 h-3.5 text-[#FFA000]" />
-            <span>{selectedLanguage}</span>
-          </button>
-        </div>
-
-        {/* Brand Header */}
+        {/* Brand Header with Database-backed Uploaded Logo */}
         <div id="auth-brand-header" className="text-center mb-6 flex flex-col items-center">
-          <div className="relative mb-3 flex items-center justify-center">
-            {/* Pulsing ring around logo */}
-            <div className="absolute inset-0 bg-[#FF6000]/30 rounded-2xl blur-md animate-pulse" />
-            <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#FF6000] via-[#FF7A00] to-[#FFA000] p-0.5 shadow-xl shadow-orange-500/30 flex items-center justify-center">
-              <div className="w-full h-full bg-[#121214] rounded-[14px] flex items-center justify-center">
-                <PowerBankLogo className="w-10 h-10" />
+          {siteSettings?.logoUrl && !logoLoadError ? (
+            <div className="relative mb-3 flex items-center justify-center">
+              <img
+                src={siteSettings.logoUrl}
+                alt={siteSettings.siteTitle || 'GAIN POWER'}
+                className="h-16 max-h-16 w-auto max-w-[200px] object-contain drop-shadow-md"
+                onError={() => setLogoLoadError(true)}
+              />
+            </div>
+          ) : (
+            <div className="relative mb-3 flex items-center justify-center">
+              {/* Pulsing ring around logo */}
+              <div className="absolute inset-0 bg-[#FF6000]/30 rounded-2xl blur-md animate-pulse" />
+              <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#FF6000] via-[#FF7A00] to-[#FFA000] p-0.5 shadow-xl shadow-orange-500/30 flex items-center justify-center">
+                <div className="w-full h-full bg-[#121214] rounded-[14px] flex items-center justify-center">
+                  <PowerBankLogo className="w-10 h-10" />
+                </div>
               </div>
             </div>
-          </div>
+          )}
           <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight flex items-center gap-1.5">
-            GAIN POWER
+            {siteSettings?.siteTitle || 'GAIN POWER'}
             <span className="text-[#FF7A00] inline-block">⚡</span>
           </h1>
           <p className="text-xs text-gray-400 font-medium mt-1">
@@ -722,17 +719,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({
           <span>256-Bit SSL Encrypted & Verified Cloud Network</span>
         </div>
       </div>
-
-      {/* Language Selection Modal */}
-      <LanguageModal
-        isOpen={isLanguageModalOpen}
-        onClose={() => setIsLanguageModalOpen(false)}
-        currentLang={selectedLanguage}
-        onSelectLang={(lang) => {
-          setSelectedLanguage(lang);
-          onShowToast?.(`Language changed to ${lang}`);
-        }}
-      />
     </div>
   );
 };
