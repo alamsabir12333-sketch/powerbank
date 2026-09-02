@@ -385,35 +385,56 @@ export async function verifyReferralCode(code: string): Promise<{
   referrerId?: string;
   referrerName?: string;
 }> {
-  const cleanCode = code.trim().toUpperCase();
+  const cleanCode = (code || '').trim();
   if (!cleanCode) {
     return { valid: false };
   }
 
   if (isSupabaseConfigured && supabase) {
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanCode);
+    const filter = isUUID
+      ? `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode},user_id.eq.${cleanCode},id.eq.${cleanCode}`
+      : `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode}`;
+
     const { data, error } = await supabase
       .from('profiles')
-      .select('user_id, username, membership_number, referral_code')
-      .or(`referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode}`)
+      .select('id, user_id, username, membership_number, referral_code')
+      .or(filter)
       .limit(1);
 
-    if (error || !data || data.length === 0) {
-      return { valid: false };
+    if (data && data.length > 0) {
+      const refUser = data[0];
+      return {
+        valid: true,
+        referrerId: refUser.user_id || refUser.id,
+        referrerName: refUser.username || refUser.membership_number || refUser.referral_code,
+      };
     }
 
-    const refUser = data[0];
-    return {
-      valid: true,
-      referrerId: refUser.user_id,
-      referrerName: refUser.username || refUser.membership_number,
-    };
+    // Fallback: check by inviter phone/whatsapp_no/mobile
+    const { data: phoneData } = await supabase
+      .from('profiles')
+      .select('id, user_id, username, membership_number, referral_code')
+      .or(`phone.eq.${cleanCode},whatsapp_no.eq.${cleanCode},mobile.eq.${cleanCode}`)
+      .limit(1);
+
+    if (phoneData && phoneData.length > 0) {
+      const refUser = phoneData[0];
+      return {
+        valid: true,
+        referrerId: refUser.user_id || refUser.id,
+        referrerName: refUser.username || refUser.membership_number || refUser.referral_code,
+      };
+    }
+
+    return { valid: false };
   } else {
     const allUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
     const current = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {} as UserProfile);
     const match = [...allUsers, current].find(
       (u) =>
-        u.referralCode?.toUpperCase() === cleanCode ||
-        u.membershipNumber?.toUpperCase() === cleanCode
+        u.referralCode?.toLowerCase() === cleanCode.toLowerCase() ||
+        u.membershipNumber?.toLowerCase() === cleanCode.toLowerCase()
     );
 
     if (match) {
@@ -421,14 +442,6 @@ export async function verifyReferralCode(code: string): Promise<{
         valid: true,
         referrerId: match.userId || match.id,
         referrerName: match.username || match.membershipNumber,
-      };
-    }
-    // Also accept default GP888999 or legacy PB for test / demo convenience
-    if (cleanCode === 'GP888999' || cleanCode === 'PB888999' || cleanCode.startsWith('GP') || cleanCode.startsWith('PB')) {
-      return {
-        valid: true,
-        referrerId: 'usr_demo_01',
-        referrerName: 'GAIN POWER Admin',
       };
     }
     return { valid: false };
@@ -583,6 +596,9 @@ export async function registerUserAccount(formData: RegisterFormData) {
         const msg = (signUpErr?.message || '').toLowerCase();
         if (msg.includes('already registered') || msg.includes('user already registered') || msg.includes('duplicate')) {
           throw new Error('This phone number is already registered. Please login instead.');
+        }
+        if (msg.includes('rate limit') || msg.includes('email rate limit') || msg.includes('over_email_send_rate_limit')) {
+          throw new Error('Server registration busy or rate limited. Please try logging in or wait 1 minute.');
         }
         throw new Error(signUpErr?.message || 'Failed to create user authentication record.');
       }

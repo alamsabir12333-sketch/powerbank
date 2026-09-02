@@ -181,15 +181,25 @@ app.post('/api/auth/register', async (req, res) => {
     const filterStr = isUUID
       ? `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef},user_id.eq.${cleanRef},id.eq.${cleanRef}`
       : `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef}`;
-    const { data: refProf, error: refProfErr } = await supabase
+    const { data: refProfList, error: refProfErr } = await supabase
       .from('profiles')
       .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
       .or(filterStr)
-      .maybeSingle();
+      .limit(1);
     if (refProfErr) {
       console.warn('[SERVER AUTH] Referrer lookup error:', refProfErr.message);
     }
-    referrerProfile = refProf;
+    referrerProfile = refProfList && refProfList.length > 0 ? refProfList[0] : null;
+
+    if (!referrerProfile) {
+      // Fallback: check if cleanRef matches inviter phone number
+      const { data: phoneProfList } = await supabase
+        .from('profiles')
+        .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
+        .or(`phone.eq.${cleanRef},whatsapp_no.eq.${cleanRef},mobile.eq.${cleanRef}`)
+        .limit(1);
+      referrerProfile = phoneProfList && phoneProfList.length > 0 ? phoneProfList[0] : null;
+    }
 
     if (!referrerProfile) {
       return res.status(400).json({
@@ -512,6 +522,95 @@ app.post('/api/auth/register', async (req, res) => {
       success: false,
       error: err.message || 'Registration failed',
     });
+  }
+});
+
+// Referral Code Verification Endpoint
+app.get('/api/auth/verify-referral/:code', async (req, res) => {
+  const cleanCode = String(req.params.code || '').trim();
+  if (!cleanCode || !supabase) {
+    return res.json({ valid: false, error: 'Code required' });
+  }
+
+  try {
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanCode);
+    const filterStr = isUUID
+      ? `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode},user_id.eq.${cleanCode},id.eq.${cleanCode}`
+      : `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode}`;
+
+    const { data: refProfList } = await supabase
+      .from('profiles')
+      .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
+      .or(filterStr)
+      .limit(1);
+
+    let referrer = refProfList && refProfList.length > 0 ? refProfList[0] : null;
+
+    if (!referrer) {
+      const { data: phoneProfList } = await supabase
+        .from('profiles')
+        .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
+        .or(`phone.eq.${cleanCode},whatsapp_no.eq.${cleanCode},mobile.eq.${cleanCode}`)
+        .limit(1);
+      referrer = phoneProfList && phoneProfList.length > 0 ? phoneProfList[0] : null;
+    }
+
+    if (!referrer) {
+      return res.json({ valid: false });
+    }
+
+    return res.json({
+      valid: true,
+      referrerId: referrer.user_id || referrer.id,
+      referrerName: referrer.username || referrer.membership_number || referrer.referral_code,
+      referralCode: referrer.referral_code || referrer.membership_number,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ valid: false, error: err.message });
+  }
+});
+
+app.post('/api/auth/verify-referral', async (req, res) => {
+  const cleanCode = String(req.body?.code || req.body?.referralCode || '').trim();
+  if (!cleanCode || !supabase) {
+    return res.json({ valid: false, error: 'Code required' });
+  }
+
+  try {
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanCode);
+    const filterStr = isUUID
+      ? `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode},user_id.eq.${cleanCode},id.eq.${cleanCode}`
+      : `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode}`;
+
+    const { data: refProfList } = await supabase
+      .from('profiles')
+      .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
+      .or(filterStr)
+      .limit(1);
+
+    let referrer = refProfList && refProfList.length > 0 ? refProfList[0] : null;
+
+    if (!referrer) {
+      const { data: phoneProfList } = await supabase
+        .from('profiles')
+        .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
+        .or(`phone.eq.${cleanCode},whatsapp_no.eq.${cleanCode},mobile.eq.${cleanCode}`)
+        .limit(1);
+      referrer = phoneProfList && phoneProfList.length > 0 ? phoneProfList[0] : null;
+    }
+
+    if (!referrer) {
+      return res.json({ valid: false });
+    }
+
+    return res.json({
+      valid: true,
+      referrerId: referrer.user_id || referrer.id,
+      referrerName: referrer.username || referrer.membership_number || referrer.referral_code,
+      referralCode: referrer.referral_code || referrer.membership_number,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ valid: false, error: err.message });
   }
 });
 
