@@ -95,6 +95,39 @@ const STORAGE_KEYS = {
   MISSION_CLAIMS: 'pb_mission_claims',
 };
 
+// ==============================================================================
+// DYNAMIC BACKEND API ROUTER & BASE URL RESOLVER
+// ==============================================================================
+export function getApiBaseUrl(): string {
+  const envUrl = (
+    (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL)) ||
+    ''
+  ).trim();
+  if (envUrl) {
+    return envUrl.replace(/\/+$/, '');
+  }
+  // Hostinger production static domain safeguard
+  if (
+    typeof window !== 'undefined' &&
+    window.location &&
+    (window.location.hostname.includes('gainpower-top-1.com') || window.location.hostname.includes('gainpower'))
+  ) {
+    return 'https://ais-dev-d34grmbfgtflzvx45gft2s-97603468745.asia-southeast1.run.app';
+  }
+  return '';
+}
+
+export function apiUrl(endpoint: string): string {
+  const base = getApiBaseUrl();
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return base ? `${base}${cleanEndpoint}` : cleanEndpoint;
+}
+
+export async function apiFetch(endpoint: string, init?: RequestInit): Promise<Response> {
+  const url = apiUrl(endpoint);
+  return fetch(url, init);
+}
+
 // Default initial state
 const defaultPaymentSettings: PaymentSettings = {
   id: 'default',
@@ -521,11 +554,12 @@ export async function registerUserAccount(formData: RegisterFormData) {
     let serverProfile: any = null;
     let serverWallet: any = null;
 
-    // 4. Authoritative Registration (Server API with seamless direct Supabase fallback for static domain hosting)
+    // 4. Authoritative Registration via Server API (server.ts creates user with auto-confirmed email)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    let regResp: Response;
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-      const regResp = await fetch('/api/auth/register', {
+      regResp = await fetch(apiUrl('/api/auth/register'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
@@ -540,156 +574,30 @@ export async function registerUserAccount(formData: RegisterFormData) {
           membershipNumber,
         }),
       });
+    } catch (fetchErr: any) {
       clearTimeout(timeoutId);
+      throw new Error(`Cannot connect to registration server: ${fetchErr?.message || 'Network error'}. Please check server connection.`);
+    }
+    clearTimeout(timeoutId);
 
-      const contentType = regResp.headers.get('content-type') || '';
-      if (contentType.includes('application/json')) {
-        const regData = await regResp.json().catch(() => null);
-
-        if (regResp.ok && regData?.success && regData?.userId) {
-          effectiveUserId = regData.userId;
-          authUser = regData.user || { id: effectiveUserId, email: cleanEmail };
-          serverProfile = regData.profile;
-          serverWallet = regData.wallet;
-        } else if (regData && !regData.success) {
-          const errorMsg = regData.error || 'Registration failed on server.';
-          if (errorMsg.toLowerCase().includes('already registered') || errorMsg.toLowerCase().includes('duplicate')) {
-            throw new Error('This phone number is already registered. Please login instead.');
-          }
-          throw new Error(errorMsg);
-        }
-      }
-    } catch (serverErr: any) {
-      if (
-        serverErr?.message &&
-        !serverErr.message.includes('failed to fetch') &&
-        !serverErr.message.includes('NetworkError') &&
-        !serverErr.message.includes('aborted') &&
-        serverErr.message !== 'Registration failed on server.' &&
-        !serverErr.message.includes('Unexpected token')
-      ) {
-        throw serverErr;
-      }
-      console.warn('Backend /api/auth/register non-JSON or unreachable, falling back to direct client Supabase registration:', serverErr);
+    const contentType = regResp.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error(`Registration API endpoint returned non-JSON response (HTTP ${regResp.status}). Backend server may not be routing API requests.`);
     }
 
-    // Direct Supabase Client Registration Fallback (if server route unavailable or static host)
-    if (!effectiveUserId) {
-      const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password,
-        options: {
-          data: {
-            full_name: name || cleanUsername,
-            name: name || cleanUsername,
-            username: cleanUsername,
-            phone,
-            mobile: phone,
-            whatsapp_no: phone,
-            membership_number: membershipNumber,
-            referral_code: userReferralCode,
-          },
-        },
-      });
-
-      if (signUpErr || !signUpData?.user?.id) {
-        const msg = (signUpErr?.message || '').toLowerCase();
-        if (msg.includes('already registered') || msg.includes('user already registered') || msg.includes('duplicate')) {
-          throw new Error('This phone number is already registered. Please login instead.');
-        }
-        if (msg.includes('rate limit') || msg.includes('email rate limit') || msg.includes('over_email_send_rate_limit')) {
-          throw new Error('Server registration busy or rate limited. Please try logging in or wait 1 minute.');
-        }
-        throw new Error(signUpErr?.message || 'Failed to create user authentication record.');
+    const regData = await regResp.json().catch(() => null);
+    if (!regResp.ok || !regData?.success || !regData?.userId) {
+      const errorMsg = regData?.error || `Registration failed (HTTP ${regResp.status}).`;
+      if (errorMsg.toLowerCase().includes('already registered') || errorMsg.toLowerCase().includes('duplicate')) {
+        throw new Error('This phone number is already registered. Please login instead.');
       }
-
-      effectiveUserId = signUpData.user.id;
-      authUser = signUpData.user;
-
-      // 1. Create profiles record
-      const profilePayload = {
-        id: effectiveUserId,
-        user_id: effectiveUserId,
-        username: cleanUsername,
-        name: name || cleanUsername,
-        full_name: name || cleanUsername,
-        phone,
-        mobile: phone,
-        whatsapp_no: phone,
-        email: cleanEmail,
-        membership_number: membershipNumber,
-        referral_code: userReferralCode,
-        referred_by: verifiedReferrerId,
-        role: 'user',
-        status: 'active',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      const { data: insertedProfile } = await supabase
-        .from('profiles')
-        .upsert(profilePayload, { onConflict: 'user_id' })
-        .select()
-        .maybeSingle();
-      serverProfile = insertedProfile || profilePayload;
-
-      // 2. Create wallets record with initial 50 balance
-      const walletPayload = {
-        id: 'wal_' + effectiveUserId,
-        user_id: effectiveUserId,
-        available_balance: 50.0,
-        recharge_balance: 50.0,
-        withdraw_balance: 0.0,
-        pending_balance: 0.0,
-        total_earned: 0.0,
-        total_withdrawn: 0.0,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      const { data: insertedWallet } = await supabase
-        .from('wallets')
-        .upsert(walletPayload, { onConflict: 'user_id' })
-        .select()
-        .maybeSingle();
-      serverWallet = insertedWallet || walletPayload;
-
-      // 3. Save withdrawal PIN in user_security
-      try {
-        await supabase.from('user_security').upsert({
-          user_id: effectiveUserId,
-          withdrawal_password: withdrawalPassword.trim(),
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'user_id' });
-      } catch (_e) {}
-
-      // 4. Record signup bonus transaction
-      try {
-        await supabase.from('wallet_transactions').insert({
-          user_id: effectiveUserId,
-          type: 'signup_bonus',
-          amount: 50.0,
-          balance_after: 50.0,
-          status: 'approved',
-          description: 'Welcome Registration Bonus',
-          created_at: new Date().toISOString(),
-        });
-      } catch (_e) {}
-
-      // 5. Record referral relationship and process rewards
-      if (verifiedReferrerId) {
-        try {
-          await supabase.from('referrals').insert({
-            referrer_id: verifiedReferrerId,
-            referee_id: effectiveUserId,
-            status: 'registered',
-            commission_earned: 0.0,
-            created_at: new Date().toISOString(),
-          });
-          await processRegistrationReferralReward(effectiveUserId, verifiedReferrerId);
-        } catch (refErr) {
-          console.warn('[REFERRAL] Registration reward processing caught:', refErr);
-        }
-      }
+      throw new Error(errorMsg);
     }
+
+    effectiveUserId = regData.userId;
+    authUser = regData.user || { id: effectiveUserId, email: cleanEmail };
+    serverProfile = regData.profile;
+    serverWallet = regData.wallet;
 
     if (!effectiveUserId) {
       throw new Error('Registration failed: no valid user ID returned from database.');
@@ -2710,7 +2618,7 @@ export async function createPlan(planData: Omit<ProductItem, 'id'>): Promise<Pro
   };
 
   try {
-    const res = await fetch('/api/admin/plans/save', {
+    const res = await fetch(apiUrl('/api/admin/plans/save'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ plan: newPlan, adminId: 'adm_root_700' }),
@@ -2731,7 +2639,7 @@ export async function createPlan(planData: Omit<ProductItem, 'id'>): Promise<Pro
 
 export async function updatePlan(planId: string, planData: Partial<ProductItem>): Promise<void> {
   try {
-    const res = await fetch('/api/admin/plans/save', {
+    const res = await fetch(apiUrl('/api/admin/plans/save'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ plan: { id: planId, ...planData }, adminId: 'adm_root_700' }),
@@ -2758,7 +2666,7 @@ export async function togglePlanStatus(planId: string, status: 'active' | 'disab
 
 export async function deletePlan(planId: string): Promise<void> {
   try {
-    const res = await fetch('/api/admin/plans/delete', {
+    const res = await fetch(apiUrl('/api/admin/plans/delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ planId, adminId: 'adm_root_700' }),
@@ -2886,7 +2794,7 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
 
   // 2. Try Server API endpoint
   try {
-    const res = await fetch('/api/plans/purchase', {
+    const res = await fetch(apiUrl('/api/plans/purchase'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-user-id': userId },
       body: JSON.stringify({ userId, planId: plan.id }),
@@ -3127,7 +3035,7 @@ export async function fetchPaymentSettings(): Promise<PaymentSettings> {
 
 export async function updatePaymentSettings(settings: Partial<PaymentSettings>, adminId = 'adm_root') {
   try {
-    const res = await fetch('/api/admin/payment-settings', {
+    const res = await fetch(apiUrl('/api/admin/payment-settings'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ config: settings, adminId }),
@@ -3558,7 +3466,7 @@ export async function claimUserEarnings(userId: string): Promise<{
 }> {
   // 1. Try authoritative server endpoint first
   try {
-    const res = await fetch('/api/earnings/claim', {
+    const res = await fetch(apiUrl('/api/earnings/claim'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-user-id': userId },
       body: JSON.stringify({ userId }),
@@ -4144,7 +4052,7 @@ export async function submitWithdrawalRequest(
 
   // 2. Call server withdrawal verification endpoint
   try {
-    const resp = await fetch('/api/wallet/withdraw', {
+    const resp = await fetch(apiUrl('/api/wallet/withdraw'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -4624,7 +4532,7 @@ export async function approveWithdrawal(withdrawalId: string, bankRefNoOrAdminId
 
   // 1. Call authoritative Server Endpoint
   try {
-    const resp = await fetch('/api/admin/approve-withdrawal', {
+    const resp = await fetch(apiUrl('/api/admin/approve-withdrawal'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -4716,7 +4624,7 @@ export async function rejectWithdrawal(withdrawalId: string, param2: string, par
 
   // 1. Call authoritative Server Endpoint
   try {
-    const resp = await fetch('/api/admin/reject-withdrawal', {
+    const resp = await fetch(apiUrl('/api/admin/reject-withdrawal'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -4851,7 +4759,7 @@ export async function saveAdminPlan(
   };
 
   try {
-    const res = await fetch('/api/admin/plans/save', {
+    const res = await fetch(apiUrl('/api/admin/plans/save'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ plan: fullPlan, adminId }),
@@ -4889,7 +4797,7 @@ export async function saveAdminPlan(
 
 export async function deleteAdminPlan(planId: string, adminId?: string): Promise<boolean> {
   try {
-    const res = await fetch('/api/admin/plans/delete', {
+    const res = await fetch(apiUrl('/api/admin/plans/delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ planId, adminId }),
@@ -5217,7 +5125,7 @@ export async function fetchAdminAuditLogs(): Promise<import('../types').AuditLog
 export async function fetchAdminDashboardStats(): Promise<import('../types').AdminDashboardStats> {
   // First try backend API endpoint
   try {
-    const apiRes = await fetch('/api/admin/dashboard-stats');
+    const apiRes = await fetch(apiUrl('/api/admin/dashboard-stats'));
     if (apiRes.ok) {
       const json = await apiRes.json();
       if (json.success && json.data) {
@@ -5758,7 +5666,7 @@ export async function fetchPlatformNews(): Promise<import('../types').NewsItem[]
  */
 export async function fetchAdminNews(): Promise<import('../types').NewsItem[]> {
   try {
-    const res = await fetch('/api/news');
+    const res = await fetch(apiUrl('/api/news'));
     const json = await res.json();
     if (json.success && Array.isArray(json.data) && json.data.length > 0) {
       return json.data;
@@ -5833,7 +5741,7 @@ export async function saveAdminNews(news: Partial<import('../types').NewsItem>, 
   };
 
   try {
-    const res = await fetch('/api/admin/news/save', {
+    const res = await fetch(apiUrl('/api/admin/news/save'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ newsItem: item, adminId }),
@@ -5864,7 +5772,7 @@ export async function saveAdminNews(news: Partial<import('../types').NewsItem>, 
 
 export async function deleteAdminNews(newsId: string, adminId: string): Promise<boolean> {
   try {
-    const res = await fetch('/api/admin/news/delete', {
+    const res = await fetch(apiUrl('/api/admin/news/delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: newsId, adminId }),
@@ -5899,7 +5807,7 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
 }> {
   // 1. Try server earnings summary first
   try {
-    const sumRes = await fetch(`/api/user/earnings-summary?userId=${userId}`);
+    const sumRes = await fetch(apiUrl(`/api/user/earnings-summary?userId=${userId}`));
     if (sumRes.ok) {
       const sumJson = await sumRes.json();
       if (sumJson.success) {
@@ -6093,7 +6001,7 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
  */
 export async function fetchAdminBanners(): Promise<import('../types').BannerItem[]> {
   try {
-    const res = await fetch('/api/banners');
+    const res = await fetch(apiUrl('/api/banners'));
     const json = await res.json();
     if (json.success && Array.isArray(json.data) && json.data.length > 0) {
       return json.data;
@@ -6159,7 +6067,7 @@ export async function saveAdminBanner(
   };
 
   try {
-    const res = await fetch('/api/admin/banners/save', {
+    const res = await fetch(apiUrl('/api/admin/banners/save'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ banner: item, adminId }),
@@ -6196,7 +6104,7 @@ export async function saveAdminBanner(
 
 export async function deleteAdminBanner(bannerId: string, adminId: string): Promise<boolean> {
   try {
-    const res = await fetch('/api/admin/banners/delete', {
+    const res = await fetch(apiUrl('/api/admin/banners/delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: bannerId, adminId }),
@@ -6239,7 +6147,7 @@ export async function fetchWebsitePopup(): Promise<import('../types').WebsitePop
   };
 
   try {
-    const resp = await fetch('/api/website-popup');
+    const resp = await fetch(apiUrl('/api/website-popup'));
     if (resp.ok) {
       const json = await resp.json();
       if (json.success && json.data) {
@@ -6265,7 +6173,7 @@ export async function saveWebsitePopup(
   adminId: string
 ): Promise<import('../types').WebsitePopupConfig> {
   try {
-    const resp = await fetch('/api/admin/website-popup', {
+    const resp = await fetch(apiUrl('/api/admin/website-popup'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ config, adminId }),
@@ -7031,7 +6939,7 @@ export async function createUniVePayDeposit(params: {
       headers['Authorization'] = `Bearer ${accessToken}`;
     }
 
-    const res = await fetch('/api/create-payin-order', {
+    const res = await fetch(apiUrl('/api/create-payin-order'), {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -7108,7 +7016,7 @@ export async function checkUniVePayDepositStatus(traceno: string, amount?: numbe
 
   // 2. Check backend /api/order-query
   try {
-    const res = await fetch('/api/order-query', {
+    const res = await fetch(apiUrl('/api/order-query'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ orderId: traceno, traceno }),
@@ -7190,7 +7098,7 @@ export async function requestWithdrawalGateway(params: {
   error?: string;
 }> {
   try {
-    const res = await fetch('/api/univepay/create-withdrawal', {
+    const res = await fetch(apiUrl('/api/univepay/create-withdrawal'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -7240,7 +7148,7 @@ export async function checkUniVePayWithdrawalStatus(traceno: string, amount?: nu
 
 export async function fetchUniVePayBalance(): Promise<import('../types').UniVePayBalanceResult> {
   try {
-    const res = await fetch('/api/univepay/balance');
+    const res = await fetch(apiUrl('/api/univepay/balance'));
     if (res.ok) {
       const data = await res.json();
       return {
@@ -7620,7 +7528,7 @@ export async function fetchWalletLedger(userId?: string): Promise<import('../typ
  */
 export async function fetchGiftCodes(filters?: { status?: string; query?: string }): Promise<GiftCode[]> {
   try {
-    const res = await fetch('/api/gift-codes');
+    const res = await fetch(apiUrl('/api/gift-codes'));
     const json = await res.json();
     if (json.success && Array.isArray(json.data)) {
       let list: GiftCode[] = json.data;
@@ -7786,7 +7694,7 @@ export async function createGiftCode(
   };
 
   try {
-    const res = await fetch('/api/admin/gift-codes/save', {
+    const res = await fetch(apiUrl('/api/admin/gift-codes/save'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ giftCode: newCode, adminId, isNew: true }),
@@ -7826,7 +7734,7 @@ export async function updateGiftCode(
   };
 
   try {
-    const res = await fetch('/api/admin/gift-codes/save', {
+    const res = await fetch(apiUrl('/api/admin/gift-codes/save'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ giftCode: { id, ...updated }, adminId, isNew: false }),
@@ -7860,7 +7768,7 @@ export async function deleteGiftCode(id: string, adminId: string): Promise<boole
   saveLocal(STORAGE_KEYS.GIFT_CODES, filtered);
 
   try {
-    const res = await fetch('/api/admin/gift-codes/delete', {
+    const res = await fetch(apiUrl('/api/admin/gift-codes/delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, adminId }),
@@ -8005,7 +7913,7 @@ export async function claimGiftCode(
 
   // 0. Attempt Server-Side Atomic Redemption
   try {
-    const res = await fetch('/api/gift-codes/redeem', {
+    const res = await fetch(apiUrl('/api/gift-codes/redeem'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: cleanCode, userId }),
@@ -8728,7 +8636,7 @@ export async function fetchDailyCheckInStatus(userId: string): Promise<import('.
   // Try backend API first for database-persistent status
   if (userId) {
     try {
-      const resp = await fetch(`/api/fortune/checkin-status?userId=${encodeURIComponent(userId)}`);
+      const resp = await fetch(apiUrl(`/api/fortune/checkin-status?userId=${encodeURIComponent(userId)}`));
       if (resp.ok) {
         const json = await resp.json();
         if (json.success) {
@@ -8825,7 +8733,7 @@ export async function performDailyCheckIn(userId: string): Promise<{
 
   // Call Server-Side Supabase Admin Backend API
   try {
-    const resp = await fetch('/api/fortune/checkin', {
+    const resp = await fetch(apiUrl('/api/fortune/checkin'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -8920,7 +8828,7 @@ export async function performDailyCheckIn(userId: string): Promise<{
  */
 export async function fetchAboutPlatformConfig(): Promise<AboutPlatformConfig> {
   try {
-    const res = await fetch('/api/about-platform');
+    const res = await fetch(apiUrl('/api/about-platform'));
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const json = await res.json();
@@ -9007,7 +8915,7 @@ export async function updateAboutPlatformConfig(
   };
 
   try {
-    const res = await fetch('/api/admin/about-platform', {
+    const res = await fetch(apiUrl('/api/admin/about-platform'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ config: updated, adminId }),
@@ -9075,7 +8983,7 @@ export async function updateAboutPlatformConfig(
  */
 export async function fetchMissions(includeDisabled: boolean = false): Promise<Mission[]> {
   try {
-    const res = await fetch(`/api/missions?includeDisabled=${includeDisabled}`);
+    const res = await fetch(apiUrl(`/api/missions?includeDisabled=${includeDisabled}`));
     const json = await res.json();
     if (json.success && Array.isArray(json.data) && json.data.length > 0) {
       return json.data;
@@ -9147,7 +9055,7 @@ export async function createMission(
   };
 
   try {
-    const res = await fetch('/api/admin/missions/save', {
+    const res = await fetch(apiUrl('/api/admin/missions/save'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mission: newMission, adminId }),
@@ -9201,7 +9109,7 @@ export async function updateMission(
   };
 
   try {
-    const res = await fetch('/api/admin/missions/save', {
+    const res = await fetch(apiUrl('/api/admin/missions/save'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mission: { id, ...updated }, adminId }),
@@ -9252,7 +9160,7 @@ export async function deleteMission(id: string, adminId: string = 'adm_root_700'
   const filtered = allMissions.filter((m) => m.id !== id);
 
   try {
-    const res = await fetch('/api/admin/missions/delete', {
+    const res = await fetch(apiUrl('/api/admin/missions/delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ missionId: id, adminId }),
@@ -9926,7 +9834,7 @@ export async function fetchUserComplaintSignedUrl(params: {
   filePath?: string;
 }): Promise<string | null> {
   try {
-    const resp = await fetch('/api/deposit-complaint/signed-url', {
+    const resp = await fetch(apiUrl('/api/deposit-complaint/signed-url'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
@@ -9952,7 +9860,7 @@ export async function submitDepositComplaint(data: {
   note?: string;
 }): Promise<{ success: boolean; complaintId?: string; message: string }> {
   try {
-    const resp = await fetch('/api/deposit-complaint', {
+    const resp = await fetch(apiUrl('/api/deposit-complaint'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -10009,7 +9917,7 @@ export async function submitDepositComplaint(data: {
 
 export async function fetchAdminDepositComplaints(): Promise<import('../types').DepositComplaint[]> {
   try {
-    const resp = await fetch('/api/admin/complaints');
+    const resp = await fetch(apiUrl('/api/admin/complaints'));
     if (resp.ok) {
       const json = await resp.json();
       if (json.success && Array.isArray(json.data)) {
@@ -10074,7 +9982,7 @@ export async function fetchAdminDepositComplaints(): Promise<import('../types').
 }
 
 export async function approveDepositComplaint(complaintId: string, adminId: string, adminNote?: string): Promise<{ success: boolean; message: string }> {
-  const resp = await fetch('/api/admin/approve-complaint', {
+  const resp = await fetch(apiUrl('/api/admin/approve-complaint'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ complaintId, adminId, adminNote }),
@@ -10096,7 +10004,7 @@ export async function approveDepositComplaint(complaintId: string, adminId: stri
 }
 
 export async function rejectDepositComplaint(complaintId: string, rejectionReason: string, adminId: string): Promise<{ success: boolean; message: string }> {
-  const resp = await fetch('/api/admin/reject-complaint', {
+  const resp = await fetch(apiUrl('/api/admin/reject-complaint'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ complaintId, rejectionReason, adminId }),
@@ -10123,7 +10031,7 @@ export async function rejectDepositComplaint(complaintId: string, rejectionReaso
 
 export async function fetchSiteSettings(): Promise<SiteSettings> {
   try {
-    const res = await fetch('/api/site-settings');
+    const res = await fetch(apiUrl('/api/site-settings'));
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const json = await res.json();
@@ -10158,7 +10066,7 @@ export async function fetchSiteSettings(): Promise<SiteSettings> {
 
 export async function saveSiteSettings(config: Partial<SiteSettings>, adminId = 'adm_root'): Promise<{ success: boolean; data: SiteSettings }> {
   try {
-    const res = await fetch('/api/admin/site-settings', {
+    const res = await fetch(apiUrl('/api/admin/site-settings'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ config, adminId }),
@@ -10212,7 +10120,7 @@ export async function uploadSiteAsset(file: File, prefix = 'branding'): Promise<
   });
 
   try {
-    const res = await fetch('/api/admin/upload-asset', {
+    const res = await fetch(apiUrl('/api/admin/upload-asset'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -10261,7 +10169,7 @@ export async function uploadSiteAsset(file: File, prefix = 'branding'): Promise<
 
 export async function fetchRechargeSettings(): Promise<RechargeSettings> {
   try {
-    const res = await fetch('/api/recharge-settings');
+    const res = await fetch(apiUrl('/api/recharge-settings'));
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const json = await res.json();
@@ -10297,7 +10205,7 @@ export async function fetchRechargeSettings(): Promise<RechargeSettings> {
 
 export async function saveRechargeSettings(config: Partial<RechargeSettings>, adminId = 'adm_root'): Promise<{ success: boolean; data: RechargeSettings }> {
   try {
-    const res = await fetch('/api/admin/recharge-settings', {
+    const res = await fetch(apiUrl('/api/admin/recharge-settings'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ config, adminId }),
@@ -10343,7 +10251,7 @@ export async function saveRechargeSettings(config: Partial<RechargeSettings>, ad
 
 export async function fetchUsdtSettings(): Promise<UsdtSettings> {
   try {
-    const res = await fetch('/api/usdt-settings');
+    const res = await fetch(apiUrl('/api/usdt-settings'));
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const json = await res.json();
@@ -10380,7 +10288,7 @@ export async function fetchUsdtSettings(): Promise<UsdtSettings> {
 
 export async function saveUsdtSettings(config: Partial<UsdtSettings>, adminId = 'adm_root'): Promise<{ success: boolean; data: UsdtSettings }> {
   try {
-    const res = await fetch('/api/admin/usdt-settings', {
+    const res = await fetch(apiUrl('/api/admin/usdt-settings'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ config, adminId }),
@@ -10458,7 +10366,7 @@ export async function submitUsdtDeposit(payload: {
   proofPath: string;
   note?: string;
 }): Promise<{ success: boolean; depositId: string; message: string }> {
-  const res = await fetch('/api/usdt-deposit', {
+  const res = await fetch(apiUrl('/api/usdt-deposit'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -10473,7 +10381,7 @@ export async function submitUsdtDeposit(payload: {
 export async function fetchUserUsdtDeposits(userId: string): Promise<UsdtDepositItem[]> {
   if (!userId) return [];
   try {
-    const res = await fetch(`/api/usdt-deposits/user/${encodeURIComponent(userId)}`);
+    const res = await fetch(apiUrl(`/api/usdt-deposits/user/${encodeURIComponent(userId)}`));
     const json = await res.json();
     if (json.success && Array.isArray(json.data)) {
       return json.data;
@@ -10486,7 +10394,7 @@ export async function fetchUserUsdtDeposits(userId: string): Promise<UsdtDeposit
 
 export async function fetchAdminUsdtDeposits(): Promise<UsdtDepositItem[]> {
   try {
-    const res = await fetch('/api/admin/usdt-deposits');
+    const res = await fetch(apiUrl('/api/admin/usdt-deposits'));
     const json = await res.json();
     if (json.success && Array.isArray(json.data)) {
       return json.data;
@@ -10499,7 +10407,7 @@ export async function fetchAdminUsdtDeposits(): Promise<UsdtDepositItem[]> {
 
 export async function fetchUsdtSignedUrl(userId: string, depositId?: string, filePath?: string): Promise<string> {
   try {
-    const res = await fetch('/api/usdt-deposit/signed-url', {
+    const res = await fetch(apiUrl('/api/usdt-deposit/signed-url'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId, depositId, filePath }),
@@ -10515,7 +10423,7 @@ export async function fetchUsdtSignedUrl(userId: string, depositId?: string, fil
 }
 
 export async function approveUsdtDeposit(depositId: string, adminId = 'adm_root', adminNote = ''): Promise<{ success: boolean; message: string }> {
-  const res = await fetch('/api/admin/approve-usdt-deposit', {
+  const res = await fetch(apiUrl('/api/admin/approve-usdt-deposit'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ depositId, adminId, adminNote }),
@@ -10528,7 +10436,7 @@ export async function approveUsdtDeposit(depositId: string, adminId = 'adm_root'
 }
 
 export async function rejectUsdtDeposit(depositId: string, rejectionReason: string, adminId = 'adm_root'): Promise<{ success: boolean; message: string }> {
-  const res = await fetch('/api/admin/reject-usdt-deposit', {
+  const res = await fetch(apiUrl('/api/admin/reject-usdt-deposit'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ depositId, rejectionReason, adminId }),

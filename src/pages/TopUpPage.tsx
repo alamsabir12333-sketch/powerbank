@@ -8,6 +8,7 @@ import {
   compressImageFile,
   fetchRechargeSettings,
   fetchUsdtSettings,
+  apiUrl,
 } from '../services/api';
 import {
   ChevronLeft,
@@ -425,7 +426,7 @@ export default function TopUpPage({
       }
 
       if (!response || response?.error || !response?.data?.success) {
-        const res = await fetch('/api/create-payin-order', {
+        const res = await fetch(apiUrl('/api/create-payin-order'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
