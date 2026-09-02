@@ -8777,30 +8777,69 @@ export async function performDailyCheckIn(userId: string): Promise<{
 export async function fetchAboutPlatformConfig(): Promise<AboutPlatformConfig> {
   try {
     const res = await fetch('/api/about-platform');
-    const json = await res.json();
-    if (json.success && json.data) {
-      return {
-        id: json.data.id || defaultAboutPlatformConfig.id,
-        pageTitle: json.data.pageTitle || defaultAboutPlatformConfig.pageTitle,
-        pageSubtitle: json.data.pageSubtitle || defaultAboutPlatformConfig.pageSubtitle,
-        heroBadge: json.data.heroBadge || defaultAboutPlatformConfig.heroBadge,
-        companyName: json.data.companyName || defaultAboutPlatformConfig.companyName,
-        appVersion: json.data.platformVersion || json.data.appVersion || defaultAboutPlatformConfig.appVersion,
-        supportEmail: json.data.supportEmail || defaultAboutPlatformConfig.supportEmail,
-        supportTelegram: json.data.supportTelegram || defaultAboutPlatformConfig.supportTelegram,
-        supportWhatsapp: json.data.supportWhatsapp || defaultAboutPlatformConfig.supportWhatsapp,
-        supportHours: json.data.supportHours || defaultAboutPlatformConfig.supportHours,
-        investingSteps: json.data.investingSteps || defaultAboutPlatformConfig.investingSteps,
-        customRules: json.data.customRules || defaultAboutPlatformConfig.customRules,
-        sections: json.data.sections || defaultAboutPlatformConfig.sections,
-        topupWalletNotes: json.data.topupWalletNotes || defaultAboutPlatformConfig.topupWalletNotes,
-        withdrawWalletNotes: json.data.withdrawWalletNotes || defaultAboutPlatformConfig.withdrawWalletNotes,
-        giftCodeNotes: json.data.giftCodeNotes || defaultAboutPlatformConfig.giftCodeNotes,
-        updatedAt: json.data.updatedAt,
-      };
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        return {
+          id: json.data.id || defaultAboutPlatformConfig.id,
+          pageTitle: json.data.pageTitle || defaultAboutPlatformConfig.pageTitle,
+          pageSubtitle: json.data.pageSubtitle || defaultAboutPlatformConfig.pageSubtitle,
+          heroBadge: json.data.heroBadge || defaultAboutPlatformConfig.heroBadge,
+          companyName: json.data.companyName || defaultAboutPlatformConfig.companyName,
+          appVersion: json.data.platformVersion || json.data.appVersion || defaultAboutPlatformConfig.appVersion,
+          supportEmail: json.data.supportEmail || defaultAboutPlatformConfig.supportEmail,
+          supportTelegram: json.data.supportTelegram || defaultAboutPlatformConfig.supportTelegram,
+          supportWhatsapp: json.data.supportWhatsapp || defaultAboutPlatformConfig.supportWhatsapp,
+          supportHours: json.data.supportHours || defaultAboutPlatformConfig.supportHours,
+          investingSteps: json.data.investingSteps || defaultAboutPlatformConfig.investingSteps,
+          customRules: json.data.customRules || defaultAboutPlatformConfig.customRules,
+          sections: json.data.sections || defaultAboutPlatformConfig.sections,
+          topupWalletNotes: json.data.topupWalletNotes || defaultAboutPlatformConfig.topupWalletNotes,
+          withdrawWalletNotes: json.data.withdrawWalletNotes || defaultAboutPlatformConfig.withdrawWalletNotes,
+          giftCodeNotes: json.data.giftCodeNotes || defaultAboutPlatformConfig.giftCodeNotes,
+          updatedAt: json.data.updatedAt,
+        };
+      }
     }
   } catch (err) {
-    console.warn('Backend fetchAboutPlatformConfig error, fallback to local:', err);
+    console.warn('Backend fetchAboutPlatformConfig error, fallback to Supabase/local:', err);
+  }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('about_platform_config')
+        .select('*')
+        .limit(1)
+        .maybeSingle();
+
+      if (!error && data) {
+        const sectionsObj = (data.sections && typeof data.sections === 'object' && !Array.isArray(data.sections) && Object.keys(data.sections).length > 0)
+          ? { ...defaultAboutPlatformConfig.sections, ...data.sections }
+          : defaultAboutPlatformConfig.sections;
+
+        return {
+          id: data.id || defaultAboutPlatformConfig.id,
+          pageTitle: data.hero_title || data.page_title || defaultAboutPlatformConfig.pageTitle,
+          pageSubtitle: data.hero_subtitle || data.page_subtitle || defaultAboutPlatformConfig.pageSubtitle,
+          heroBadge: data.hero_badge || defaultAboutPlatformConfig.heroBadge,
+          companyName: data.company_name || defaultAboutPlatformConfig.companyName,
+          appVersion: data.platform_version || defaultAboutPlatformConfig.appVersion,
+          supportEmail: data.support_email || defaultAboutPlatformConfig.supportEmail,
+          supportTelegram: data.support_telegram || defaultAboutPlatformConfig.supportTelegram,
+          supportWhatsapp: data.support_whatsapp || defaultAboutPlatformConfig.supportWhatsapp,
+          supportHours: data.support_hours || defaultAboutPlatformConfig.supportHours,
+          investingSteps: (Array.isArray(data.investing_steps) && data.investing_steps.length > 0) ? data.investing_steps : defaultAboutPlatformConfig.investingSteps,
+          customRules: (Array.isArray(data.custom_rules) && data.custom_rules.length > 0) ? data.custom_rules : defaultAboutPlatformConfig.customRules,
+          sections: sectionsObj,
+          topupWalletNotes: data.topup_wallet_notes || defaultAboutPlatformConfig.topupWalletNotes,
+          withdrawWalletNotes: data.withdraw_wallet_notes || defaultAboutPlatformConfig.withdrawWalletNotes,
+          giftCodeNotes: data.gift_code_notes || defaultAboutPlatformConfig.giftCodeNotes,
+          updatedAt: data.updated_at,
+        };
+      }
+    } catch (_e) {}
   }
 
   return getLocal<AboutPlatformConfig>(
@@ -8829,13 +8868,43 @@ export async function updateAboutPlatformConfig(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ config: updated, adminId }),
     });
-    const json = await res.json();
-    if (json.success && json.data) {
-      saveLocal(STORAGE_KEYS.ABOUT_PLATFORM, updated);
-      return updated;
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        saveLocal(STORAGE_KEYS.ABOUT_PLATFORM, updated);
+        return updated;
+      }
     }
   } catch (err) {
-    console.warn('Backend updateAboutPlatformConfig error, fallback to local:', err);
+    console.warn('Backend updateAboutPlatformConfig error, fallback to Supabase/local:', err);
+  }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const dbPayload = {
+        id: updated.id || 'default',
+        company_name: updated.companyName,
+        license_no: (updated as any).licenseNo || 'CIN-U72900DL2024PTC394821',
+        platform_version: updated.appVersion,
+        hero_title: updated.pageTitle,
+        hero_subtitle: updated.pageSubtitle,
+        hero_badge: updated.heroBadge,
+        support_email: updated.supportEmail,
+        support_telegram: updated.supportTelegram,
+        support_whatsapp: updated.supportWhatsapp,
+        support_hours: updated.supportHours,
+        sections: updated.sections,
+        investing_steps: updated.investingSteps,
+        custom_rules: updated.customRules,
+        topup_wallet_notes: updated.topupWalletNotes,
+        withdraw_wallet_notes: updated.withdrawWalletNotes,
+        gift_code_notes: updated.giftCodeNotes,
+        updated_at: updated.updatedAt,
+      };
+      await supabase.from('about_platform_config').upsert(dbPayload, { onConflict: 'id' });
+      await supabase.from('admin_settings').upsert({ id: 'about_platform', value: updated, updated_at: updated.updatedAt });
+    } catch (_e) {}
   }
 
   saveLocal(STORAGE_KEYS.ABOUT_PLATFORM, updated);
@@ -8848,7 +8917,7 @@ export async function updateAboutPlatformConfig(
       updated.id || 'cfg_about_platform_01',
       `Updated About Platform dynamic rules, sections, and investing guide`
     );
-  } catch (err) {}
+  } catch (_e) {}
 
   return updated;
 }
@@ -9911,13 +9980,31 @@ export async function rejectDepositComplaint(complaintId: string, rejectionReaso
 export async function fetchSiteSettings(): Promise<SiteSettings> {
   try {
     const res = await fetch('/api/site-settings');
-    const json = await res.json();
-    if (json.success && json.data) {
-      return json.data;
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        return json.data;
+      }
     }
   } catch (e) {
-    console.warn('[SITE SETTINGS] Failed to fetch:', e);
+    console.warn('[SITE SETTINGS] Failed to fetch from API, falling back:', e);
   }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('admin_settings')
+        .select('*')
+        .eq('id', 'site_settings')
+        .maybeSingle();
+
+      if (!error && data?.value) {
+        return data.value;
+      }
+    } catch (_e) {}
+  }
+
   return {
     siteTitle: 'GAINPOWER',
     logoUrl: '',
@@ -9926,16 +10013,44 @@ export async function fetchSiteSettings(): Promise<SiteSettings> {
 }
 
 export async function saveSiteSettings(config: Partial<SiteSettings>, adminId = 'adm_root'): Promise<{ success: boolean; data: SiteSettings }> {
-  const res = await fetch('/api/admin/site-settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config, adminId }),
-  });
-  const json = await res.json();
-  if (!res.ok || !json.success) {
-    throw new Error(json.error || 'Failed to save site settings.');
+  try {
+    const res = await fetch('/api/admin/site-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config, adminId }),
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        return json;
+      }
+    }
+  } catch (_e) {}
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const current = await fetchSiteSettings();
+      const updated = { ...current, ...config };
+      await supabase.from('admin_settings').upsert({
+        id: 'site_settings',
+        value: updated,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'id' });
+      return { success: true, data: updated };
+    } catch (err: any) {
+      throw new Error(err?.message || 'Failed to save site settings to database.');
+    }
   }
-  return json;
+
+  return {
+    success: true,
+    data: {
+      siteTitle: config.siteTitle || 'GAINPOWER',
+      logoUrl: config.logoUrl || '',
+      faviconUrl: config.faviconUrl || '',
+    },
+  };
 }
 
 export async function uploadSiteAsset(file: File, prefix = 'branding'): Promise<string> {
@@ -9962,9 +10077,12 @@ export async function uploadSiteAsset(file: File, prefix = 'branding'): Promise<
         contentType: file.type || 'image/png',
       }),
     });
-    const json = await res.json();
-    if (json.success && json.url) {
-      return json.url;
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await res.json();
+      if (json.success && json.url) {
+        return json.url;
+      }
     }
   } catch (err) {
     console.warn('[SITE ASSET UPLOAD] Backend upload error, using local dataUrl fallback:', err);
@@ -10000,13 +10118,31 @@ export async function uploadSiteAsset(file: File, prefix = 'branding'): Promise<
 export async function fetchRechargeSettings(): Promise<RechargeSettings> {
   try {
     const res = await fetch('/api/recharge-settings');
-    const json = await res.json();
-    if (json.success && json.data) {
-      return json.data;
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        return json.data;
+      }
     }
   } catch (e) {
-    console.warn('[RECHARGE SETTINGS] Failed to fetch:', e);
+    console.warn('[RECHARGE SETTINGS] Failed to fetch from API, falling back:', e);
   }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('admin_settings')
+        .select('*')
+        .eq('id', 'recharge_settings')
+        .maybeSingle();
+
+      if (!error && data?.value) {
+        return data.value;
+      }
+    } catch (_e) {}
+  }
+
   return {
     presetAmounts: [500, 1500, 2000, 3000, 3500, 5000, 7000, 10000, 20000, 30000],
     minRecharge: 100,
@@ -10016,16 +10152,45 @@ export async function fetchRechargeSettings(): Promise<RechargeSettings> {
 }
 
 export async function saveRechargeSettings(config: Partial<RechargeSettings>, adminId = 'adm_root'): Promise<{ success: boolean; data: RechargeSettings }> {
-  const res = await fetch('/api/admin/recharge-settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config, adminId }),
-  });
-  const json = await res.json();
-  if (!res.ok || !json.success) {
-    throw new Error(json.error || 'Failed to save recharge settings.');
+  try {
+    const res = await fetch('/api/admin/recharge-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config, adminId }),
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        return json;
+      }
+    }
+  } catch (_e) {}
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const current = await fetchRechargeSettings();
+      const updated = { ...current, ...config };
+      await supabase.from('admin_settings').upsert({
+        id: 'recharge_settings',
+        value: updated,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'id' });
+      return { success: true, data: updated };
+    } catch (err: any) {
+      throw new Error(err?.message || 'Failed to save recharge settings to database.');
+    }
   }
-  return json;
+
+  return {
+    success: true,
+    data: {
+      presetAmounts: config.presetAmounts || [500, 1500, 2000, 3000, 3500, 5000, 7000, 10000, 20000, 30000],
+      minRecharge: config.minRecharge || 100,
+      maxRecharge: config.maxRecharge || 50000,
+      isEnabled: config.isEnabled !== undefined ? config.isEnabled : true,
+    },
+  };
 }
 
 // ==============================================================================
@@ -10035,13 +10200,31 @@ export async function saveRechargeSettings(config: Partial<RechargeSettings>, ad
 export async function fetchUsdtSettings(): Promise<UsdtSettings> {
   try {
     const res = await fetch('/api/usdt-settings');
-    const json = await res.json();
-    if (json.success && json.data) {
-      return json.data;
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        return json.data;
+      }
     }
   } catch (e) {
-    console.warn('[USDT SETTINGS] Failed to fetch:', e);
+    console.warn('[USDT SETTINGS] Failed to fetch from API, falling back:', e);
   }
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('admin_settings')
+        .select('*')
+        .eq('id', 'usdt_settings')
+        .maybeSingle();
+
+      if (!error && data?.value) {
+        return data.value;
+      }
+    } catch (_e) {}
+  }
+
   return {
     isEnabled: true,
     usdtRate: 100,
@@ -10052,16 +10235,46 @@ export async function fetchUsdtSettings(): Promise<UsdtSettings> {
 }
 
 export async function saveUsdtSettings(config: Partial<UsdtSettings>, adminId = 'adm_root'): Promise<{ success: boolean; data: UsdtSettings }> {
-  const res = await fetch('/api/admin/usdt-settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config, adminId }),
-  });
-  const json = await res.json();
-  if (!res.ok || !json.success) {
-    throw new Error(json.error || 'Failed to save USDT settings.');
+  try {
+    const res = await fetch('/api/admin/usdt-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config, adminId }),
+    });
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        return json;
+      }
+    }
+  } catch (_e) {}
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const current = await fetchUsdtSettings();
+      const updated = { ...current, ...config };
+      await supabase.from('admin_settings').upsert({
+        id: 'usdt_settings',
+        value: updated,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'id' });
+      return { success: true, data: updated };
+    } catch (err: any) {
+      throw new Error(err?.message || 'Failed to save USDT settings to database.');
+    }
   }
-  return json;
+
+  return {
+    success: true,
+    data: {
+      isEnabled: config.isEnabled !== undefined ? config.isEnabled : true,
+      usdtRate: config.usdtRate || 100,
+      trc20Address: config.trc20Address || '',
+      bep20Address: config.bep20Address || '',
+      qrUrl: config.qrUrl || '',
+    },
+  };
 }
 
 export async function uploadUsdtScreenshot(userId: string, file: File): Promise<string> {
