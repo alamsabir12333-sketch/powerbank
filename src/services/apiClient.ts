@@ -29,11 +29,6 @@ export function getApiBaseUrl(): string {
     );
   }
 
-  // If old ais-dev development URL is present, ignore it and use authoritative Cloud Run backend
-  if (envVal.includes('ais-dev-')) {
-    return CLOUD_RUN_BACKEND_URL;
-  }
-
   // Use configured environment variable if valid, or default to the authoritative Cloud Run backend
   const raw = envVal && !envVal.includes('MY_') ? envVal : CLOUD_RUN_BACKEND_URL;
 
