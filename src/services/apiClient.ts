@@ -29,8 +29,16 @@ export function getApiBaseUrl(): string {
     );
   }
 
+  // In production builds, strictly reject any localhost or ais-dev backend URLs and ensure production points to CLOUD_RUN_BACKEND_URL
+  const isProd = Boolean(typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.PROD);
+  if (isProd) {
+    if (!envVal || envVal.includes('ais-dev') || envVal.includes('localhost')) {
+      return CLOUD_RUN_BACKEND_URL;
+    }
+  }
+
   // Use configured environment variable if valid, or default to the authoritative Cloud Run backend
-  const raw = envVal && !envVal.includes('MY_') ? envVal : CLOUD_RUN_BACKEND_URL;
+  const raw = envVal && !envVal.includes('MY_') && !envVal.includes('ais-dev') ? envVal : CLOUD_RUN_BACKEND_URL;
 
   // Clean trailing slashes
   let clean = raw.replace(/\/+$/, '');

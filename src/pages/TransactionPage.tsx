@@ -25,6 +25,8 @@ import {
   CreditCard,
   Building,
   HelpCircle,
+  CalendarCheck,
+  Award,
 } from 'lucide-react';
 import { TabType, WalletTransaction, TransactionType, TransactionStatus, Wallet, UserProfile } from '../types';
 import { fetchWalletTransactions } from '../services/api';
@@ -96,21 +98,52 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
     // 1. Category Matching
     let matchesCategory = true;
     const typeUpper = (tx.type || '').toUpperCase();
+    const descLower = (tx.description || '').toLowerCase();
+    const refLower = (tx.referenceId || '').toLowerCase();
 
     if (activeCategory === 'RECHARGE') {
       matchesCategory = typeUpper === 'RECHARGE';
     } else if (activeCategory === 'PURCHASE') {
       matchesCategory = typeUpper === 'PLAN_PURCHASE' || typeUpper === 'PRO_PLAN_PURCHASE';
     } else if (activeCategory === 'EARNINGS') {
-      matchesCategory = typeUpper === 'HOURLY_EARNING' || typeUpper === 'PRO_EARNING' || typeUpper === 'EARNING';
+      matchesCategory =
+        typeUpper === 'HOURLY_EARNING' ||
+        typeUpper === 'PRO_EARNING' ||
+        typeUpper === 'EARNING' ||
+        typeUpper === 'DAILY_CHECKIN' ||
+        refLower.startsWith('checkin') ||
+        descLower.includes('check-in');
     } else if (activeCategory === 'CLAIM') {
-      matchesCategory = typeUpper === 'EARNING_CLAIM';
+      matchesCategory =
+        typeUpper === 'EARNING_CLAIM' ||
+        typeUpper === 'DAILY_CHECKIN' ||
+        typeUpper === 'GIFT_CODE_REWARD' ||
+        typeUpper === 'GIFT_CODE' ||
+        typeUpper === 'MISSION_BONUS' ||
+        typeUpper === 'SIGNUP_BONUS' ||
+        refLower.startsWith('checkin') ||
+        refLower.startsWith('gift') ||
+        descLower.includes('check-in') ||
+        descLower.includes('gift code');
     } else if (activeCategory === 'WITHDRAWAL') {
       matchesCategory = typeUpper === 'WITHDRAWAL' || typeUpper === 'WITHDRAWAL_REVERSAL';
     } else if (activeCategory === 'REFERRAL') {
-      matchesCategory = typeUpper === 'REFERRAL_BONUS' || typeUpper === 'TEAM_BONUS' || typeUpper === 'PRO_INSTANT_BONUS';
+      matchesCategory =
+        typeUpper === 'REFERRAL_BONUS' ||
+        typeUpper === 'TEAM_BONUS' ||
+        typeUpper === 'PRO_INSTANT_BONUS' ||
+        descLower.includes('referral') ||
+        descLower.includes('team commission');
     } else if (activeCategory === 'OTHER') {
-      matchesCategory = typeUpper === 'REFUND' || typeUpper === 'ADMIN_ADJUSTMENT';
+      matchesCategory =
+        typeUpper === 'REFUND' ||
+        typeUpper === 'ADMIN_ADJUSTMENT' ||
+        typeUpper === 'ADMIN_CREDIT' ||
+        typeUpper === 'ADMIN_DEDUCT' ||
+        typeUpper === 'GIFT_CODE_REWARD' ||
+        typeUpper === 'GIFT_CODE' ||
+        typeUpper === 'SIGNUP_BONUS' ||
+        typeUpper === 'MISSION_BONUS';
     }
 
     if (!matchesCategory) return false;
@@ -163,6 +196,27 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
           icon: <Coins className="w-5 h-5 text-amber-600" />,
           bg: 'bg-amber-50 border-amber-200',
         };
+      case 'DAILY_CHECKIN':
+        return {
+          icon: <CalendarCheck className="w-5 h-5 text-amber-600" />,
+          bg: 'bg-amber-50 border-amber-200',
+        };
+      case 'GIFT_CODE_REWARD':
+      case 'GIFT_CODE':
+        return {
+          icon: <Gift className="w-5 h-5 text-purple-600" />,
+          bg: 'bg-purple-50 border-purple-200',
+        };
+      case 'SIGNUP_BONUS':
+        return {
+          icon: <Sparkles className="w-5 h-5 text-yellow-600" />,
+          bg: 'bg-yellow-50 border-yellow-200',
+        };
+      case 'MISSION_BONUS':
+        return {
+          icon: <Award className="w-5 h-5 text-indigo-600" />,
+          bg: 'bg-indigo-50 border-indigo-200',
+        };
       case 'REFERRAL_BONUS':
       case 'TEAM_BONUS':
         return {
@@ -180,6 +234,16 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
           icon: <RotateCcw className="w-5 h-5 text-teal-600" />,
           bg: 'bg-teal-50 border-teal-200',
         };
+      case 'ADMIN_CREDIT':
+        return {
+          icon: <ArrowDownLeft className="w-5 h-5 text-emerald-600" />,
+          bg: 'bg-emerald-50 border-emerald-200',
+        };
+      case 'ADMIN_DEDUCT':
+        return {
+          icon: <ArrowUpRight className="w-5 h-5 text-rose-600" />,
+          bg: 'bg-rose-50 border-rose-200',
+        };
       case 'ADMIN_ADJUSTMENT':
       default:
         return {
@@ -190,37 +254,98 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
   };
 
   const getTransactionTitle = (tx: WalletTransaction) => {
-    if (tx.planName) return tx.planName;
-    switch (tx.type) {
-      case 'RECHARGE':
-        return 'Wallet Recharge';
-      case 'PLAN_PURCHASE':
-        return 'Power Cabinet Purchase';
-      case 'PRO_PLAN_PURCHASE':
-        return 'PRO Cabinet Purchase';
-      case 'PRO_INSTANT_BONUS':
-        return 'PRO Instant Bonus Cashback';
-      case 'EARNING_CLAIM':
-        return 'Device Yield Claim';
-      case 'HOURLY_EARNING':
-        return 'Hourly Device Earning';
-      case 'PRO_EARNING':
-        return 'PRO Daily Earning';
-      case 'REFERRAL_BONUS':
-        return 'Referral Commission';
-      case 'TEAM_BONUS':
-        return 'Team Base Commission';
-      case 'WITHDRAWAL':
-        return 'Withdrawal Request';
-      case 'WITHDRAWAL_REVERSAL':
-        return 'Withdrawal Refund / Reversal';
-      case 'REFUND':
-        return 'Plan Refund';
-      case 'ADMIN_ADJUSTMENT':
-        return 'Admin Balance Adjustment';
-      default:
-        return tx.description || 'Wallet Transaction';
+    const desc = tx.description || '';
+    const descLower = desc.toLowerCase();
+    const typeUpper = (tx.type || '').toUpperCase();
+    const refLower = (tx.referenceId || '').toLowerCase();
+
+    // 1. Daily Check-in
+    if (typeUpper === 'DAILY_CHECKIN' || refLower.startsWith('checkin') || descLower.includes('check-in') || descLower.includes('daily checkin')) {
+      return 'Daily Check-in Bonus';
     }
+
+    // 2. Gift Code Claim
+    if (typeUpper === 'GIFT_CODE_REWARD' || typeUpper === 'GIFT_CODE' || refLower.startsWith('gift') || descLower.includes('gift code')) {
+      if (desc.startsWith('Gift Code Bonus — ')) return desc;
+      const codeMatch = desc.match(/Gift [Cc]ode (?:reward|bonus)?\s*(?:—|-)?\s*([A-Za-z0-9_-]+)/i);
+      const code = codeMatch ? codeMatch[1] : (tx.referenceId ? tx.referenceId.replace(/^GIFT-/i, '') : '');
+      return code ? `Gift Code Bonus — ${code}` : 'Gift Code Bonus';
+    }
+
+    // 3. Signup / Welcome Bonus
+    if (typeUpper === 'SIGNUP_BONUS' || refLower.startsWith('signup') || descLower.includes('signup bonus') || descLower.includes('welcome signup')) {
+      return 'Welcome Signup Bonus';
+    }
+
+    // 4. Mission / Task Reward
+    if (typeUpper === 'MISSION_BONUS' || refLower.startsWith('tx_msn_') || descLower.includes('mission completed') || descLower.includes('task bonus')) {
+      return 'Task / Mission Bonus';
+    }
+
+    // 5. Referral Commission (Level 1, 2, 3)
+    if (typeUpper === 'REFERRAL_BONUS' || typeUpper === 'TEAM_BONUS' || typeUpper === 'PRO_INSTANT_BONUS' || descLower.includes('referral') || descLower.includes('team commission')) {
+      if (descLower.includes('level 1') || descLower.includes('tier 1') || refLower.includes('ref-l1') || refLower.includes('t1')) {
+        return 'Referral Commission (Level 1)';
+      }
+      if (descLower.includes('level 2') || descLower.includes('tier 2') || refLower.includes('ref-l2') || refLower.includes('t2')) {
+        return 'Referral Commission (Level 2)';
+      }
+      if (descLower.includes('level 3') || descLower.includes('tier 3') || refLower.includes('ref-l3') || refLower.includes('t3')) {
+        return 'Referral Commission (Level 3)';
+      }
+      if (typeUpper === 'PRO_INSTANT_BONUS' || descLower.includes('pro instant')) {
+        return 'PRO Instant Bonus Cashback';
+      }
+      return 'Referral Commission';
+    }
+
+    // 6. Plan Purchase
+    if (typeUpper === 'PRO_PLAN_PURCHASE') {
+      return tx.planName ? `PRO Plan Purchase — ${tx.planName}` : (desc.includes('Cabinet') ? `PRO Plan Purchase — ${desc.replace(/Hardware Activation:\s*/i, '').split('(')[0].trim()}` : 'PRO Plan Purchase');
+    }
+    if (typeUpper === 'PLAN_PURCHASE') {
+      return tx.planName ? `Plan Purchase — ${tx.planName}` : (desc.includes('Cabinet') ? `Plan Purchase — ${desc.replace(/Hardware Activation:\s*/i, '').split('(')[0].trim()}` : 'Plan Purchase');
+    }
+
+    // 7. Hourly Earnings & Pro Plan Daily Return
+    if (typeUpper === 'PRO_EARNING') {
+      return 'PRO Plan Daily Return';
+    }
+    if (typeUpper === 'HOURLY_EARNING' || typeUpper === 'EARNING_CLAIM' || typeUpper === 'EARNING') {
+      return 'Hourly Yield Settlement';
+    }
+
+    // 8. Recharges
+    if (typeUpper === 'RECHARGE') {
+      const isManual = descLower.includes('manual') || descLower.includes('usdt') || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('manual'));
+      if (isManual) {
+        if (tx.status === 'Completed') return 'Recharge Approved';
+        if (tx.status === 'Failed') return 'Recharge Rejected';
+        return 'Recharge Request (Pending Approval)';
+      }
+      return 'Recharge (Online Payment)';
+    }
+
+    // 9. Withdrawals & Reversals
+    if (typeUpper === 'WITHDRAWAL_REVERSAL') {
+      return 'Withdrawal Refund / Reversal';
+    }
+    if (typeUpper === 'WITHDRAWAL') {
+      return 'Withdrawal Request';
+    }
+
+    // 10. Admin Adjustments
+    if (typeUpper === 'ADMIN_CREDIT' || (typeUpper === 'ADMIN_ADJUSTMENT' && tx.amount > 0)) {
+      return 'Admin Balance Credit';
+    }
+    if (typeUpper === 'ADMIN_DEDUCT' || (typeUpper === 'ADMIN_ADJUSTMENT' && tx.amount < 0)) {
+      return 'Admin Balance Deduction';
+    }
+    if (typeUpper === 'REFUND') {
+      return 'Plan Refund';
+    }
+
+    return tx.description || 'Wallet Transaction';
   };
 
   const formatDateTime = (iso: string) => {
@@ -400,7 +525,16 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
               const { icon, bg } = getTransactionIcon(tx.type);
               const isCredit = tx.amount > 0;
               const formattedAmt = `${isCredit ? '+' : ''}₹${Math.abs(tx.amount).toFixed(2)}`;
-              const isTopupWallet = tx.balanceType === 'TOPUP_WALLET' || tx.balanceType === 'RECHARGE_BALANCE' || tx.type === 'RECHARGE' || tx.type === 'PLAN_PURCHASE' || tx.type === 'PRO_PLAN_PURCHASE';
+              const isTopupWallet =
+                tx.walletType === 'TOPUP' ||
+                tx.balanceType === 'TOPUP_WALLET' ||
+                tx.balanceType === 'RECHARGE_BALANCE' ||
+                tx.balanceType === 'RECHARGE_WALLET' ||
+                tx.type === 'RECHARGE' ||
+                tx.type === 'PLAN_PURCHASE' ||
+                tx.type === 'PRO_PLAN_PURCHASE' ||
+                (tx.description && tx.description.toLowerCase().includes('gift code')) ||
+                (tx.referenceId && tx.referenceId.toUpperCase().startsWith('GIFT-'));
 
               return (
                 <motion.div
@@ -574,18 +708,27 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
                   </div>
                 )}
 
-                {selectedTx.balanceType && (
-                  <div className="flex justify-between items-center p-2 bg-gray-50 rounded-xl">
-                    <span className="text-gray-500">Wallet Target</span>
-                    <span className="font-bold text-xs text-gray-800">
-                      {selectedTx.balanceType === 'TOPUP_WALLET' || selectedTx.balanceType === 'RECHARGE_BALANCE'
-                        ? 'Topup Wallet (Plan Purchase)'
-                        : selectedTx.balanceType === 'WITHDRAW_WALLET' || selectedTx.balanceType === 'DEVICE_EARNING_BALANCE'
-                        ? 'Withdraw Wallet (Withdrawable)'
-                        : selectedTx.balanceType}
-                    </span>
-                  </div>
-                )}
+                {(() => {
+                  const isModalTopup =
+                    selectedTx.walletType === 'TOPUP' ||
+                    selectedTx.balanceType === 'TOPUP_WALLET' ||
+                    selectedTx.balanceType === 'RECHARGE_BALANCE' ||
+                    selectedTx.balanceType === 'RECHARGE_WALLET' ||
+                    selectedTx.type === 'RECHARGE' ||
+                    selectedTx.type === 'PLAN_PURCHASE' ||
+                    selectedTx.type === 'PRO_PLAN_PURCHASE' ||
+                    (selectedTx.description && selectedTx.description.toLowerCase().includes('gift code')) ||
+                    (selectedTx.referenceId && selectedTx.referenceId.toUpperCase().startsWith('GIFT-'));
+
+                  return (
+                    <div className="flex justify-between items-center p-2 bg-gray-50 rounded-xl">
+                      <span className="text-gray-500">Wallet Target</span>
+                      <span className={`font-bold text-xs ${isModalTopup ? 'text-amber-700' : 'text-emerald-700'}`}>
+                        {isModalTopup ? 'Topup Wallet (Recharge/Plan Lease)' : 'Withdraw Wallet (Withdrawable)'}
+                      </span>
+                    </div>
+                  );
+                })()}
 
                 {selectedTx.balanceBefore !== undefined && selectedTx.balanceAfter !== undefined && (
                   <div className="flex justify-between items-center p-2 bg-gray-50 rounded-xl">

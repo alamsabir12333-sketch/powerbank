@@ -41,6 +41,8 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
   const [editingPlan, setEditingPlan] = useState<Partial<ProductItem> | null>(null);
   const [isNewPlan, setIsNewPlan] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [planToDelete, setPlanToDelete] = useState<ProductItem | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const loadPlans = async () => {
     setLoading(true);
@@ -114,15 +116,19 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
     });
   };
 
-  const handleDelete = async (planId: string) => {
-    if (!window.confirm('Are you sure you want to archive this plan?')) return;
+  const confirmDeletePlan = async () => {
+    if (!planToDelete) return;
+    setDeleting(true);
     try {
-      await deleteAdminPlan(planId);
-      onShowToast('Plan archived successfully.');
+      await deleteAdminPlan(planToDelete.id);
+      onShowToast(`Plan "${planToDelete.name}" archived successfully.`);
+      setPlanToDelete(null);
       loadPlans();
       onRefreshGlobalStats();
     } catch (e: any) {
       onShowToast(e.message || 'Error deleting plan');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -149,6 +155,7 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
   };
 
   const filteredPlans = plans.filter((p) => {
+    if (p.status === 'archived') return false;
     if (activeCategory === 'ALL') return true;
     let cat = (p.category || '').toUpperCase();
     if (cat === 'STANDARD' || cat === 'HOURLY' || !cat) cat = 'VIP';
@@ -327,7 +334,7 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
                   </button>
 
                   <button
-                    onClick={() => handleDelete(plan.id)}
+                    onClick={() => setPlanToDelete(plan)}
                     title="Archive Plan"
                     className="p-2 rounded-xl bg-red-950/40 border border-red-800/50 hover:bg-red-900/50 text-red-400 transition-colors cursor-pointer"
                   >
@@ -555,6 +562,46 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* ARCHIVE / DELETE CONFIRMATION MODAL */}
+      {planToDelete && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#18181B] border border-red-500/30 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-red-950/60 border border-red-800/60 flex items-center justify-center text-red-400">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Archive Plan</h3>
+                <p className="text-xs text-gray-400">Hide plan from active store</p>
+              </div>
+            </div>
+
+            <p className="text-sm text-gray-300 leading-relaxed">
+              Are you sure you want to archive <span className="font-semibold text-white">"{planToDelete.name}"</span>?
+              This will deactivate the plan and hide it from the user store. Active user investments will remain safe and continue generating yield.
+            </p>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setPlanToDelete(null)}
+                className="flex-1 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 font-semibold transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={confirmDeletePlan}
+                className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-lg shadow-red-900/30"
+              >
+                {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Confirm Archive'}
+              </button>
+            </div>
           </div>
         </div>
       )}

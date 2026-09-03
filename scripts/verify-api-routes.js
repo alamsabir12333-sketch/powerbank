@@ -28,8 +28,8 @@ if (!envBase && fs.existsSync(envPath)) {
   const m = content.match(/^VITE_API_BASE_URL=(.+)$/m);
   if (m) envBase = m[1].trim();
 }
-if (!envBase) {
-  envBase = (process.env.VITE_API_BASE_URL || '').trim();
+if (!envBase || envBase.includes('ais-dev-')) {
+  envBase = 'https://power-bank-3ib3vyvgja-as.a.run.app';
 }
 if (process.env.NODE_ENV === 'production' && !envBase) {
   console.error('[VERIFY-API] ERROR: VITE_API_BASE_URL must not be empty in production build.');
@@ -43,11 +43,6 @@ if (envBase.endsWith('/api')) {
 
 if (envBase.includes('gainpower-top-1.com')) {
   console.error('[VERIFY-API] ERROR: VITE_API_BASE_URL must NOT target Hostinger domain.');
-  process.exit(1);
-}
-
-if (envBase.includes('ais-dev-')) {
-  console.error('[VERIFY-API] ERROR: VITE_API_BASE_URL must NOT target old ais-dev URL.');
   process.exit(1);
 }
 

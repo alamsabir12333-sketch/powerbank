@@ -330,7 +330,7 @@ export const AdminReferralsTab: React.FC<AdminReferralsTabProps> = ({
                       type="number"
                       min={1}
                       max={30}
-                      value={settings.streakReward?.consecutiveDays || 3}
+                      value={settings.streakReward?.consecutiveDays ?? 2}
                       onChange={(e) =>
                         setSettings({
                           ...settings,

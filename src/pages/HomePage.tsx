@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from '../components/Header';
 import { BannerCarousel } from '../components/BannerCarousel';
 import { AnnouncementBar } from '../components/AnnouncementBar';
@@ -11,6 +11,8 @@ import { PlaceholderModal } from '../components/PlaceholderModal';
 import { CustomerSupportModal } from '../components/CustomerSupportModal';
 import { DoubleHistoryModal } from '../components/DoubleHistoryModal';
 import { WebsitePopupModal } from '../components/WebsitePopupModal';
+import { HomeSkeleton } from '../components/HomeSkeleton';
+import { useAuth } from '../context/AuthContext';
 import { homeBanners } from '../data/mockData';
 import {
   TabType,
@@ -53,6 +55,7 @@ interface HomePageProps {
   purchases: PurchaseItem[];
   onOpenRecharge: () => void;
   onOpenMyDevice?: () => void;
+  isRefreshing?: boolean;
 }
 
 export const HomePage: React.FC<HomePageProps> = ({
@@ -63,7 +66,10 @@ export const HomePage: React.FC<HomePageProps> = ({
   purchases,
   onOpenRecharge,
   onOpenMyDevice,
+  isRefreshing = false,
 }) => {
+  const { authLoading } = useAuth();
+
   const [modalState, setModalState] = useState<{
     isOpen: boolean;
     title: string;
@@ -76,6 +82,11 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [isDoubleHistoryOpen, setIsDoubleHistoryOpen] = useState(false);
+
+  // Home Loading States
+  const [isHomeLoading, setIsHomeLoading] = useState<boolean>(true);
+  const [hasTimedOut, setHasTimedOut] = useState<boolean>(false);
+  const initialLoadedRef = useRef<boolean>(false);
 
   // Dynamic Banners
   const [activeBanners, setActiveBanners] = useState<BannerItem[]>(homeBanners);
@@ -110,6 +121,14 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   const userId = userProfile?.userId || userProfile?.id || '';
 
+  // Safety fallback timeout: prevent stuck skeleton if network stalls (4.5s max)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setHasTimedOut(true);
+    }, 4500);
+    return () => clearTimeout(timer);
+  }, []);
+
   // Load Active Banners from Supabase
   const loadBanners = useCallback(async () => {
     try {
@@ -142,30 +161,36 @@ export const HomePage: React.FC<HomePageProps> = ({
   const loadNews = useCallback(async () => {
     try {
       const items = await fetchPlatformNews();
-      setNewsList(items);
+      if (items && Array.isArray(items)) {
+        setNewsList(items);
+      }
     } catch (e) {
       console.warn('Error loading platform news:', e);
     }
   }, []);
 
   // Load Real Financial & Duration Summary from Supabase
-  const loadHomeSummary = useCallback(async () => {
-    if (!userId) return;
+  const loadHomeSummary = useCallback(async (targetUserId?: string) => {
+    const id = targetUserId || userId;
+    if (!id) return;
     try {
-      const summary = await fetchUserHomeSummary(userId);
-      setHomeSummary(summary);
+      const summary = await fetchUserHomeSummary(id);
+      if (summary) {
+        setHomeSummary(summary);
+      }
     } catch (e) {
       console.warn('Error loading user home summary:', e);
     }
   }, [userId]);
 
   // Fetch unread count & eligible home popup
-  const refreshNotifications = useCallback(async () => {
-    if (!userId) return;
+  const refreshNotifications = useCallback(async (targetUserId?: string) => {
+    const id = targetUserId || userId;
+    if (!id) return;
     try {
       const [count, eligible] = await Promise.all([
-        fetchUnreadNotificationCount(userId),
-        fetchEligibleHomeNotification(userId),
+        fetchUnreadNotificationCount(id),
+        fetchEligibleHomeNotification(id),
       ]);
       setUnreadCount(count);
       setHomePopupNotif(eligible);
@@ -174,22 +199,48 @@ export const HomePage: React.FC<HomePageProps> = ({
     }
   }, [userId]);
 
+  // Comprehensive Home Data Fetcher
+  const loadAllHomeData = useCallback(
+    async (targetUserId?: string) => {
+      try {
+        const tasks: Promise<any>[] = [
+          loadBanners(),
+          loadWebsitePopup(),
+          loadNews(),
+        ];
+        const activeId = targetUserId !== undefined ? targetUserId : userId;
+        if (activeId) {
+          tasks.push(loadHomeSummary(activeId));
+          tasks.push(refreshNotifications(activeId));
+        }
+        await Promise.allSettled(tasks);
+      } catch (err) {
+        console.warn('[HOME] Error loading home data:', err);
+      } finally {
+        setIsHomeLoading(false);
+        initialLoadedRef.current = true;
+      }
+    },
+    [loadBanners, loadWebsitePopup, loadNews, loadHomeSummary, refreshNotifications, userId]
+  );
+
+  // Initial load gate: triggered when auth status is known
   useEffect(() => {
-    loadBanners();
-    loadWebsitePopup();
-    loadNews();
-    if (userId) {
-      loadHomeSummary();
-      refreshNotifications();
-
-      const interval = setInterval(() => {
-        loadHomeSummary();
-        refreshNotifications();
-      }, 15000); // 15s periodic refresh
-
-      return () => clearInterval(interval);
+    if (!authLoading) {
+      loadAllHomeData(userId);
     }
-  }, [loadBanners, loadWebsitePopup, loadNews, loadHomeSummary, refreshNotifications, userId, purchases, wallet, userProfile]);
+  }, [authLoading, userId, loadAllHomeData]);
+
+  // 15s periodic background refresh without re-flashing the skeleton
+  useEffect(() => {
+    if (!userId) return;
+    const interval = setInterval(() => {
+      loadHomeSummary(userId);
+      refreshNotifications(userId);
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [loadHomeSummary, refreshNotifications, userId]);
 
   // Handle Home Popup Dismissal (X button)
   const handleDismissHomePopup = async () => {
@@ -234,69 +285,80 @@ export const HomePage: React.FC<HomePageProps> = ({
   const activePurchases = purchases.filter((p) => p.status === 'ACTIVE');
   const undrawnDeviceYield = activePurchases.reduce((acc, p) => acc + Number(p.totalEarned || 0), 0);
 
+  // Master loading condition: shows skeleton while essential Home data is being fetched
+  const showSkeleton = !hasTimedOut && (isHomeLoading || authLoading || isRefreshing);
+
   return (
     <div className="w-full min-h-screen bg-[#121212] text-white flex flex-col pb-28">
-      {/* 1. Header with Notification Bell */}
+      {/* 1. Header with Notification Bell & Dynamic Brand Logo Skeleton */}
       <Header
         isDark={true}
         title="GAIN POWER"
         unreadCount={unreadCount}
+        isLoading={showSkeleton}
         onOpenNotifications={() => onNavigateTab('notifications')}
       />
 
-      {/* 2. Top Promotional Banner Carousel */}
-      <BannerCarousel banners={activeBanners} onBannerClick={handleBannerClick} />
+      {/* Main Home Content: Polished skeleton while loading, real UI once loaded */}
+      {showSkeleton ? (
+        <HomeSkeleton />
+      ) : (
+        <div className="w-full flex flex-col transition-opacity duration-200 animate-in fade-in">
+          {/* 2. Top Promotional Banner Carousel */}
+          <BannerCarousel banners={activeBanners} onBannerClick={handleBannerClick} />
 
-      {/* 3. Dark Announcement Bar */}
-      <AnnouncementBar
-        onClick={() => {
-          onNavigateTab('notifications');
-        }}
-      />
+          {/* 3. Dark Announcement Bar */}
+          <AnnouncementBar
+            onClick={() => {
+              onNavigateTab('notifications');
+            }}
+          />
 
-      {/* 4. Quick Cards: My Device (Left) + Recharge & Revenue course (Right) */}
-      <HomeQuickCards
-        undrawnAmount={undrawnDeviceYield}
-        onMyDeviceClick={() => {
-          if (onOpenMyDevice) {
-            onOpenMyDevice();
-          } else if (activePurchases.length === 0) {
-            showPlaceholder(
-              'My Devices',
-              'You currently have 0 active devices. Visit the Purchase Hall to start earning daily yield.'
-            );
-          } else {
-            onNavigateTab('fortune');
-          }
-        }}
-        onRechargeClick={onOpenRecharge}
-        onRevenueCourseClick={() =>
-          showPlaceholder(
-            'Revenue Course',
-            'Tutorial: GAIN POWER sharing revenue is calculated on an hourly basis and settled automatically into your balance.'
-          )
-        }
-      />
+          {/* 4. Quick Cards: My Device (Left) + Recharge & Revenue course (Right) */}
+          <HomeQuickCards
+            undrawnAmount={undrawnDeviceYield}
+            onMyDeviceClick={() => {
+              if (onOpenMyDevice) {
+                onOpenMyDevice();
+              } else if (activePurchases.length === 0) {
+                showPlaceholder(
+                  'My Devices',
+                  'You currently have 0 active devices. Visit the Purchase Hall to start earning daily yield.'
+                );
+              } else {
+                onNavigateTab('fortune');
+              }
+            }}
+            onRechargeClick={onOpenRecharge}
+            onRevenueCourseClick={() =>
+              showPlaceholder(
+                'Revenue Course',
+                'Tutorial: GAIN POWER sharing revenue is calculated on an hourly basis and settled automatically into your balance.'
+              )
+            }
+          />
 
-      {/* 5. Duration of Power Bank Double Earnings Section (Real Supabase Data) */}
-      <DoubleEarningsCard
-        remainingHours={homeSummary.remainingHours}
-        totalAssets={homeSummary.totalAssets}
-        todayEarnings={homeSummary.todayEarnings}
-        promotionEarnings={homeSummary.promotionEarnings}
-        onDoubleHistoryClick={() => setIsDoubleHistoryOpen(true)}
-        onStatClick={() => onNavigateTab('fortune')}
-      />
+          {/* 5. Duration of Power Bank Double Earnings Section (Real Supabase Data) */}
+          <DoubleEarningsCard
+            remainingHours={homeSummary.remainingHours}
+            totalAssets={homeSummary.totalAssets}
+            todayEarnings={homeSummary.todayEarnings}
+            promotionEarnings={homeSummary.promotionEarnings}
+            onDoubleHistoryClick={() => setIsDoubleHistoryOpen(true)}
+            onStatClick={() => onNavigateTab('fortune')}
+          />
 
-      {/* 6. Platform News Section (Restored & Connected to Supabase) */}
-      <PlatformNews
-        newsList={newsList}
-        onPurchaseClick={() => onNavigateTab('purchase')}
-        onNewsClick={(newsItem) => {
-          setSelectedNews(newsItem);
-          setIsNewsModalOpen(true);
-        }}
-      />
+          {/* 6. Platform News Section (Connected to Supabase) */}
+          <PlatformNews
+            newsList={newsList}
+            onPurchaseClick={() => onNavigateTab('purchase')}
+            onNewsClick={(newsItem) => {
+              setSelectedNews(newsItem);
+              setIsNewsModalOpen(true);
+            }}
+          />
+        </div>
+      )}
 
       {/* Floating Contact Support Button */}
       <FloatingContact isDark={true} onClick={() => setIsSupportOpen(true)} />
@@ -308,8 +370,8 @@ export const HomePage: React.FC<HomePageProps> = ({
         onClose={() => setIsNewsModalOpen(false)}
       />
 
-      {/* Home Popup Notification Modal / Card (Shows once per user until dismissed) */}
-      {homePopupNotif && (
+      {/* Home Popup Notification Modal / Card (Shows once per user until dismissed, only after loading) */}
+      {!showSkeleton && homePopupNotif && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-200">
           <div
             className="bg-[#1b1b1b] border border-[#FF6000]/40 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200"
@@ -388,16 +450,18 @@ export const HomePage: React.FC<HomePageProps> = ({
         </div>
       )}
 
-      {/* Website Popup Modal (4 Links + Image) */}
-      <WebsitePopupModal
-        isOpen={isWebsitePopupOpen}
-        config={websitePopupConfig}
-        onClose={() => {
-          setIsWebsitePopupOpen(false);
-          sessionStorage.setItem('gp_popup_dismissed', 'true');
-        }}
-        onNavigateTab={onNavigateTab}
-      />
+      {/* Website Popup Modal (4 Links + Image, only after loading) */}
+      {!showSkeleton && (
+        <WebsitePopupModal
+          isOpen={isWebsitePopupOpen}
+          config={websitePopupConfig}
+          onClose={() => {
+            setIsWebsitePopupOpen(false);
+            sessionStorage.setItem('gp_popup_dismissed', 'true');
+          }}
+          onNavigateTab={onNavigateTab}
+        />
+      )}
 
       {/* Global Modals */}
       <PlaceholderModal

@@ -72,6 +72,9 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
       if (settings?.minWithdrawal) {
         setMinWithdrawal(settings.minWithdrawal);
       }
+      if (typeof settings?.withdrawalFeePercent === 'number') {
+        setWithdrawalFeePercent(settings.withdrawalFeePercent);
+      }
     } catch (err: any) {
       console.error('Failed to load withdrawal details:', err);
     } finally {
@@ -372,6 +375,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
             <p>1. Withdrawals are processed directly to your bound bank account (IMPS / NEFT transfer).</p>
             <p>2. Review and transfer takes 24–48 hours on standard business banking days.</p>
             <p>3. Ensure bank account details and IFSC are accurate to avoid payout delays.</p>
+            <p>4. Standard processing fee of {withdrawalFeePercent}% applies on all withdrawals.</p>
           </div>
         </div>
 

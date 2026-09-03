@@ -40,7 +40,7 @@ app.use((req, res, next) => {
   }
 
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Admin-Token');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Admin-Token, x-user-id, X-User-Id');
 
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
@@ -349,6 +349,7 @@ app.post('/api/auth/register', async (req, res) => {
           referred_by: referrerDisplayCode,
           role: 'user',
           status: 'active',
+          vip_level: 0, // Rule 1: New Member VIP LEVEL = VIP 0 as database source of truth
           created_at: now,
           updated_at: now,
         })
@@ -376,6 +377,7 @@ app.post('/api/auth/register', async (req, res) => {
           username: cleanUsername,
           whatsapp_no: cleanPhone,
           referred_by: referrerDisplayCode,
+          vip_level: profExist.vip_level !== undefined && profExist.vip_level !== null ? profExist.vip_level : 0,
           updated_at: now,
         })
         .eq('user_id', createdUserId)
@@ -533,6 +535,13 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(500).json({ success: false, error: 'Database onboarding verification failed: referral record missing.' });
     }
 
+    // 12. Trigger Referral Rule One: Registration + Login Referral Reward
+    if (supabase) {
+      processRegistrationReferralRewardServer(supabase, createdUserId).catch((e) =>
+        console.warn('[SERVER AUTH] Registration referral reward error:', e)
+      );
+    }
+
     return res.json({
       success: true,
       user: authUserObj,
@@ -622,6 +631,13 @@ app.post('/api/auth/login', async (req, res) => {
     const uid = authUser.id;
     const { data: prof } = await supabase.from('profiles').select('*').eq('user_id', uid).maybeSingle();
     const { data: wal } = await supabase.from('wallets').select('*').eq('user_id', uid).maybeSingle();
+
+    // Trigger Referral Rule One upon successful login (if invited friend registers and logs in)
+    if (supabase && uid) {
+      processRegistrationReferralRewardServer(supabase, uid).catch((e) =>
+        console.warn('[SERVER AUTH] Login referral reward error:', e)
+      );
+    }
 
     return res.json({
       success: true,
@@ -719,7 +735,7 @@ app.post('/api/auth/onboarding', async (req, res) => {
  */
 function generateSortedSignature(params: Record<string, string>, secretKey: string): string {
   const keys = Object.keys(params)
-    .filter((k) => k !== 'Signature' && params[k] !== undefined && params[k] !== null && params[k] !== '')
+    .filter((k) => k.toLowerCase() !== 'signature' && params[k] !== undefined && params[k] !== null && params[k] !== '')
     .sort();
   const rawString = keys.map((k) => `${k}=${params[k]}`).join('&') + `&${secretKey}`;
   return crypto.createHash('md5').update(rawString).digest('hex').toUpperCase();
@@ -1049,7 +1065,11 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
       const commission = +(depositAmount * (tierConfig.percentage / 100)).toFixed(2);
       if (commission <= 0) continue;
 
-      const refId = `TOPUP-REF-L${target.tierNum}-${traceno}`;
+      const isPurchase = String(traceno).startsWith('PUR-');
+      const refId = isPurchase ? `PLAN-REF-L${target.tierNum}-${traceno}` : `TOPUP-REF-L${target.tierNum}-${traceno}`;
+      const commDesc = isPurchase
+        ? `Level ${target.tierNum} Team Commission (${tierConfig.percentage}%) from Plan Purchase`
+        : `Level ${target.tierNum} Team Commission (${tierConfig.percentage}%) from Topup #${traceno}`;
 
       // Idempotency: check both wallet_ledger and wallet_transactions
       const { data: existingLedger } = await supabaseClient
@@ -1074,17 +1094,25 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
         .eq('user_id', target.referrerId)
         .maybeSingle();
 
-      const curWithdraw = Number(refWallet?.withdraw_balance || 0);
+      const curWithdraw = Number(refWallet?.withdraw_balance !== undefined && refWallet?.withdraw_balance !== null ? refWallet.withdraw_balance : (refWallet?.earned_balance || 0));
       const curRecharge = Number(refWallet?.recharge_balance || 0);
+      const curTotalEarned = Number(refWallet?.total_earned || 0);
+      const curTeamComm = Number(refWallet?.team_commission || 0);
+
       const newWithdraw = +(curWithdraw + commission).toFixed(2);
       const newAvail = +(curRecharge + newWithdraw).toFixed(2);
+      const newTotalEarned = +(curTotalEarned + commission).toFixed(2);
+      const newTeamComm = +(curTeamComm + commission).toFixed(2);
 
       if (refWallet) {
         await supabaseClient
           .from('wallets')
           .update({
             withdraw_balance: newWithdraw,
+            earned_balance: newWithdraw,
             available_balance: newAvail,
+            total_earned: newTotalEarned,
+            team_commission: newTeamComm,
             updated_at: nowIso,
           })
           .eq('user_id', target.referrerId);
@@ -1093,10 +1121,14 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
           user_id: target.referrerId,
           recharge_balance: 0,
           withdraw_balance: newWithdraw,
+          earned_balance: newWithdraw,
           available_balance: newWithdraw,
           pending_balance: 0,
-          total_earned: commission,
+          total_earned: newTotalEarned,
+          team_commission: newTeamComm,
           total_withdrawn: 0,
+          created_at: nowIso,
+          updated_at: nowIso,
         });
       }
 
@@ -1107,11 +1139,29 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
         balance_before: curWithdraw,
         balance_after: newWithdraw,
         reference_id: refId,
-        description: `Level ${target.tierNum} Team Commission (${tierConfig.percentage}%) from Topup #${traceno}`,
+        description: commDesc,
         wallet_type: 'WITHDRAW',
         status: 'Completed',
         created_at: nowIso,
       });
+
+      try {
+        await supabaseClient.from('wallet_ledger').insert({
+          user_id: target.referrerId,
+          wallet_type: 'WITHDRAW',
+          transaction_type: `REFERRAL_L${target.tierNum}`,
+          amount: commission,
+          direction: 'CREDIT',
+          reference_type: 'REFERRAL_COMMISSION',
+          reference_id: refId,
+          balance_before: curWithdraw,
+          balance_after: newWithdraw,
+          description: commDesc,
+          created_at: nowIso,
+        });
+      } catch (ledErr: any) {
+        console.warn('[REFERRAL COMMISSION LEDGER NOTICE]', ledErr.message);
+      }
 
       await supabaseClient.from('notifications').insert({
         user_id: target.referrerId,
@@ -1138,6 +1188,380 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
   }
 }
 
+// ==============================================================================
+// REFERRAL REWARD ENGINE (RULE 1 & RULE 2)
+// ==============================================================================
+
+/**
+ * RULE ONE: Registration + Login Referral Reward
+ * Triggered when invited friend registers & logs in.
+ * Reward credited to inviter's Withdraw Wallet. Exactly once per invited friend.
+ */
+async function processRegistrationReferralRewardServer(supabaseClient: any, refereeUserId: string) {
+  if (!supabaseClient || !refereeUserId) return { success: false, reason: 'invalid_args' };
+
+  try {
+    // 1. Fetch Referral Settings
+    const { data: setRow } = await supabaseClient
+      .from('admin_settings')
+      .select('value')
+      .eq('id', 'referral_settings')
+      .maybeSingle();
+
+    const settings = setRow?.value || {};
+    const isSysEnabled = settings.isReferralSystemEnabled !== false;
+    const regConfig = settings.registrationReward || {};
+    const isRegEnabled = regConfig.enabled !== false;
+    const rewardAmount = Number(regConfig.rewardAmount ?? 5);
+
+    if (!isSysEnabled || !isRegEnabled || rewardAmount <= 0) {
+      return { success: false, reason: 'registration_reward_disabled' };
+    }
+
+    // 2. Find Referrer
+    const { data: refRow } = await supabaseClient
+      .from('referrals')
+      .select('*')
+      .eq('referee_id', refereeUserId)
+      .maybeSingle();
+
+    if (!refRow || !refRow.referrer_id || refRow.referrer_id === refereeUserId) {
+      return { success: false, reason: 'no_referrer' };
+    }
+
+    const referrerId = refRow.referrer_id;
+
+    // 3. Idempotency Check - Exactly once per qualifying invited friend
+    const regRefId = `REG-${refereeUserId}`;
+    const { data: existingTx } = await supabaseClient
+      .from('wallet_transactions')
+      .select('id')
+      .eq('reference_id', regRefId)
+      .maybeSingle();
+
+    if (existingTx) {
+      return { success: false, reason: 'already_rewarded' };
+    }
+
+    const { data: existingLog } = await supabaseClient
+      .from('admin_settings')
+      .select('id')
+      .eq('id', `reg_reward_${refereeUserId}`)
+      .maybeSingle();
+
+    if (existingLog) {
+      return { success: false, reason: 'already_rewarded' };
+    }
+
+    // 4. Credit Inviter's Withdraw Wallet
+    const { data: refWallet } = await supabaseClient
+      .from('wallets')
+      .select('*')
+      .eq('user_id', referrerId)
+      .maybeSingle();
+
+    const curWithdraw = Number(refWallet?.withdraw_balance !== undefined && refWallet?.withdraw_balance !== null ? refWallet.withdraw_balance : (refWallet?.earned_balance || 0));
+    const curAvail = Number(refWallet?.available_balance || 0);
+    const curTotalEarned = Number(refWallet?.total_earned || 0);
+
+    const newWithdraw = +(curWithdraw + rewardAmount).toFixed(2);
+    const newAvail = +(curAvail + rewardAmount).toFixed(2);
+    const newTotalEarned = +(curTotalEarned + rewardAmount).toFixed(2);
+    const nowIso = new Date().toISOString();
+
+    if (refWallet) {
+      await supabaseClient
+        .from('wallets')
+        .update({
+          withdraw_balance: newWithdraw,
+          earned_balance: newWithdraw,
+          available_balance: newAvail,
+          total_earned: newTotalEarned,
+          updated_at: nowIso,
+        })
+        .eq('user_id', referrerId);
+    } else {
+      await supabaseClient
+        .from('wallets')
+        .insert({
+          user_id: referrerId,
+          withdraw_balance: newWithdraw,
+          earned_balance: newWithdraw,
+          available_balance: newAvail,
+          total_earned: newTotalEarned,
+          recharge_balance: 0,
+          pending_balance: 0,
+          created_at: nowIso,
+          updated_at: nowIso,
+        });
+    }
+
+    // 5. Record in wallet_transactions
+    const txId = `tx_reg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    await supabaseClient.from('wallet_transactions').insert({
+      id: txId,
+      user_id: referrerId,
+      type: 'EARNING',
+      amount: rewardAmount,
+      balance_before: curWithdraw,
+      balance_after: newWithdraw,
+      wallet_type: 'WITHDRAW',
+      status: 'COMPLETED',
+      reference_id: regRefId,
+      description: 'Registration Referral Reward: Invited friend registered & logged in',
+      created_at: nowIso,
+    });
+
+    // 6. Record in wallet_ledger
+    try {
+      await supabaseClient.from('wallet_ledger').insert({
+        user_id: referrerId,
+        wallet_type: 'WITHDRAW',
+        transaction_type: 'REFERRAL_REGISTRATION',
+        amount: rewardAmount,
+        direction: 'CREDIT',
+        balance_before: curWithdraw,
+        balance_after: newWithdraw,
+        reference_type: 'REFERRAL_REWARD',
+        reference_id: regRefId,
+        description: 'Referral bonus from invited friend registration',
+        created_at: nowIso,
+      });
+    } catch (_ledgerErr) {}
+
+    // 7. Notification to inviter
+    try {
+      await supabaseClient.from('notifications').insert({
+        user_id: referrerId,
+        title: 'Referral Reward Credited! 🎉',
+        message: `You earned ₹${rewardAmount.toFixed(2)} because your invited friend successfully registered & logged in!`,
+        type: 'EARNING',
+        is_read: false,
+        created_at: nowIso,
+      });
+    } catch (_notifErr) {}
+
+    // 8. Idempotency record in admin_settings
+    try {
+      await supabaseClient.from('admin_settings').upsert({
+        id: `reg_reward_${refereeUserId}`,
+        value: {
+          refereeUserId,
+          referrerId,
+          rewardAmount,
+          rewardedAt: nowIso,
+        },
+        updated_at: nowIso,
+      });
+    } catch (_setErr) {}
+
+    console.log(`[REFERRAL RULE 1] Credited ₹${rewardAmount} to inviter ${referrerId} for referee ${refereeUserId}`);
+    return { success: true, rewardAmount, referrerId };
+  } catch (err: any) {
+    console.error('[REFERRAL RULE 1 ERROR]', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * RULE TWO: Device Earn Consecutive Days Streak Referral Reward
+ * Triggered ONLY when invited friend actually claims their device earn fund.
+ * Tracks calendar days of successful claims.
+ * Resets if calendar day missed.
+ * Awards configured reward once required streak is reached.
+ * Credited to inviter's Withdraw Wallet. Exactly once per invited friend.
+ */
+async function processConsecutiveClaimReferralRewardServer(supabaseClient: any, refereeUserId: string) {
+  if (!supabaseClient || !refereeUserId) return { success: false, reason: 'invalid_args' };
+
+  try {
+    // 1. Fetch Referral Settings
+    const { data: setRow } = await supabaseClient
+      .from('admin_settings')
+      .select('value')
+      .eq('id', 'referral_settings')
+      .maybeSingle();
+
+    const settings = setRow?.value || {};
+    const isSysEnabled = settings.isReferralSystemEnabled !== false;
+    const streakConfig = settings.streakReward || {};
+    const isStreakEnabled = streakConfig.enabled !== false;
+    const rewardAmount = Number(streakConfig.rewardAmount ?? 15);
+    const requiredDays = Number(streakConfig.consecutiveDays ?? 3);
+
+    if (!isSysEnabled || !isStreakEnabled || rewardAmount <= 0 || requiredDays <= 0) {
+      return { success: false, reason: 'streak_reward_disabled' };
+    }
+
+    // 2. Find Referrer
+    const { data: refRow } = await supabaseClient
+      .from('referrals')
+      .select('*')
+      .eq('referee_id', refereeUserId)
+      .maybeSingle();
+
+    if (!refRow || !refRow.referrer_id || refRow.referrer_id === refereeUserId) {
+      return { success: false, reason: 'no_referrer' };
+    }
+
+    const referrerId = refRow.referrer_id;
+
+    // 3. Calendar dates in IST (UTC+5:30)
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const todayStr = new Date(now.getTime() + istOffset).toISOString().split('T')[0];
+    const yesterdayStr = new Date(now.getTime() + istOffset - 86400000).toISOString().split('T')[0];
+
+    // 4. Retrieve streak record
+    const streakKey = `streak_${refereeUserId}`;
+    const { data: streakRow } = await supabaseClient
+      .from('admin_settings')
+      .select('value')
+      .eq('id', streakKey)
+      .maybeSingle();
+
+    let streakData = streakRow?.value || null;
+    let currentStreak = 1;
+    let rewardCredited = false;
+
+    if (!streakData) {
+      currentStreak = 1;
+      rewardCredited = false;
+    } else {
+      rewardCredited = Boolean(streakData.rewardCredited);
+      if (streakData.lastClaimDate === todayStr) {
+        // Already claimed today, streak doesn't increase multiple times in same calendar day
+        return { success: true, currentStreak: streakData.currentStreak || 1, rewarded: rewardCredited };
+      } else if (streakData.lastClaimDate === yesterdayStr) {
+        // Consecutive calendar day claim!
+        currentStreak = (streakData.currentStreak || 0) + 1;
+      } else {
+        // Missed a calendar day, reset streak to 1
+        currentStreak = 1;
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+
+    // 5. If streak matches required days and not yet rewarded
+    let justAwarded = false;
+    if (currentStreak >= requiredDays && !rewardCredited) {
+      const streakRefId = `STRK-REF-${refereeUserId}`;
+      const { data: existingTx } = await supabaseClient
+        .from('wallet_transactions')
+        .select('id')
+        .eq('reference_id', streakRefId)
+        .maybeSingle();
+
+      if (!existingTx) {
+        // Credit Inviter's Withdraw Wallet
+        const { data: refWallet } = await supabaseClient
+          .from('wallets')
+          .select('*')
+          .eq('user_id', referrerId)
+          .maybeSingle();
+
+        const curWithdraw = Number(refWallet?.withdraw_balance !== undefined && refWallet?.withdraw_balance !== null ? refWallet.withdraw_balance : (refWallet?.earned_balance || 0));
+        const curAvail = Number(refWallet?.available_balance || 0);
+        const curTotalEarned = Number(refWallet?.total_earned || 0);
+
+        const newWithdraw = +(curWithdraw + rewardAmount).toFixed(2);
+        const newAvail = +(curAvail + rewardAmount).toFixed(2);
+        const newTotalEarned = +(curTotalEarned + rewardAmount).toFixed(2);
+
+        if (refWallet) {
+          await supabaseClient
+            .from('wallets')
+            .update({
+              withdraw_balance: newWithdraw,
+              earned_balance: newWithdraw,
+              available_balance: newAvail,
+              total_earned: newTotalEarned,
+              updated_at: nowIso,
+            })
+            .eq('user_id', referrerId);
+        }
+
+        // Record in wallet_transactions
+        const txId = `tx_strk_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        await supabaseClient.from('wallet_transactions').insert({
+          id: txId,
+          user_id: referrerId,
+          type: 'EARNING',
+          amount: rewardAmount,
+          balance_before: curWithdraw,
+          balance_after: newWithdraw,
+          wallet_type: 'WITHDRAW',
+          status: 'COMPLETED',
+          reference_id: streakRefId,
+          description: `Streak Claim Reward: Invited friend claimed device earnings for ${requiredDays} consecutive days`,
+          created_at: nowIso,
+        });
+
+        // Record in wallet_ledger
+        try {
+          await supabaseClient.from('wallet_ledger').insert({
+            user_id: referrerId,
+            wallet_type: 'WITHDRAW',
+            transaction_type: 'REFERRAL_STREAK_CLAIM',
+            amount: rewardAmount,
+            direction: 'CREDIT',
+            balance_before: curWithdraw,
+            balance_after: newWithdraw,
+            reference_type: 'REFERRAL_REWARD',
+            reference_id: streakRefId,
+            description: `Consecutive claim bonus for ${requiredDays} days streak`,
+            created_at: nowIso,
+          });
+        } catch (_ledgerErr) {}
+
+        // Notification to inviter
+        try {
+          await supabaseClient.from('notifications').insert({
+            user_id: referrerId,
+            title: 'Consecutive Claim Referral Reward! 🎁',
+            message: `You earned ₹${rewardAmount.toFixed(2)} because your invited friend claimed device earnings for ${requiredDays} consecutive days!`,
+            type: 'EARNING',
+            is_read: false,
+            created_at: nowIso,
+          });
+        } catch (_notifErr) {}
+
+        rewardCredited = true;
+        justAwarded = true;
+        console.log(`[REFERRAL RULE 2] Awarded ₹${rewardAmount} streak reward to inviter ${referrerId} for referee ${refereeUserId} (${currentStreak} consecutive days)`);
+      } else {
+        rewardCredited = true;
+      }
+    }
+
+    // 6. Update streak record in admin_settings
+    await supabaseClient.from('admin_settings').upsert({
+      id: streakKey,
+      value: {
+        refereeUserId,
+        referrerId,
+        currentStreak,
+        lastClaimDate: todayStr,
+        rewardCredited,
+        updatedAt: nowIso,
+      },
+      updated_at: nowIso,
+    });
+
+    return {
+      success: true,
+      currentStreak,
+      rewarded: rewardCredited,
+      justAwarded,
+      rewardAmount: justAwarded ? rewardAmount : 0,
+    };
+  } catch (err: any) {
+    console.error('[REFERRAL RULE 2 ERROR]', err);
+    return { success: false, error: err.message };
+  }
+}
+
 app.post('/api/test-commission-settle', async (req, res) => {
   try {
     const { userId, amount, traceno } = req.body;
@@ -1150,6 +1574,120 @@ app.post('/api/test-commission-settle', async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 });
+
+/**
+ * DEPOSIT-BASED VIP UPGRADE ENGINE (VIP 3, 4, 5, 6)
+ * Rule 6:
+ * - VIP 3, 4, 5, 6 are deposit-based upgrades using existing admin-configured deposit thresholds.
+ * - Only successful/approved deposits count (no pending, failed, rejected, cancelled).
+ * - VIP level must never decrease.
+ */
+async function checkAndUpdateDepositVip(userId: string): Promise<{ upgraded: boolean; newVip: number; currentVip: number }> {
+  if (!supabase || !userId) return { upgraded: false, newVip: 0, currentVip: 0 };
+  try {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('vip_level')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    const currentVip = Number(profile?.vip_level || 0);
+
+    // Existing default thresholds (VIP 3: 5000, VIP 4: 15000, VIP 5: 40000, VIP 6: 100000)
+    let thresholdVip3 = 5000;
+    let thresholdVip4 = 15000;
+    let thresholdVip5 = 40000;
+    let thresholdVip6 = 100000;
+
+    try {
+      const { data: vipLevelsData } = await supabase
+        .from('vip_levels')
+        .select('*')
+        .order('level_number', { ascending: true });
+
+      if (vipLevelsData && vipLevelsData.length > 0) {
+        for (const lvl of vipLevelsData) {
+          const num = Number(lvl.level_number !== undefined ? lvl.level_number : lvl.levelNumber);
+          const minInv = Number(lvl.min_investment || lvl.minInvestment || 0);
+          if (minInv > 0) {
+            if (num === 3) thresholdVip3 = minInv;
+            if (num === 4) thresholdVip4 = minInv;
+            if (num === 5) thresholdVip5 = minInv;
+            if (num === 6) thresholdVip6 = minInv;
+          }
+        }
+      }
+    } catch (_e) {}
+
+    // Sum all successful/approved deposits across deposit_transactions and payments
+    const [depRes, payRes] = await Promise.all([
+      supabase
+        .from('deposit_transactions')
+        .select('amount')
+        .eq('user_id', userId)
+        .eq('status', 'SUCCESS'),
+      supabase
+        .from('payments')
+        .select('amount')
+        .eq('user_id', userId)
+        .eq('status', 'PAID'),
+    ]);
+
+    let totalSuccessfulDeposits = 0;
+    if (depRes.data) {
+      for (const d of depRes.data) {
+        totalSuccessfulDeposits += Number(d.amount || 0);
+      }
+    }
+    if (payRes.data) {
+      for (const p of payRes.data) {
+        totalSuccessfulDeposits += Number(p.amount || 0);
+      }
+    }
+
+    let depositVip = currentVip;
+    if (totalSuccessfulDeposits >= thresholdVip6) {
+      depositVip = Math.max(depositVip, 6);
+    } else if (totalSuccessfulDeposits >= thresholdVip5) {
+      depositVip = Math.max(depositVip, 5);
+    } else if (totalSuccessfulDeposits >= thresholdVip4) {
+      depositVip = Math.max(depositVip, 4);
+    } else if (totalSuccessfulDeposits >= thresholdVip3) {
+      depositVip = Math.max(depositVip, 3);
+    }
+
+    // VIP level must never decrease
+    if (depositVip > currentVip) {
+      const nowIso = new Date().toISOString();
+      await supabase
+        .from('profiles')
+        .update({
+          vip_level: depositVip,
+          updated_at: nowIso,
+        })
+        .eq('user_id', userId);
+
+      try {
+        await supabase.from('notifications').insert({
+          user_id: userId,
+          title: `VIP Upgraded to VIP ${depositVip}! 🏆`,
+          message: `Congratulations! Your approved deposit total of ₹${totalSuccessfulDeposits.toFixed(2)} has upgraded your account to VIP ${depositVip}.`,
+          type: 'VIP',
+          read: false,
+          created_at: nowIso,
+        });
+      } catch {}
+
+      console.log(`[VIP UPGRADE] User ${userId} upgraded from VIP ${currentVip} to VIP ${depositVip} (Deposits: ₹${totalSuccessfulDeposits})`);
+      return { upgraded: true, newVip: depositVip, currentVip };
+    }
+
+    return { upgraded: false, newVip: currentVip, currentVip };
+  } catch (err) {
+    console.error('[VIP UPGRADE ERROR]', err);
+    return { upgraded: false, newVip: 0, currentVip: 0 };
+  }
+}
 
 async function settleDepositSuccess(
   traceno: string,
@@ -1309,6 +1847,9 @@ async function settleDepositSuccess(
   // 9. Process Referral Commission for referrers
   await processReferralCommissionsServer(supabase, userId, depositAmount, traceno);
 
+  // 10. Check & update deposit-based VIP upgrades (VIP 3, 4, 5, 6)
+  await checkAndUpdateDepositVip(userId);
+
   console.log(`[SETTLEMENT] Success: ₹${depositAmount} credited to user ${userId} for order ${traceno}.`);
   return { success: true, order: { ...order, status: 'SUCCESS' } };
 }
@@ -1357,6 +1898,27 @@ async function handlePaymentCallback(req: express.Request, res: express.Response
     console.warn(`[UNIVEPAY][CALLBACK] Merchant mismatch warning! Expected: ${merchantNo}, Received: ${merchno}`);
   }
 
+  // PART 17: SIGNATURE VERIFICATION (Dual support: Sorted params formula & Positional string formula)
+  // Strict Enforcement: Missing or invalid signature MUST immediately return 400 SIGNATURE_ERROR
+  if (!signature) {
+    console.error(`[UNIVEPAY][CALLBACK] Missing signature in callback for traceno: ${traceno}`);
+    return res.status(400).send('SIGNATURE_ERROR');
+  }
+
+  const sortedSig = generateSortedSignature(body, secretKey);
+  const positionalSig = generatePositionalCreateSignature(amount, merchno, '', payCode, traceno, secretKey);
+  const positionalFullSig = crypto.createHash('md5').update(`${amount}${merchno}${payCode}${serialNo}${status}${traceno}${transDate}${secretKey}`).digest('hex').toUpperCase();
+
+  const isSigValid =
+    signature.toUpperCase() === sortedSig ||
+    signature.toUpperCase() === positionalSig ||
+    signature.toUpperCase() === positionalFullSig;
+
+  if (!isSigValid) {
+    console.error(`[UNIVEPAY][CALLBACK] Signature verification failed for traceno: ${traceno}`);
+    return res.status(400).send('SIGNATURE_ERROR');
+  }
+
   // PART 14: REQUIRED FIELDS CHECK
   if (!status || !traceno) {
     console.error('[UNIVEPAY][CALLBACK] Missing required fields in callback (Status or Traceno).');
@@ -1385,22 +1947,6 @@ async function handlePaymentCallback(req: express.Request, res: express.Response
     const dbAmountNum = parseFloat(dbOrder.amount);
     if (!isNaN(callbackAmountNum) && !isNaN(dbAmountNum) && Math.abs(callbackAmountNum - dbAmountNum) > 0.01) {
       console.warn(`[UNIVEPAY][CALLBACK] Amount mismatch notice! DB: ${dbAmountNum}, Callback: ${callbackAmountNum}`);
-    }
-  }
-
-  // PART 17: SIGNATURE VERIFICATION (Dual support: Sorted params formula & Positional string formula)
-  if (signature) {
-    const sortedSig = generateSortedSignature(body, secretKey);
-    const positionalSig = generatePositionalCreateSignature(amount, merchno, '', payCode, traceno, secretKey);
-    const positionalFullSig = crypto.createHash('md5').update(`${amount}${merchno}${payCode}${serialNo}${status}${traceno}${transDate}${secretKey}`).digest('hex').toUpperCase();
-
-    const isSigValid =
-      signature.toUpperCase() === sortedSig ||
-      signature.toUpperCase() === positionalSig ||
-      signature.toUpperCase() === positionalFullSig;
-
-    if (!isSigValid) {
-      console.warn(`[UNIVEPAY][CALLBACK] Signature mismatch warning. Received: ${signature}, SortedCalc: ${sortedSig}, PositionalCalc: ${positionalFullSig}`);
     }
   }
 
@@ -1731,17 +2277,33 @@ app.post('/api/wallet/withdraw', async (req, res) => {
           .eq('user_id', userId)
           .maybeSingle();
 
-        const currentBalance = Number(userWal?.withdraw_balance ?? userWal?.available_balance ?? 0);
+        // Rule 9: Withdraw balance comes strictly from Withdraw Wallet (Device Earnings, Referral, Mission)
+        const currentBalance = Number(userWal?.withdraw_balance !== undefined && userWal?.withdraw_balance !== null ? userWal.withdraw_balance : (userWal?.earned_balance || 0));
         if (currentBalance < numAmount) {
           return res.status(400).json({
             success: false,
-            error: 'Insufficient withdrawable balance.',
+            error: 'Insufficient withdrawable balance in Withdraw Wallet. Topup/Recharge Wallet balance cannot be withdrawn.',
           });
         }
 
-        const feePercent = 10;
-        const feeAmount = (numAmount * feePercent) / 100;
-        const netAmount = numAmount - feeAmount;
+        // Retrieve dynamic withdrawal fee configured by Admin from admin_settings ('system')
+        let configuredFeePercent = 10;
+        try {
+          const { data: sysSettings } = await supabase
+            .from('admin_settings')
+            .select('value')
+            .eq('id', 'system')
+            .maybeSingle();
+          if (sysSettings?.value && typeof sysSettings.value.withdrawalFeePercent === 'number') {
+            configuredFeePercent = Number(sysSettings.value.withdrawalFeePercent);
+          }
+        } catch (sysErr) {
+          console.warn('[WITHDRAW] Could not fetch system settings for fee, using fallback:', sysErr);
+        }
+
+        const feePercent = Math.max(0, configuredFeePercent);
+        const feeAmount = +((numAmount * feePercent) / 100).toFixed(2);
+        const netAmount = +((numAmount - feeAmount)).toFixed(2);
 
         const { data: newWth, error: wthErr } = await supabase
           .from('withdrawals')
@@ -1819,6 +2381,33 @@ app.post('/api/wallet/withdraw', async (req, res) => {
           success: false,
           error: rpcData?.error || 'Insufficient withdrawable balance.',
         });
+      }
+
+      // Synchronize dynamic withdrawal fee configured by Admin from admin_settings ('system')
+      try {
+        let configuredFeePercent = 10;
+        const { data: sysSettings } = await supabase
+          .from('admin_settings')
+          .select('value')
+          .eq('id', 'system')
+          .maybeSingle();
+        if (sysSettings?.value && typeof sysSettings.value.withdrawalFeePercent === 'number') {
+          configuredFeePercent = Number(sysSettings.value.withdrawalFeePercent);
+        }
+        const effectiveFeePercent = Math.max(0, configuredFeePercent);
+        const accurateFeeAmount = +((numAmount * effectiveFeePercent) / 100).toFixed(2);
+        const accurateNetAmount = +(numAmount - accurateFeeAmount).toFixed(2);
+
+        if (rpcData?.withdrawal_id) {
+          await supabase.from('withdrawals').update({
+            fee: accurateFeeAmount,
+            net_amount: accurateNetAmount,
+          }).eq('id', rpcData.withdrawal_id);
+          rpcData.fee = accurateFeeAmount;
+          rpcData.net_amount = accurateNetAmount;
+        }
+      } catch (fErr) {
+        console.warn('[WITHDRAW] Note on syncing dynamic withdrawal fee:', fErr);
       }
 
       return res.json({
@@ -2137,7 +2726,15 @@ app.get('/api/fortune/checkin-status', async (req, res) => {
   if (!supabase) {
     return res.json({ success: false, error: 'Database service unavailable' });
   }
-  const userId = (req.query.userId || req.headers['x-user-id'] || '').toString().trim();
+  let userId = (req.query.userId || req.headers['x-user-id'] || '').toString().trim();
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (supabase && token && !userId) {
+    try {
+      const { data: userData } = await supabase.auth.getUser(token);
+      if (userData?.user?.id) userId = userData.user.id;
+    } catch {}
+  }
   if (!userId) {
     return res.status(400).json({ success: false, error: 'User ID is required' });
   }
@@ -2255,12 +2852,61 @@ app.get('/api/fortune/checkin-status', async (req, res) => {
   }
 });
 
+// Authoritative VIP Status endpoint (Server source of truth)
+app.get('/api/user/vip-status', async (req, res) => {
+  if (!supabase) return res.status(500).json({ success: false, error: 'Database service unavailable' });
+  let userId = (req.query?.userId || req.headers['x-user-id'] || '').toString().trim();
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (supabase && token) {
+    try {
+      const { data: userData } = await supabase.auth.getUser(token);
+      if (userData?.user?.id) userId = userData.user.id;
+    } catch {}
+  }
+  if (!userId) return res.status(400).json({ success: false, error: 'User ID is required' });
+
+  try {
+    // Check if user qualifies for deposit-based VIP upgrades (VIP 3-6)
+    await checkAndUpdateDepositVip(userId);
+
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('vip_level')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    const vipLevel = Number(profile?.vip_level || 0);
+    return res.json({
+      success: true,
+      vipLevel,
+      proUnlocked: vipLevel >= 1,
+      eventUnlocked: vipLevel >= 2,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post('/api/fortune/checkin', async (req, res) => {
   if (!supabase) {
     return res.status(500).json({ success: false, error: 'Database service unavailable' });
   }
 
-  const userId = (req.body?.userId || req.headers['x-user-id'] || '').toString().trim();
+  let userId = (req.body?.userId || req.headers['x-user-id'] || '').toString().trim();
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (supabase && token) {
+    try {
+      const { data: userData, error: authErr } = await supabase.auth.getUser(token);
+      if (!authErr && userData?.user?.id) {
+        userId = userData.user.id;
+      }
+    } catch (e) {
+      console.warn('Auth token verification notice on checkin:', e);
+    }
+  }
+
   if (!userId) {
     return res.status(400).json({ success: false, error: 'User ID is required' });
   }
@@ -2534,20 +3180,9 @@ app.post('/api/plans/purchase', async (req, res) => {
       .eq('user_id', userId);
 
     const purchasesList = userPurchases || [];
-    const activePurchases = purchasesList.filter((p: any) => p.status === 'ACTIVE' || p.status === 'active');
-    const totalInvested = activePurchases.reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
 
-    // Compute effective VIP level
-    let computedVip = Number(profile.vip_level || 0);
-    if (computedVip === 0 && activePurchases.length > 0 && totalInvested >= 500) {
-      computedVip = 1;
-    }
-    if (totalInvested >= 2000 && computedVip < 2) {
-      computedVip = 2;
-    }
-    if (totalInvested >= 10000 && computedVip < 3) {
-      computedVip = 3;
-    }
+    // Authoritative VIP level from database (source of truth)
+    const currentVip = Number(profile.vip_level !== undefined && profile.vip_level !== null ? profile.vip_level : 0);
 
     // 3. Fetch Plan details from database
     const { data: plan, error: planErr } = await supabase
@@ -2579,21 +3214,28 @@ app.post('/api/plans/purchase', async (req, res) => {
       }
     }
 
-    // 4. STRICT VIP LEVEL ENFORCEMENT
-    // VIP Level 0: VIP Plan unlocked, PRO & EVENT locked
-    // VIP Level 1: VIP & PRO unlocked, EVENT locked
-    // VIP Level 2+: All unlocked
-    if (planCat === 'PRO' && computedVip < 1) {
+    // 4. STRICT VIP LEVEL ENFORCEMENT (Server-Side Source of Truth)
+    // Rule 3: VIP 0 cannot purchase PRO or EVENT plans
+    if (currentVip === 0 && (planCat === 'PRO' || planCat === 'EVENT')) {
       return res.status(403).json({
         success: false,
-        error: 'Unlock at VIP Level 1 (Your level: VIP 0). Activate at least 1 VIP Plan or upgrade your qualifying investment to unlock PRO Plans.',
+        error: 'VIP 0 members cannot purchase PRO or EVENT plans. Purchase a qualifying VIP plan (min ₹550) first to upgrade to VIP 1.',
       });
     }
 
-    if (planCat === 'EVENT' && computedVip < 2) {
+    // Rule 5: VIP 1 cannot purchase EVENT plans
+    if (currentVip === 1 && planCat === 'EVENT') {
       return res.status(403).json({
         success: false,
-        error: `Unlock at VIP Level 2 (Your level: VIP ${computedVip}). Upgrade to VIP Level 2 to participate in exclusive Limited Event Plans.`,
+        error: 'VIP 1 members cannot purchase EVENT plans. Purchase a PRO plan to upgrade to VIP 2 and unlock EVENT plans.',
+      });
+    }
+
+    // Event plans strictly require VIP 2+
+    if (planCat === 'EVENT' && currentVip < 2) {
+      return res.status(403).json({
+        success: false,
+        error: `Unlock at VIP Level 2 (Your level: VIP ${currentVip}). Only VIP 2 and above can purchase EVENT plans.`,
       });
     }
 
@@ -2756,6 +3398,59 @@ app.post('/api/plans/purchase', async (req, res) => {
       });
     } catch {}
 
+    // 13. VIP Progression Upgrade (Rules 2 & 4)
+    let newVipLevel = currentVip;
+    let vipUpgraded = false;
+
+    if (currentVip === 0 && planPrice >= 550) {
+      // Rule 2: When a VIP 0 user successfully purchases their FIRST plan (min ₹550) -> VIP 1
+      newVipLevel = 1;
+      vipUpgraded = true;
+    } else if (currentVip === 1 && planCat === 'PRO') {
+      // Rule 4: When a VIP 1 user successfully purchases a PRO plan -> VIP 2
+      newVipLevel = 2;
+      vipUpgraded = true;
+    }
+
+    // Ensure VIP never decreases
+    newVipLevel = Math.max(currentVip, newVipLevel);
+
+    if (vipUpgraded && newVipLevel > currentVip) {
+      await supabase
+        .from('profiles')
+        .update({
+          vip_level: newVipLevel,
+          updated_at: nowIso,
+        })
+        .eq('user_id', userId);
+
+      try {
+        await supabase.from('notifications').insert({
+          user_id: userId,
+          title: `VIP Upgraded to VIP ${newVipLevel}! 🏆`,
+          message: newVipLevel === 1
+            ? 'Congratulations! You completed your first plan purchase and upgraded to VIP 1. PRO Plans are now unlocked!'
+            : 'Congratulations! You completed a PRO plan purchase and upgraded to VIP 2. Exclusive Event Plans are now unlocked!',
+          type: 'VIP',
+          read: false,
+          created_at: nowIso,
+        });
+      } catch {}
+
+      console.log(`[PURCHASE VIP UPGRADE] User ${userId} upgraded from VIP ${currentVip} to VIP ${newVipLevel} (Plan: ${plan.name}, Cat: ${planCat})`);
+    }
+
+    // Also check if any deposit-based upgrades apply
+    const depCheck = await checkAndUpdateDepositVip(userId);
+    const finalVip = Math.max(newVipLevel, depCheck.newVip || 0);
+
+    // Distribute multi-tier referral commissions (L1, L2, L3) for plan purchase
+    if (supabase) {
+      processReferralCommissionsServer(supabase, userId, planPrice, 'PUR-' + purchaseId).catch((cErr) =>
+        console.warn('[PLAN PURCHASE] Referral commission error:', cErr)
+      );
+    }
+
     return res.json({
       success: true,
       purchaseId,
@@ -2764,6 +3459,8 @@ app.post('/api/plans/purchase', async (req, res) => {
       amount: planPrice,
       instantBonus,
       newTopupBalance: newTopup,
+      vipLevel: finalVip,
+      vipUpgraded: finalVip > currentVip,
       message: `🎉 Successfully acquired ${plan.name}! Yield generating now.`,
     });
   } catch (err: any) {
@@ -2867,7 +3564,7 @@ app.post('/api/earnings/claim', async (req, res) => {
       return res.status(404).json({ success: false, error: 'User wallet not found.' });
     }
 
-    const curWithdraw = Number(wallet.withdraw_balance !== undefined ? wallet.withdraw_balance : (wallet.earned_balance !== undefined ? wallet.earned_balance : wallet.available_balance || 0));
+    const curWithdraw = Number(wallet.withdraw_balance !== undefined && wallet.withdraw_balance !== null ? wallet.withdraw_balance : (wallet.earned_balance || 0));
     const newWithdraw = Number((curWithdraw + totalClaimAmount).toFixed(2));
     const newAvailable = Number(((wallet.available_balance || 0) + totalClaimAmount).toFixed(2));
     const newTotalEarned = Number(((wallet.total_earned || 0) + totalClaimAmount).toFixed(2));
@@ -2958,6 +3655,13 @@ app.post('/api/earnings/claim', async (req, res) => {
         created_at: nowIso,
       });
     } catch {}
+
+    // 7. Trigger Referral Rule Two: Consecutive Days Claim Streak Referral Reward
+    if (supabase) {
+      processConsecutiveClaimReferralRewardServer(supabase, userId).catch((sErr) =>
+        console.warn('[SERVER CLAIM] Streak claim referral reward error:', sErr)
+      );
+    }
 
     return res.json({
       success: true,
@@ -3066,9 +3770,233 @@ app.get('/api/user/earnings-summary', async (req, res) => {
 });
 
 // ==============================================================================
-// 7. ADMIN DASHBOARD & MANAGEMENT BACKEND APIs
+// 7. ADMIN DASHBOARD & MANAGEMENT BACKEND APIs (PROTECTED)
 // ==============================================================================
-app.get('/api/admin/dashboard-stats', async (req, res) => {
+
+const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.UNIVEPAY_SECRET || 'gainpower_pb_admin_jwt_secret_2024';
+
+function signAdminToken(payload: { adminId: string; username: string; role: 'admin'; expiresAt: number }): string {
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(data).digest('hex');
+  return `adm_tok.${data}.${sig}`;
+}
+
+function verifySignedAdminToken(token: string): { valid: boolean; payload?: any; reason?: string } {
+  if (!token || !token.startsWith('adm_tok.')) {
+    return { valid: false, reason: 'Invalid token format' };
+  }
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    return { valid: false, reason: 'Malformed token structure' };
+  }
+  const [, data, sig] = parts;
+  const expectedSig = crypto.createHmac('sha256', ADMIN_JWT_SECRET).update(data).digest('hex');
+  if (sig !== expectedSig) {
+    return { valid: false, reason: 'Signature mismatch' };
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
+    if (!payload || payload.role !== 'admin') {
+      return { valid: false, reason: 'Not an admin role' };
+    }
+    if (payload.expiresAt && Number(payload.expiresAt) < Date.now()) {
+      return { valid: false, reason: 'Token expired' };
+    }
+    return { valid: true, payload };
+  } catch (_err) {
+    return { valid: false, reason: 'Payload decoding error' };
+  }
+}
+
+/**
+ * Strict Admin Authorization Middleware
+ * - Rejects unauthenticated requests with 401 Unauthorized
+ * - Rejects normal authenticated users with 403 Forbidden
+ * - Rejects disabled/banned admin accounts with 403 Forbidden
+ * - Allows only legitimate admin credentials (signed token or Supabase Auth admin role)
+ */
+async function verifyAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization || '';
+  const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const customAdminToken = (req.headers['x-admin-token'] || req.headers['x-admin-auth'] || '').toString().trim();
+  const token = bearerToken || customAdminToken;
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Admin authorization required. No credentials provided.',
+    });
+  }
+
+  // 1. Signed Admin Session Token (adm_tok.<data>.<sig>)
+  if (token.startsWith('adm_tok.')) {
+    const verification = verifySignedAdminToken(token);
+    if (!verification.valid || !verification.payload) {
+      return res.status(401).json({
+        success: false,
+        error: `Unauthorized: ${verification.reason || 'Invalid admin session token.'}`,
+      });
+    }
+    (req as any).adminUser = verification.payload;
+    return next();
+  }
+
+  // 2. Supabase Auth Bearer Token (JWT)
+  if (supabase) {
+    try {
+      const { data: userData, error: authError } = await supabase.auth.getUser(token);
+      if (authError || !userData?.user?.id) {
+        return res.status(401).json({
+          success: false,
+          error: 'Unauthorized: Invalid or expired authentication token.',
+        });
+      }
+
+      const uid = userData.user.id;
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('id, user_id, role, status, is_active')
+        .or(`id.eq.${uid},user_id.eq.${uid}`)
+        .maybeSingle();
+
+      const role = profile?.role || userData.user.user_metadata?.role;
+      const isActive = profile
+        ? profile.is_active !== false && profile.status !== 'disabled' && profile.status !== 'banned'
+        : true;
+
+      // Reject normal authenticated users with 403
+      if (role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          error: 'Forbidden: Administrator privileges required.',
+        });
+      }
+
+      // Reject disabled admin accounts with 403
+      if (!isActive) {
+        return res.status(403).json({
+          success: false,
+          error: 'Forbidden: Admin account is disabled.',
+        });
+      }
+
+      (req as any).adminUser = {
+        adminId: uid,
+        role: 'admin',
+        username: profile?.username || 'admin',
+      };
+      return next();
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: 'Internal error validating authorization.' });
+    }
+  }
+
+  return res.status(401).json({
+    success: false,
+    error: 'Unauthorized: Invalid admin credentials.',
+  });
+}
+
+// 1. Admin Authentication Login Endpoint
+app.post('/api/admin/login', async (req, res) => {
+  const { username, password } = req.body || {};
+  const cleanUsername = (username || '').trim();
+  const cleanPassword = (password || '').trim();
+
+  if (!cleanUsername || !cleanPassword) {
+    return res.status(400).json({
+      success: false,
+      error: 'Please enter both admin username and password.',
+    });
+  }
+
+  // 1. Supabase Auth if configured
+  if (supabase) {
+    try {
+      const adminEmail = `${cleanUsername.toLowerCase()}@powerbank.internal`;
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: adminEmail,
+        password: cleanPassword,
+      });
+
+      if (!authError && authData?.user) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('id, user_id, role, status, is_active')
+          .or(`id.eq.${authData.user.id},user_id.eq.${authData.user.id}`)
+          .maybeSingle();
+
+        const role = profile?.role || authData.user.user_metadata?.role;
+        const isActive = profile
+          ? profile.is_active !== false && profile.status !== 'disabled' && profile.status !== 'banned'
+          : true;
+
+        if (role !== 'admin') {
+          return res.status(403).json({ success: false, error: 'You are not authorized to access the Admin Panel.' });
+        }
+        if (!isActive) {
+          return res.status(403).json({ success: false, error: 'Admin account is disabled.' });
+        }
+
+        const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
+        const token = signAdminToken({
+          adminId: authData.user.id,
+          username: cleanUsername,
+          role: 'admin',
+          expiresAt,
+        });
+
+        return res.json({
+          success: true,
+          session: {
+            token,
+            adminId: authData.user.id,
+            username: cleanUsername,
+            role: 'admin',
+            expiresAt,
+          },
+        });
+      }
+    } catch (_err) {}
+  }
+
+  // 2. Verified secure cryptographic credential comparison (adminbank / adminbank@700)
+  const expectedHash = crypto.createHash('sha256').update('pb_bank_admin_salt_700:adminbank:adminbank@700').digest('hex');
+  const computedHash = crypto.createHash('sha256').update(`pb_bank_admin_salt_700:${cleanUsername}:${cleanPassword}`).digest('hex');
+
+  if (computedHash !== expectedHash) {
+    return res.status(401).json({ success: false, error: 'Invalid admin credentials.' });
+  }
+
+  const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
+  const token = signAdminToken({
+    adminId: 'adm_root_700',
+    username: cleanUsername,
+    role: 'admin',
+    expiresAt,
+  });
+
+  return res.json({
+    success: true,
+    session: {
+      token,
+      adminId: 'adm_root_700',
+      username: cleanUsername,
+      role: 'admin',
+      expiresAt,
+    },
+  });
+});
+
+// Middleware gate to protect all /api/admin/* endpoints (except /api/admin/login)
+app.use('/api/admin', (req, res, next) => {
+  if (req.path === '/login') {
+    return next();
+  }
+  return verifyAdminAuth(req, res, next);
+});
+
+app.get('/api/admin/dashboard-stats', verifyAdminAuth, async (req, res) => {
   if (!supabase) {
     return res.json({ success: true, data: {} });
   }
@@ -3152,7 +4080,7 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
   }
 });
 
-app.get('/api/admin/users', async (req, res) => {
+app.get('/api/admin/users', verifyAdminAuth, async (req, res) => {
   if (!supabase) return res.json({ success: true, data: [] });
   try {
     const [profilesRes, walletsRes, purchasesRes] = await Promise.all([
@@ -3327,9 +4255,357 @@ app.post('/api/admin/approve-recharge', async (req, res) => {
       created_at: new Date().toISOString(),
     });
 
+    // Check & update deposit-based VIP upgrades (VIP 3, 4, 5, 6)
+    await checkAndUpdateDepositVip(payment.user_id);
+
     return res.json({ success: true, message: 'Recharge approved successfully.' });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/wallet/transactions', async (req, res) => {
+  try {
+    let userId = (req.query.userId as string) || '';
+    if (!userId && req.headers.authorization) {
+      const token = req.headers.authorization.replace('Bearer ', '').trim();
+      if (token && supabase) {
+        try {
+          const { data: authUser } = await supabase.auth.getUser(token);
+          if (authUser?.user) {
+            userId = authUser.user.id;
+          }
+        } catch {}
+      }
+    }
+
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'User ID is required' });
+    }
+
+    if (!supabase) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const [txRes, ledgerRes, depRes, withRes, purRes, payRes, earnRes, claimRes] = await Promise.all([
+      supabase
+        .from('wallet_transactions')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('wallet_ledger')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('deposit_transactions')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('withdrawals')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('purchases')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('payments')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('earnings')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('gift_code_claims')
+        .select('*')
+        .eq('user_id', userId)
+        .order('claimed_at', { ascending: false }),
+    ]);
+
+    const txMap = new Map<string, any>();
+
+    // 1. Process wallet_transactions
+    if (!txRes.error && txRes.data) {
+      for (const t of txRes.data) {
+        const key = t.reference_id || t.id;
+        let mappedType = t.type;
+        const descLower = (t.description || '').toLowerCase();
+        const refLower = (t.reference_id || '').toLowerCase();
+
+        if (refLower.startsWith('checkin') || descLower.includes('check-in') || descLower.includes('daily checkin')) {
+          mappedType = 'DAILY_CHECKIN';
+        } else if (refLower.startsWith('gift') || descLower.includes('gift code')) {
+          mappedType = 'GIFT_CODE_REWARD';
+        } else if (refLower.startsWith('signup') || descLower.includes('signup bonus') || descLower.includes('welcome signup')) {
+          mappedType = 'SIGNUP_BONUS';
+        } else if (refLower.startsWith('tx_msn_') || descLower.includes('mission completed')) {
+          mappedType = 'MISSION_BONUS';
+        } else if (refLower.startsWith('topup-ref-l') || refLower.startsWith('topup-t') || descLower.includes('team commission') || descLower.includes('referral commission')) {
+          mappedType = 'REFERRAL_BONUS';
+        } else if (refLower.startsWith('clm-') || descLower.includes('hourly yield') || descLower.includes('device claim') || descLower.includes('hourly device')) {
+          mappedType = 'HOURLY_EARNING';
+        }
+
+        txMap.set(key, {
+          id: t.id,
+          userId: t.user_id,
+          type: mappedType,
+          amount: Number(t.amount),
+          balanceBefore: Number(t.balance_before || 0),
+          balanceAfter: Number(t.balance_after || 0),
+          status: t.status || 'Completed',
+          referenceId: t.reference_id || t.id,
+          description: t.description,
+          paymentMethod: t.payment_method,
+          utr: t.utr,
+          orderId: t.order_id,
+          planName: t.plan_name,
+          createdAt: t.created_at,
+        });
+      }
+    }
+
+    // 2. Process wallet_ledger
+    if (!ledgerRes.error && ledgerRes.data) {
+      for (const l of ledgerRes.data) {
+        const key = l.reference_id || l.id;
+        const txTypeUpper = (l.transaction_type || '').toUpperCase();
+        const descLower = (l.description || '').toLowerCase();
+        let mappedType = 'ADMIN_ADJUSTMENT';
+
+        if (txTypeUpper.includes('CHECKIN') || descLower.includes('check-in')) {
+          mappedType = 'DAILY_CHECKIN';
+        } else if (txTypeUpper.includes('GIFT') || descLower.includes('gift code')) {
+          mappedType = 'GIFT_CODE_REWARD';
+        } else if (txTypeUpper.includes('SIGNUP') || descLower.includes('signup bonus')) {
+          mappedType = 'SIGNUP_BONUS';
+        } else if (txTypeUpper.includes('MISSION') || descLower.includes('mission')) {
+          mappedType = 'MISSION_BONUS';
+        } else if (txTypeUpper.includes('REFERRAL') || descLower.includes('referral') || descLower.includes('commission')) {
+          mappedType = 'REFERRAL_BONUS';
+        } else if (txTypeUpper.includes('HOURLY') || txTypeUpper.includes('EARNING') || descLower.includes('hourly') || descLower.includes('device claim')) {
+          mappedType = 'HOURLY_EARNING';
+        } else if (txTypeUpper.includes('DEPOSIT') || txTypeUpper.includes('RECHARGE')) {
+          mappedType = 'RECHARGE';
+        } else if (txTypeUpper.includes('WITHDRAWAL_REVERSAL')) {
+          mappedType = 'WITHDRAWAL_REVERSAL';
+        } else if (txTypeUpper.includes('WITHDRAWAL')) {
+          mappedType = 'WITHDRAWAL';
+        }
+
+        if (txMap.has(key)) {
+          const existing = txMap.get(key)!;
+          if (existing.type === 'ADMIN_ADJUSTMENT' || existing.type === 'EARNING') {
+            existing.type = mappedType;
+          }
+          if (l.description && (!existing.description || existing.description.includes('ADMIN_ADJUSTMENT'))) {
+            existing.description = l.description;
+          }
+        } else {
+          txMap.set(key, {
+            id: l.id,
+            userId: l.user_id,
+            type: mappedType,
+            amount: l.direction === 'DEBIT' ? -Math.abs(Number(l.amount)) : Number(l.amount),
+            balanceBefore: Number(l.balance_before || 0),
+            balanceAfter: Number(l.balance_after || 0),
+            status: 'Completed',
+            referenceId: l.reference_id || l.id,
+            description: l.description,
+            createdAt: l.created_at,
+          });
+        }
+      }
+    }
+
+    // 3. Process deposit_transactions (Gateway Deposits)
+    if (!depRes.error && depRes.data) {
+      for (const d of depRes.data) {
+        const ref = d.traceno || d.order_id || d.id;
+        const rawStatus = (d.status || '').toUpperCase();
+        let mappedStatus = 'Pending';
+        if (rawStatus === 'SUCCESS' || rawStatus === 'PAID' || rawStatus === 'COMPLETED') {
+          mappedStatus = 'Completed';
+        } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED' || rawStatus === 'FAILED_GATEWAY_CREATION') {
+          mappedStatus = 'Failed';
+        }
+
+        if (txMap.has(ref)) {
+          const existing = txMap.get(ref)!;
+          if (mappedStatus === 'Completed') existing.status = 'Completed';
+          else if (mappedStatus === 'Failed') existing.status = 'Failed';
+          if (d.utr) existing.utr = d.utr;
+        } else {
+          txMap.set(ref, {
+            id: d.id,
+            userId: d.user_id,
+            type: 'RECHARGE',
+            amount: Number(d.amount),
+            balanceBefore: 0,
+            balanceAfter: mappedStatus === 'Completed' ? Number(d.amount) : 0,
+            status: mappedStatus,
+            referenceId: d.traceno,
+            description: `Topup Recharge Order #${d.traceno}`,
+            paymentMethod: d.channel || 'UniVePay UPI Gateway',
+            utr: d.utr || d.gateway_serial_no,
+            createdAt: d.created_at,
+          });
+        }
+      }
+    }
+
+    // 4. Process manual payments
+    if (!payRes.error && payRes.data) {
+      for (const p of payRes.data) {
+        const ref = p.order_id || p.id;
+        const rawStatus = (p.status || '').toUpperCase();
+        let mappedStatus = 'Pending';
+        if (rawStatus === 'PAID' || rawStatus === 'APPROVED' || rawStatus === 'SUCCESS') {
+          mappedStatus = 'Completed';
+        } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED') {
+          mappedStatus = 'Failed';
+        }
+
+        if (!txMap.has(ref) && !txMap.has(p.id)) {
+          const isUsdt = (p.payment_type || '').toUpperCase().includes('USDT') || (p.payment_method || '').toUpperCase().includes('USDT');
+          txMap.set(ref, {
+            id: p.id,
+            userId: p.user_id,
+            type: 'RECHARGE',
+            amount: Number(p.amount),
+            balanceBefore: 0,
+            balanceAfter: mappedStatus === 'Completed' ? Number(p.amount) : 0,
+            status: mappedStatus,
+            referenceId: p.order_id || p.id,
+            description: isUsdt ? `USDT Deposit (${p.payment_type || 'TRC20'})` : `Manual Recharge (${p.payment_type || 'UPI'})`,
+            paymentMethod: p.payment_type || 'Manual UPI',
+            utr: p.utr,
+            createdAt: p.created_at,
+          });
+        }
+      }
+    }
+
+    // 5. Process withdrawals
+    if (!withRes.error && withRes.data) {
+      for (const w of withRes.data) {
+        const ref = w.id;
+        const rawStatus = (w.status || '').toUpperCase();
+        let mappedStatus = 'Pending';
+        if (rawStatus === 'APPROVED' || rawStatus === 'PAID' || rawStatus === 'SUCCESS' || rawStatus === 'COMPLETED' || rawStatus === 'PROCESSED') {
+          mappedStatus = 'Completed';
+        } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED') {
+          mappedStatus = 'Failed';
+        }
+
+        if (!txMap.has(ref)) {
+          txMap.set(ref, {
+            id: w.id,
+            userId: w.user_id,
+            type: 'WITHDRAWAL',
+            amount: -Math.abs(Number(w.amount)),
+            balanceBefore: 0,
+            balanceAfter: 0,
+            status: mappedStatus,
+            referenceId: w.id,
+            description: `Withdrawal Request to ${w.bank_name || 'Bank'} ${w.account_number ? `(A/C: ${w.account_number})` : ''}`,
+            paymentMethod: 'Bank Transfer',
+            utr: w.bank_ref_no,
+            createdAt: w.created_at,
+          });
+        }
+      }
+    }
+
+    // 6. Process hardware purchases
+    if (!purRes.error && purRes.data) {
+      for (const p of purRes.data) {
+        const ref = p.id;
+        if (!txMap.has(ref)) {
+          const isPro = (p.plan_category || '').toUpperCase() === 'PRO';
+          txMap.set(ref, {
+            id: p.id,
+            userId: p.user_id,
+            type: isPro ? 'PRO_PLAN_PURCHASE' : 'PLAN_PURCHASE',
+            amount: -Math.abs(Number(p.amount)),
+            balanceBefore: 0,
+            balanceAfter: 0,
+            status: 'Completed',
+            referenceId: p.id,
+            planName: p.plan_name || 'Hardware Plan',
+            description: `Hardware Activation: ${p.plan_name || 'Cabinet'} (₹${p.amount})`,
+            createdAt: p.created_at,
+          });
+        }
+      }
+    }
+
+    // 7. Process claimed earnings / yield claims
+    if (!earnRes.error && earnRes.data) {
+      for (const e of earnRes.data) {
+        const ref = e.claim_batch_id || e.id;
+        if (e.status === 'CLAIMED' && !txMap.has(ref) && !txMap.has(e.id)) {
+          txMap.set(ref, {
+            id: e.id,
+            userId: e.user_id,
+            type: e.earning_type === 'REFERRAL' ? 'REFERRAL_BONUS' : 'EARNING_CLAIM',
+            amount: Number(e.amount),
+            balanceBefore: 0,
+            balanceAfter: 0,
+            status: 'Completed',
+            referenceId: ref,
+            description: e.plan_name ? `Yield Claim: ${e.plan_name}` : 'Hardware Yield Settlement',
+            planName: e.plan_name,
+            createdAt: e.claimed_at || e.created_at,
+          });
+        }
+      }
+    }
+
+    // 8. Process gift code claims
+    if (!claimRes.error && claimRes.data) {
+      for (const c of claimRes.data) {
+        const code = c.code || c.gift_code || '';
+        const ref = 'GIFT-' + code;
+        if (txMap.has(ref)) {
+          const existing = txMap.get(ref)!;
+          existing.type = 'GIFT_CODE_REWARD';
+          if (!existing.description || existing.description.includes('ADMIN_ADJUSTMENT')) {
+            existing.description = `Gift Code Bonus — ${code}`;
+          }
+        } else if (!txMap.has(c.id)) {
+          txMap.set(ref, {
+            id: c.id,
+            userId: c.user_id,
+            type: 'GIFT_CODE_REWARD',
+            amount: Number(c.amount),
+            balanceBefore: 0,
+            balanceAfter: 0,
+            status: 'Completed',
+            referenceId: ref,
+            description: `Gift Code Bonus — ${code || 'Official Gift Code'}`,
+            createdAt: c.claimed_at || c.created_at,
+          });
+        }
+      }
+    }
+
+    const list = Array.from(txMap.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    return res.json({ success: true, data: list });
+  } catch (err: any) {
+    console.error('Error fetching wallet transactions:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to fetch transactions' });
   }
 });
 
@@ -3762,7 +5038,7 @@ app.post('/api/deposit-complaint', async (req, res) => {
 });
 
 // 2. Fetch all deposit complaints with authorized signed proof URLs (Admin)
-app.get('/api/admin/complaints', async (req, res) => {
+app.get('/api/admin/complaints', verifyAdminAuth, async (req, res) => {
   if (!supabase) return res.json({ success: true, data: [] });
   try {
     const [paymentsRes, profilesRes] = await Promise.all([
@@ -4013,6 +5289,9 @@ app.post('/api/admin/approve-complaint', async (req, res) => {
         created_at: nowIso,
       });
     } catch (_e) {}
+
+    // Check & update deposit-based VIP upgrades (VIP 3, 4, 5, 6)
+    await checkAndUpdateDepositVip(userId);
 
     return res.json({
       success: true,
@@ -4883,6 +6162,9 @@ app.post('/api/admin/approve-usdt-deposit', async (req, res) => {
       });
     } catch (_e) {}
 
+    // Check & update deposit-based VIP upgrades (VIP 3, 4, 5, 6)
+    await checkAndUpdateDepositVip(userId);
+
     return res.json({
       success: true,
       message: 'USDT deposit approved successfully. Recharge wallet credited.',
@@ -4985,8 +6267,13 @@ app.post('/api/admin/plans/save', async (req, res) => {
     }
 
     const isUuid = Boolean(plan.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(plan.id));
-    const isNew = !isUuid;
-    const planId = isUuid ? plan.id : crypto.randomUUID();
+    let existingRow: any = null;
+    if (supabase && plan.id) {
+      const { data: found } = await supabase.from('plans').select('id').eq('id', plan.id).maybeSingle();
+      existingRow = found;
+    }
+    const isNew = !existingRow;
+    const planId = existingRow ? existingRow.id : (isUuid ? plan.id : crypto.randomUUID());
     const price = Number(plan.devicePrice || plan.price || 0);
     const hourly = Number(plan.hourlyEarnings || (plan.dailyEarnings ? +(plan.dailyEarnings / 24).toFixed(2) : 0));
     const daily = Number(plan.dailyEarnings || (hourly * 24));
@@ -5253,6 +6540,297 @@ app.get('/api/admin/missions/claims', async (req, res) => {
   }
 });
 
+app.post('/api/missions/claim', async (req, res) => {
+  try {
+    const { userId, missionId } = req.body;
+    if (!userId || !missionId) {
+      return res.status(400).json({ success: false, error: 'User ID and Mission ID are required.' });
+    }
+    if (!supabase) {
+      return res.status(500).json({ success: false, error: 'Database unavailable' });
+    }
+
+    // 1. Fetch mission
+    const { data: mission, error: mErr } = await supabase
+      .from('missions')
+      .select('*')
+      .eq('id', missionId)
+      .maybeSingle();
+
+    if (mErr || !mission) {
+      return res.status(404).json({ success: false, error: 'Mission not found.' });
+    }
+
+    if (mission.status === 'DISABLED' || mission.is_active === false) {
+      return res.status(400).json({ success: false, error: 'This mission is currently disabled.' });
+    }
+
+    // 2. Check if already claimed
+    const { data: existingClaim } = await supabase
+      .from('mission_claims')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('mission_id', missionId)
+      .maybeSingle();
+
+    if (existingClaim) {
+      return res.status(400).json({ success: false, error: 'You have already claimed this mission bonus!' });
+    }
+
+    // 3. Count active qualifying direct referrals
+    const { data: refs } = await supabase
+      .from('referrals')
+      .select('referee_id, qualifying_recharge_done, status')
+      .eq('referrer_id', userId);
+
+    let activeCount = 0;
+    const refereeIds = (refs || []).map((r: any) => r.referee_id).filter(Boolean);
+
+    if (refereeIds.length > 0) {
+      const { data: purchases } = await supabase
+        .from('user_purchases')
+        .select('user_id')
+        .in('user_id', refereeIds);
+
+      const purchaseUserSet = new Set((purchases || []).map((p: any) => p.user_id));
+
+      activeCount = (refs || []).filter((r: any) => {
+        return r.qualifying_recharge_done === true || r.status === 'ACTIVE' || purchaseUserSet.has(r.referee_id);
+      }).length;
+    }
+
+    const reqRefs = Number(mission.required_referrals ?? mission.target_count ?? 1);
+    if (activeCount < reqRefs) {
+      return res.status(400).json({
+        success: false,
+        error: `Mission not completed yet! You have ${activeCount} / ${reqRefs} active referrals.`,
+      });
+    }
+
+    const reward = Number(mission.reward_amount ?? 50);
+    const nowIso = new Date().toISOString();
+    const claimId = `mclm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const txId = `tx_msn_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+    // 4. Atomic credit to user's Withdraw Wallet
+    const { data: wallet } = await supabase
+      .from('wallets')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    const curWithdraw = Number(wallet?.withdraw_balance !== undefined && wallet?.withdraw_balance !== null ? wallet.withdraw_balance : (wallet?.earned_balance || 0));
+    const curAvail = Number(wallet?.available_balance || 0);
+    const curTotalEarned = Number(wallet?.total_earned || 0);
+
+    const newWithdraw = +(curWithdraw + reward).toFixed(2);
+    const newAvail = +(curAvail + reward).toFixed(2);
+    const newTotalEarned = +(curTotalEarned + reward).toFixed(2);
+
+    if (wallet) {
+      await supabase
+        .from('wallets')
+        .update({
+          withdraw_balance: newWithdraw,
+          earned_balance: newWithdraw,
+          available_balance: newAvail,
+          total_earned: newTotalEarned,
+          updated_at: nowIso,
+        })
+        .eq('user_id', userId);
+    } else {
+      await supabase
+        .from('wallets')
+        .insert({
+          user_id: userId,
+          withdraw_balance: newWithdraw,
+          earned_balance: newWithdraw,
+          available_balance: newAvail,
+          total_earned: newTotalEarned,
+          recharge_balance: 0,
+          pending_balance: 0,
+          created_at: nowIso,
+          updated_at: nowIso,
+        });
+    }
+
+    // 5. Insert claim record
+    await supabase.from('mission_claims').insert({
+      id: claimId,
+      user_id: userId,
+      mission_id: mission.id,
+      mission_title: mission.title,
+      reward_amount: reward,
+      wallet_credited: 'WITHDRAW_WALLET',
+      created_at: nowIso,
+    });
+
+    // 6. Insert wallet_transactions
+    await supabase.from('wallet_transactions').insert({
+      id: txId,
+      user_id: userId,
+      type: 'EARNING',
+      amount: reward,
+      balance_before: curWithdraw,
+      balance_after: newWithdraw,
+      wallet_type: 'WITHDRAW',
+      status: 'COMPLETED',
+      reference_id: mission.id,
+      description: `Mission completed: ${mission.title}`,
+      created_at: nowIso,
+    });
+
+    // 7. Insert wallet_ledger
+    try {
+      await supabase.from('wallet_ledger').insert({
+        user_id: userId,
+        wallet_type: 'WITHDRAW',
+        transaction_type: 'MISSION_REWARD',
+        amount: reward,
+        direction: 'CREDIT',
+        balance_before: curWithdraw,
+        balance_after: newWithdraw,
+        reference_type: 'MISSION',
+        reference_id: mission.id,
+        description: `Mission Bonus: ${mission.title}`,
+        created_at: nowIso,
+      });
+    } catch (_lErr) {}
+
+    // 8. Notification
+    try {
+      await supabase.from('notifications').insert({
+        user_id: userId,
+        title: 'Mission Reward Credited! 🎯',
+        message: `You earned ₹${reward.toFixed(2)} for completing mission "${mission.title}"! It has been credited to your Withdraw Wallet.`,
+        type: 'EARNING',
+        is_read: false,
+        created_at: nowIso,
+      });
+    } catch (_nErr) {}
+
+    return res.json({
+      success: true,
+      rewardAmount: reward,
+      newWithdrawBalance: newWithdraw,
+      message: `🎉 Mission completed! ₹${reward.toFixed(2)} added to your Withdraw Wallet.`,
+    });
+  } catch (err: any) {
+    console.error('[MISSION CLAIM ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to claim mission bonus.' });
+  }
+});
+
+// ==============================================================================
+// 13b. REFERRAL SETTINGS & SYSTEM SETTINGS ENDPOINTS
+// ==============================================================================
+app.get('/api/referral-settings', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.json({ success: true, data: null });
+    }
+    const { data, error } = await supabase
+      .from('admin_settings')
+      .select('value')
+      .eq('id', 'referral_settings')
+      .maybeSingle();
+
+    if (error) throw new Error(error.message);
+    return res.json({ success: true, data: data?.value || null });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/referral-settings', async (req, res) => {
+  try {
+    const { settings, adminId = 'adm_root' } = req.body;
+    if (!settings) {
+      return res.status(400).json({ success: false, error: 'Settings data is required.' });
+    }
+    if (!supabase) {
+      return res.status(500).json({ success: false, error: 'Database unavailable' });
+    }
+
+    const nowIso = new Date().toISOString();
+    const payload = { ...settings, updatedAt: nowIso };
+
+    const { error } = await supabase
+      .from('admin_settings')
+      .upsert({
+        id: 'referral_settings',
+        value: payload,
+        updated_at: nowIso,
+      });
+
+    if (error) throw new Error(error.message);
+
+    try {
+      await supabase.from('admin_audit_logs').insert({
+        admin_user_id: adminId,
+        action: 'UPDATE_REFERRAL_SETTINGS',
+        target_type: 'admin_settings',
+        target_id: 'referral_settings',
+        description: 'Updated dynamic referral rules and amounts',
+        details: payload,
+        created_at: nowIso,
+      });
+    } catch (_aErr) {}
+
+    return res.json({ success: true, message: 'Referral settings updated successfully.', data: payload });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/admin/system-settings', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.json({ success: true, data: null });
+    }
+    const { data, error } = await supabase
+      .from('admin_settings')
+      .select('value')
+      .eq('id', 'system')
+      .maybeSingle();
+
+    if (error) throw new Error(error.message);
+    return res.json({ success: true, data: data?.value || null });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/system-settings', async (req, res) => {
+  try {
+    const { settings, adminId = 'adm_root' } = req.body;
+    if (!settings) {
+      return res.status(400).json({ success: false, error: 'Settings data is required.' });
+    }
+    if (!supabase) {
+      return res.status(500).json({ success: false, error: 'Database unavailable' });
+    }
+
+    const nowIso = new Date().toISOString();
+    const { data: cur } = await supabase.from('admin_settings').select('value').eq('id', 'system').maybeSingle();
+    const merged = { ...(cur?.value || {}), ...settings };
+
+    const { error } = await supabase
+      .from('admin_settings')
+      .upsert({
+        id: 'system',
+        value: merged,
+        updated_at: nowIso,
+      });
+
+    if (error) throw new Error(error.message);
+
+    return res.json({ success: true, message: 'System settings updated successfully.', data: merged });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ==============================================================================
 // 14. GIFT CODES CRUD & ANALYTICS ENDPOINTS
 // ==============================================================================
@@ -5347,6 +6925,17 @@ app.post('/api/gift-codes/redeem', async (req, res) => {
       return res.status(400).json({ success: false, error: 'You have already claimed this gift code.' });
     }
 
+    const { data: existingLedger } = await supabase
+      .from('wallet_ledger')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('reference_id', `GIFT-${codeData.code}`)
+      .maybeSingle();
+
+    if (existingLedger) {
+      return res.status(400).json({ success: false, error: 'You have already claimed this gift code.' });
+    }
+
     // 3. Calculate reward
     let reward = Number(codeData.amount || 0);
     if (codeData.amount_type === 'RANDOM') {
@@ -5374,9 +6963,9 @@ app.post('/api/gift-codes/redeem', async (req, res) => {
       })
       .eq('id', codeData.id);
 
-    // 5. Fetch user and wallet
-    const dest = codeData.wallet_destination || codeData.wallet_type || 'TOPUP_WALLET';
-    const isTopup = dest === 'TOPUP_WALLET' || dest === 'TOPUP' || dest === 'RECHARGE_BALANCE';
+    // 5. Fetch user and wallet (Rule 7: ALL Gift Codes go strictly to TOPUP / RECHARGE WALLET ONLY)
+    const dest = 'TOPUP_WALLET';
+    const nowIso = new Date().toISOString();
 
     const { data: curWallet } = await supabase
       .from('wallets')
@@ -5385,29 +6974,27 @@ app.post('/api/gift-codes/redeem', async (req, res) => {
       .maybeSingle();
 
     let newBalance = 0;
+    let prevBalance = 0;
     if (curWallet) {
-      if (isTopup) {
-        const prev = Number(curWallet.recharge_balance || curWallet.topup_balance || 0);
-        newBalance = +(prev + reward).toFixed(2);
-        await supabase
-          .from('wallets')
-          .update({ recharge_balance: newBalance, topup_balance: newBalance, updated_at: new Date().toISOString() })
-          .eq('user_id', userId);
-      } else {
-        const prev = Number(curWallet.earned_balance || curWallet.withdraw_balance || curWallet.available_balance || 0);
-        newBalance = +(prev + reward).toFixed(2);
-        await supabase
-          .from('wallets')
-          .update({
-            earned_balance: newBalance,
-            withdraw_balance: newBalance,
-            available_balance: newBalance,
-            total_earned: +((curWallet.total_earned || 0) + reward).toFixed(2),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('user_id', userId);
-      }
+      // Topup Wallet = +₹AMOUNT, Withdraw Wallet = +₹0
+      prevBalance = Number(curWallet.recharge_balance || curWallet.topup_balance || 0);
+      newBalance = +(prevBalance + reward).toFixed(2);
+      const curWithdraw = Number(curWallet.withdraw_balance !== undefined ? curWallet.withdraw_balance : (curWallet.earned_balance || 0));
+      const newAvail = +(newBalance + curWithdraw).toFixed(2);
+
+      await supabase
+        .from('wallets')
+        .update({
+          recharge_balance: newBalance,
+          topup_balance: newBalance,
+          available_balance: newAvail,
+          updated_at: nowIso,
+        })
+        .eq('user_id', userId);
     }
+
+    const txId = crypto.randomUUID();
+    const claimRef = `GIFT-${codeData.code}`;
 
     // 6. Record claim
     try {
@@ -5418,11 +7005,11 @@ app.post('/api/gift-codes/redeem', async (req, res) => {
         gift_code: codeData.code,
         user_id: userId,
         amount: reward,
-        wallet_destination: dest,
-        wallet_type: dest,
+        wallet_destination: 'TOPUP_WALLET',
+        wallet_type: 'TOPUP_WALLET',
         status: 'COMPLETED',
-        claimed_at: new Date().toISOString(),
-        created_at: new Date().toISOString(),
+        claimed_at: nowIso,
+        created_at: nowIso,
       });
       if (insErr) {
         console.warn('[REDEEM CLAIM INSERT NOTICE]', insErr.message);
@@ -5431,11 +7018,67 @@ app.post('/api/gift-codes/redeem', async (req, res) => {
       console.warn('[REDEEM CLAIM INSERT EXCEPTION]', e.message);
     }
 
+    // 7. Insert into wallet_transactions (Rule 8: Exactly ONE entry, Name: Gift Code Bonus — CODE, Wallet: Topup Wallet)
+    try {
+      const { error: txInsErr } = await supabase.from('wallet_transactions').insert({
+        id: txId,
+        user_id: userId,
+        type: 'ADMIN_ADJUSTMENT',
+        amount: reward,
+        balance_before: prevBalance,
+        balance_after: newBalance,
+        balance_type: 'TOPUP_WALLET',
+        wallet_type: 'TOPUP',
+        status: 'Completed',
+        reference_id: claimRef,
+        description: `Gift Code Bonus — ${codeData.code}`,
+        created_at: nowIso,
+      });
+      if (txInsErr) {
+        console.warn('[GIFT REDEEM TX INSERT NOTICE]', txInsErr.message);
+      }
+    } catch (txErr: any) {
+      console.warn('[GIFT REDEEM TX EXCEPTION]', txErr.message);
+    }
+
+    // 8. Insert into wallet_ledger
+    try {
+      await supabase.from('wallet_ledger').insert({
+        user_id: userId,
+        wallet_type: 'RECHARGE',
+        transaction_type: 'GIFT_CODE',
+        amount: reward,
+        direction: 'CREDIT',
+        reference_type: 'GIFT_CODE',
+        reference_id: claimRef,
+        balance_before: prevBalance,
+        balance_after: newBalance,
+        description: `Gift Code Bonus — ${codeData.code}`,
+        created_at: nowIso,
+      });
+    } catch (ledErr: any) {
+      console.warn('[GIFT REDEEM LEDGER EXCEPTION]', ledErr.message);
+    }
+
+    // 9. Send Notification
+    try {
+      await supabase.from('notifications').insert({
+        user_id: userId,
+        title: 'Gift Code Redeemed! 🎁',
+        message: `₹${reward.toFixed(2)} from gift code ${codeData.code} has been added to your Topup Wallet.`,
+        type: 'SUCCESS',
+        read: false,
+        created_at: nowIso,
+      });
+    } catch (notifErr: any) {
+      console.warn('[GIFT REDEEM NOTIFICATION EXCEPTION]', notifErr.message);
+    }
+
     return res.json({
       success: true,
       rewardAmount: reward,
       code: codeData.code,
-      destination: dest,
+      destination: 'TOPUP_WALLET',
       newBalance,
     });
   } catch (err: any) {

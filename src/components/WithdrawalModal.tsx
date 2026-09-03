@@ -15,7 +15,7 @@ import {
   EyeOff,
 } from 'lucide-react';
 import { BankAccount, Wallet } from '../types';
-import { fetchBankAccounts, submitWithdrawalRequest } from '../services/api';
+import { fetchBankAccounts, submitWithdrawalRequest, fetchSystemSettings } from '../services/api';
 
 interface WithdrawalModalProps {
   isOpen: boolean;
@@ -41,6 +41,8 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
   const [selectedBankId, setSelectedBankId] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [minWithdrawal, setMinWithdrawal] = useState<number>(300);
+  const [withdrawalFeePercent, setWithdrawalFeePercent] = useState<number>(10);
 
   useEffect(() => {
     if (isOpen) {
@@ -53,6 +55,17 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
           setSelectedBankId(def.id);
         }
       });
+      fetchSystemSettings().then((sys) => {
+        if (sys) {
+          if (typeof sys.minWithdrawal === 'number' && sys.minWithdrawal > 0) {
+            setMinWithdrawal(sys.minWithdrawal);
+            setAmount(String(sys.minWithdrawal));
+          }
+          if (typeof sys.withdrawalFeePercent === 'number') {
+            setWithdrawalFeePercent(sys.withdrawalFeePercent);
+          }
+        }
+      }).catch(() => {});
     }
   }, [isOpen, userId]);
 
@@ -63,11 +76,13 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
 
   const numAmount = parseFloat(amount) || 0;
   const selectedBank = bankAccounts.find((b) => b.id === selectedBankId);
+  const feeAmount = +((numAmount * withdrawalFeePercent) / 100).toFixed(2);
+  const netReceivedAmount = Math.max(0, +(numAmount - feeAmount).toFixed(2));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (numAmount < 100) {
-      setError('Minimum withdrawal amount is ₹100.');
+    if (numAmount < minWithdrawal) {
+      setError(`Minimum withdrawal amount is ₹${minWithdrawal}.`);
       return;
     }
     if (numAmount > withdrawableEarnings) {
@@ -297,6 +312,14 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                 <span className="text-white font-bold">₹{numAmount.toFixed(2)}</span>
               </div>
               <div className="flex justify-between">
+                <span>Handling Fee ({withdrawalFeePercent}%):</span>
+                <span className="text-red-400 font-medium">-₹{feeAmount.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between border-t border-[#262626] pt-1.5 font-semibold">
+                <span className="text-gray-300">Net to Bank:</span>
+                <span className="text-green-400 font-bold">₹{netReceivedAmount.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between pt-0.5">
                 <span>Payout Method:</span>
                 <span className="text-[#FF6000] font-semibold">Bank Account</span>
               </div>

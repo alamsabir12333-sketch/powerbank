@@ -32,6 +32,7 @@ export interface UserProfile {
   referredBy?: string;
   role?: UserRole;
   status?: 'active' | 'suspended' | 'banned';
+  vipLevel?: number;
   deviceEarnings: number;
   teamEarnings: number;
   walletBalance: number;
@@ -91,6 +92,7 @@ export type TransactionType =
   | 'REFERRAL_REWARD'
   | 'MISSION_BONUS'
   | 'GIFT_CODE_REWARD'
+  | 'GIFT_CODE'
   | 'SIGNUP_BONUS'
   | 'DAILY_CHECKIN'
   | 'ADMIN_CREDIT'
@@ -118,6 +120,7 @@ export interface WalletTransaction {
   balanceBefore: number;
   balanceAfter: number;
   balanceType?: 'RECHARGE_BALANCE' | 'DEVICE_EARNING_BALANCE' | string;
+  walletType?: 'TOPUP' | 'WITHDRAW' | string;
   status?: TransactionStatus | string;
   referenceId?: string;
   description?: string;

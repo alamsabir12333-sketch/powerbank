@@ -1,9 +1,10 @@
-import { apiUrl } from './apiClient';
+import { apiUrl, API_BASE_URL } from './apiClient';
 import { supabase, isSupabaseConfigured, isTableMissingError, supabaseUrl, supabaseAnonKey } from '../lib/supabase';
 import {
   UserProfile,
   Wallet,
   WalletTransaction,
+  TransactionType,
   ProductItem,
   PurchaseItem,
   PaymentItem,
@@ -989,14 +990,51 @@ export async function fetchWallet(userId: string): Promise<Wallet> {
   };
 }
 
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      if (data?.session?.access_token) {
+        headers['Authorization'] = `Bearer ${data.session.access_token}`;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return headers;
+}
+
 export async function fetchWalletTransactions(userId: string): Promise<WalletTransaction[]> {
   if (!userId) return [];
 
+  // 1. Attempt production backend centralized endpoint
+  try {
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(apiUrl(`/api/wallet/transactions?userId=${encodeURIComponent(userId)}`), {
+      headers: { ...authHeaders },
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        return json.data;
+      }
+    }
+  } catch (apiErr) {
+    console.warn('Backend fetchWalletTransactions notice, falling back to direct Supabase query:', apiErr);
+  }
+
+  // 2. Direct Supabase Query Fallback
   if (isSupabaseConfigured && supabase) {
     try {
-      const [txRes, depRes, withRes, purRes, payRes, earnRes] = await Promise.all([
+      const [txRes, ledgerRes, depRes, withRes, purRes, payRes, earnRes, claimRes] = await Promise.all([
         supabase
           .from('wallet_transactions')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('wallet_ledger')
           .select('*')
           .eq('user_id', userId)
           .order('created_at', { ascending: false }),
@@ -1025,21 +1063,44 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
           .select('*')
           .eq('user_id', userId)
           .order('created_at', { ascending: false }),
+        supabase
+          .from('gift_code_claims')
+          .select('*')
+          .eq('user_id', userId)
+          .order('claimed_at', { ascending: false }),
       ]);
 
       const txMap = new Map<string, WalletTransaction>();
 
-      // 1. Process explicit wallet_transactions from DB
+      // A. Process explicit wallet_transactions from DB
       if (!txRes.error && txRes.data) {
         for (const t of txRes.data) {
           const key = t.reference_id || t.id;
+          let mappedType = t.type;
+          const descLower = (t.description || '').toLowerCase();
+          const refLower = (t.reference_id || '').toLowerCase();
+
+          if (refLower.startsWith('checkin') || descLower.includes('check-in') || descLower.includes('daily checkin')) {
+            mappedType = 'DAILY_CHECKIN';
+          } else if (refLower.startsWith('gift') || descLower.includes('gift code')) {
+            mappedType = 'GIFT_CODE_REWARD';
+          } else if (refLower.startsWith('signup') || descLower.includes('signup bonus') || descLower.includes('welcome signup')) {
+            mappedType = 'SIGNUP_BONUS';
+          } else if (refLower.startsWith('tx_msn_') || descLower.includes('mission completed')) {
+            mappedType = 'MISSION_BONUS';
+          } else if (refLower.startsWith('topup-ref-l') || refLower.startsWith('topup-t') || descLower.includes('team commission') || descLower.includes('referral commission')) {
+            mappedType = 'REFERRAL_BONUS';
+          } else if (refLower.startsWith('clm-') || descLower.includes('hourly yield') || descLower.includes('device claim') || descLower.includes('hourly device')) {
+            mappedType = 'HOURLY_EARNING';
+          }
+
           txMap.set(key, {
             id: t.id,
             userId: t.user_id,
-            type: t.type,
+            type: mappedType,
             amount: Number(t.amount),
-            balanceBefore: Number(t.balance_before),
-            balanceAfter: Number(t.balance_after),
+            balanceBefore: Number(t.balance_before || 0),
+            balanceAfter: Number(t.balance_after || 0),
             status: t.status || 'Completed',
             referenceId: t.reference_id || t.id,
             description: t.description,
@@ -1052,7 +1113,60 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
         }
       }
 
-      // 2. Process deposit_transactions (Gateway Deposits)
+      // B. Process wallet_ledger
+      if (!ledgerRes.error && ledgerRes.data) {
+        for (const l of ledgerRes.data) {
+          const key = l.reference_id || l.id;
+          const txTypeUpper = (l.transaction_type || '').toUpperCase();
+          const descLower = (l.description || '').toLowerCase();
+          let mappedType: TransactionType = 'ADMIN_ADJUSTMENT';
+
+          if (txTypeUpper.includes('CHECKIN') || descLower.includes('check-in')) {
+            mappedType = 'DAILY_CHECKIN';
+          } else if (txTypeUpper.includes('GIFT') || descLower.includes('gift code')) {
+            mappedType = 'GIFT_CODE_REWARD';
+          } else if (txTypeUpper.includes('SIGNUP') || descLower.includes('signup bonus')) {
+            mappedType = 'SIGNUP_BONUS';
+          } else if (txTypeUpper.includes('MISSION') || descLower.includes('mission')) {
+            mappedType = 'MISSION_BONUS';
+          } else if (txTypeUpper.includes('REFERRAL') || descLower.includes('referral') || descLower.includes('commission')) {
+            mappedType = 'REFERRAL_BONUS';
+          } else if (txTypeUpper.includes('HOURLY') || txTypeUpper.includes('EARNING') || descLower.includes('hourly') || descLower.includes('device claim')) {
+            mappedType = 'HOURLY_EARNING';
+          } else if (txTypeUpper.includes('DEPOSIT') || txTypeUpper.includes('RECHARGE')) {
+            mappedType = 'RECHARGE';
+          } else if (txTypeUpper.includes('WITHDRAWAL_REVERSAL')) {
+            mappedType = 'WITHDRAWAL_REVERSAL';
+          } else if (txTypeUpper.includes('WITHDRAWAL')) {
+            mappedType = 'WITHDRAWAL';
+          }
+
+          if (txMap.has(key)) {
+            const existing = txMap.get(key)!;
+            if (existing.type === 'ADMIN_ADJUSTMENT' || existing.type === 'EARNING') {
+              existing.type = mappedType;
+            }
+            if (l.description && (!existing.description || existing.description.includes('ADMIN_ADJUSTMENT'))) {
+              existing.description = l.description;
+            }
+          } else {
+            txMap.set(key, {
+              id: l.id,
+              userId: l.user_id,
+              type: mappedType,
+              amount: l.direction === 'DEBIT' ? -Math.abs(Number(l.amount)) : Number(l.amount),
+              balanceBefore: Number(l.balance_before || 0),
+              balanceAfter: Number(l.balance_after || 0),
+              status: 'Completed',
+              referenceId: l.reference_id || l.id,
+              description: l.description,
+              createdAt: l.created_at,
+            });
+          }
+        }
+      }
+
+      // C. Process deposit_transactions (Gateway Deposits)
       if (!depRes.error && depRes.data) {
         for (const d of depRes.data) {
           const ref = d.traceno || d.order_id || d.id;
@@ -1062,8 +1176,6 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
             mappedStatus = 'Completed';
           } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED' || rawStatus === 'FAILED_GATEWAY_CREATION') {
             mappedStatus = 'Failed';
-          } else {
-            mappedStatus = 'Pending';
           }
 
           if (txMap.has(ref)) {
@@ -1093,7 +1205,7 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
         }
       }
 
-      // 3. Process manual payments
+      // D. Process manual payments
       if (!payRes.error && payRes.data) {
         for (const p of payRes.data) {
           const ref = p.order_id || p.id;
@@ -1106,6 +1218,7 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
           }
 
           if (!txMap.has(ref) && !txMap.has(p.id)) {
+            const isUsdt = (p.payment_type || '').toUpperCase().includes('USDT') || (p.payment_method || '').toUpperCase().includes('USDT');
             txMap.set(ref, {
               id: p.id,
               userId: p.user_id,
@@ -1115,7 +1228,7 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
               balanceAfter: mappedStatus === 'Completed' ? Number(p.amount) : 0,
               status: mappedStatus,
               referenceId: p.order_id || p.id,
-              description: `Manual Recharge (${p.payment_type || 'UPI'})`,
+              description: isUsdt ? `USDT Deposit (${p.payment_type || 'TRC20'})` : `Manual Recharge (${p.payment_type || 'UPI'})`,
               paymentMethod: p.payment_type || 'Manual UPI',
               utr: p.utr,
               createdAt: p.created_at,
@@ -1124,7 +1237,7 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
         }
       }
 
-      // 4. Process withdrawals
+      // E. Process withdrawals
       if (!withRes.error && withRes.data) {
         for (const w of withRes.data) {
           const ref = w.id;
@@ -1155,7 +1268,7 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
         }
       }
 
-      // 5. Process hardware purchases
+      // F. Process hardware purchases
       if (!purRes.error && purRes.data) {
         for (const p of purRes.data) {
           const ref = p.id;
@@ -1178,7 +1291,7 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
         }
       }
 
-      // 6. Process claimed earnings / yield claims
+      // G. Process claimed earnings / yield claims
       if (!earnRes.error && earnRes.data) {
         for (const e of earnRes.data) {
           const ref = e.claim_batch_id || e.id;
@@ -1195,6 +1308,34 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
               description: e.plan_name ? `Yield Claim: ${e.plan_name}` : 'Hardware Yield Settlement',
               planName: e.plan_name,
               createdAt: e.claimed_at || e.created_at,
+            });
+          }
+        }
+      }
+
+      // H. Process gift code claims
+      if (!claimRes.error && claimRes.data) {
+        for (const c of claimRes.data) {
+          const code = c.code || c.gift_code || '';
+          const ref = 'GIFT-' + code;
+          if (txMap.has(ref)) {
+            const existing = txMap.get(ref)!;
+            existing.type = 'GIFT_CODE_REWARD';
+            if (!existing.description || existing.description.includes('ADMIN_ADJUSTMENT')) {
+              existing.description = `Gift Code Bonus — ${code}`;
+            }
+          } else if (!txMap.has(c.id)) {
+            txMap.set(ref, {
+              id: c.id,
+              userId: c.user_id,
+              type: 'GIFT_CODE_REWARD',
+              amount: Number(c.amount),
+              balanceBefore: 0,
+              balanceAfter: 0,
+              status: 'Completed',
+              referenceId: ref,
+              description: `Gift Code Bonus — ${code || 'Official Gift Code'}`,
+              createdAt: c.claimed_at || c.created_at,
             });
           }
         }
@@ -1506,6 +1647,21 @@ export async function checkProEligibility(userId: string, targetPlanId?: string)
  * Fetch dynamic referral settings (rules, amounts, consecutive days, tier percentages)
  */
 export async function fetchReferralSettings(): Promise<ReferralSettings> {
+  // 1. Try server endpoint
+  try {
+    const res = await fetch(apiUrl('/api/referral-settings'));
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        return {
+          ...defaultReferralSettings,
+          ...(json.data as Partial<ReferralSettings>),
+        };
+      }
+    }
+  } catch (_e) {}
+
+  // 2. Try Supabase directly
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase
@@ -1541,6 +1697,23 @@ export async function updateReferralSettings(
     updatedAt: new Date().toISOString(),
   };
 
+  // 1. Try server endpoint
+  try {
+    const res = await fetch(apiUrl('/api/admin/referral-settings'), {
+      method: 'POST',
+      headers: getAdminAuthHeaders(),
+      body: JSON.stringify({ settings: updated, adminId }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        saveLocal(STORAGE_KEYS.REFERRAL_SETTINGS, json.data);
+        return json.data;
+      }
+    }
+  } catch (_e) {}
+
+  // 2. Try Supabase directly
   if (isSupabaseConfigured && supabase) {
     try {
       const { error } = await supabase.from('admin_settings').upsert({
@@ -1899,7 +2072,7 @@ export async function processConsecutiveClaimReferralReward(
 
       const rewards = getLocal<ReferralRewardLog[]>(STORAGE_KEYS.REFERRAL_REWARDS, []);
       if (!rewards.some((r) => r.idempotencyKey === idempotencyKey)) {
-        rewardAmount = settings.streakReward.rewardAmount || 10;
+        rewardAmount = settings.streakReward.rewardAmount || 15;
         const refereeLabel = referee.username || referee.whatsappNo || 'Invited Friend';
         const description = `${targetDays}-Day Consecutive Claim Reward for referee ${refereeLabel}`;
         const refId = `STRK-${refereeUserId}-${cycleIndex}`;
@@ -2527,14 +2700,27 @@ export async function fetchAdminReferralData(): Promise<{
 // ==============================================================================
 
 export async function fetchPlans(): Promise<ProductItem[]> {
+  // 1. Try server endpoint first
+  try {
+    const res = await fetch(apiUrl('/api/plans'));
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+        return json.data;
+      }
+    }
+  } catch (_err) {}
+
+  // 2. Direct Supabase query fallback
   if (isSupabaseConfigured && supabase) {
     const { data, error } = await supabase
       .from('plans')
       .select('*')
+      .neq('status', 'archived')
       .order('price', { ascending: false });
 
     if (error || !data || data.length === 0) {
-      return getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+      return getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData).filter((p) => p.status !== 'archived');
     }
 
     return data.map((p) => ({
@@ -2562,7 +2748,7 @@ export async function fetchPlans(): Promise<ProductItem[]> {
       allowedHourlyPlanIds: p.allowed_hourly_plan_ids || [],
     }));
   } else {
-    return getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+    return getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData).filter((p) => p.status !== 'archived');
   }
 }
 
@@ -2582,7 +2768,7 @@ export async function createPlan(planData: Omit<ProductItem, 'id'>): Promise<Pro
   try {
     const res = await fetch(apiUrl('/api/admin/plans/save'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ plan: newPlan, adminId: 'adm_root_700' }),
     });
     const json = await res.json();
@@ -2603,7 +2789,7 @@ export async function updatePlan(planId: string, planData: Partial<ProductItem>)
   try {
     const res = await fetch(apiUrl('/api/admin/plans/save'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ plan: { id: planId, ...planData }, adminId: 'adm_root_700' }),
     });
     const json = await res.json();
@@ -2630,7 +2816,7 @@ export async function deletePlan(planId: string): Promise<void> {
   try {
     const res = await fetch(apiUrl('/api/admin/plans/delete'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ planId, adminId: 'adm_root_700' }),
     });
     const json = await res.json();
@@ -2756,14 +2942,22 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
 
   // 2. Try Server API endpoint
   try {
+    const authHeaders = await getAuthHeaders();
     const res = await fetch(apiUrl('/api/plans/purchase'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-user-id': userId },
+      headers: { 'Content-Type': 'application/json', 'x-user-id': userId, ...authHeaders },
       body: JSON.stringify({ userId, planId: plan.id }),
     });
     if (res.ok) {
       const resData = await res.json();
       if (resData.success) {
+        if (resData.vipLevel !== undefined && resData.vipLevel !== null) {
+          const prof = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {} as any);
+          if (prof && prof.id) {
+            prof.vipLevel = Math.max(prof.vipLevel || 0, Number(resData.vipLevel));
+            saveLocal(STORAGE_KEYS.PROFILE, prof);
+          }
+        }
         return resData;
       } else {
         throw new Error(resData.error || 'Failed to purchase plan');
@@ -2773,9 +2967,19 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
       if (errData.error) {
         throw new Error(errData.error);
       }
+      throw new Error(`Server returned status ${res.status}`);
     }
   } catch (e: any) {
-    if (e.message && (e.message.includes('Unlock at VIP') || e.message.includes('Insufficient') || e.message.includes('limit') || e.message.includes('Duplicate') || e.message.includes('Event Plan'))) {
+    // If the server explicitly rejected the purchase (e.g., VIP, limit, balance error), propagate directly!
+    if (e.message && (
+      e.message.includes('VIP') ||
+      e.message.includes('Insufficient') ||
+      e.message.includes('limit') ||
+      e.message.includes('Duplicate') ||
+      e.message.includes('Event') ||
+      e.message.includes('not found') ||
+      e.message.includes('active')
+    )) {
       throw e;
     }
   }
@@ -2936,6 +3140,24 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
     }
   }
 
+  // Check and update VIP level locally if qualified
+  const profile = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {} as any);
+  let localVipLevel = 0;
+  if (profile && profile.id) {
+    const curLevel = Number(profile.vipLevel || 0);
+    let nextVip = curLevel;
+    if (curLevel === 0 && planPrice >= 550) {
+      nextVip = 1;
+    } else if (curLevel === 1 && isPro) {
+      nextVip = 2;
+    }
+    if (nextVip > curLevel) {
+      profile.vipLevel = nextVip;
+      saveLocal(STORAGE_KEYS.PROFILE, profile);
+    }
+    localVipLevel = profile.vipLevel || nextVip;
+  }
+
   // Create Notification
   const notifs = getLocal<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []);
   notifs.unshift({
@@ -2956,6 +3178,7 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
     purchaseId,
     balance: finalBalance,
     instantBonusCredited: instantBonus,
+    vipLevel: localVipLevel,
     message: `${plan.name} purchased successfully!`,
   };
 }
@@ -2999,7 +3222,7 @@ export async function updatePaymentSettings(settings: Partial<PaymentSettings>, 
   try {
     const res = await fetch(apiUrl('/api/admin/payment-settings'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ config: settings, adminId }),
     });
     const json = await res.json();
@@ -4496,7 +4719,7 @@ export async function approveWithdrawal(withdrawalId: string, bankRefNoOrAdminId
   try {
     const resp = await fetch(apiUrl('/api/admin/approve-withdrawal'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({
         withdrawalId,
         adminId,
@@ -4588,7 +4811,7 @@ export async function rejectWithdrawal(withdrawalId: string, param2: string, par
   try {
     const resp = await fetch(apiUrl('/api/admin/reject-withdrawal'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({
         withdrawalId,
         adminId,
@@ -4723,7 +4946,7 @@ export async function saveAdminPlan(
   try {
     const res = await fetch(apiUrl('/api/admin/plans/save'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ plan: fullPlan, adminId }),
     });
     const json = await res.json();
@@ -4761,7 +4984,7 @@ export async function deleteAdminPlan(planId: string, adminId?: string): Promise
   try {
     const res = await fetch(apiUrl('/api/admin/plans/delete'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ planId, adminId }),
     });
     const json = await res.json();
@@ -4855,7 +5078,32 @@ export async function loginAdmin(usernameInput: string, passwordInput: string): 
     throw new Error('Please enter both admin username and password.');
   }
 
-  // 1. Verify credentials via secure cryptographic hashing
+  // 1. Authenticate with backend /api/admin/login
+  try {
+    const loginRes = await fetch(apiUrl('/api/admin/login'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: cleanUsername, password: cleanPassword }),
+    });
+    if (loginRes.ok) {
+      const loginData = await loginRes.json();
+      if (loginData.success && loginData.session) {
+        sessionStorage.setItem(ADMIN_STORAGE_KEYS.ADMIN_SESSION, JSON.stringify(loginData.session));
+        await recordAuditLog(loginData.session.adminId, 'ADMIN_LOGIN', 'auth', loginData.session.adminId, 'Admin authenticated via /api/admin/login');
+        return loginData.session;
+      }
+    } else if (loginRes.status === 401 || loginRes.status === 403) {
+      const err = await loginRes.json().catch(() => ({}));
+      throw new Error(err.error || 'Invalid admin credentials.');
+    }
+  } catch (err: any) {
+    if (err.message === 'Invalid admin credentials.' || err.message === 'Admin account is disabled.' || err.message === 'You are not authorized to access the Admin Panel.') {
+      throw err;
+    }
+    console.warn('Backend admin login fallback:', err);
+  }
+
+  // 2. Verify credentials via secure cryptographic hashing
   const credString = `${cleanUsername}:${cleanPassword}`;
   const computedHash = await computeSecureHash(credString);
 
@@ -4987,6 +5235,22 @@ export function getAdminSession(): import('../types').AdminSession | null {
 }
 
 /**
+ * Return authorization headers for administrative requests
+ */
+export function getAdminAuthHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
+  const session = getAdminSession();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...customHeaders,
+  };
+  if (session?.token) {
+    headers['Authorization'] = `Bearer ${session.token}`;
+    headers['X-Admin-Token'] = session.token;
+  }
+  return headers;
+}
+
+/**
  * Destroy Admin Session & Logout
  */
 export async function logoutAdmin(): Promise<void> {
@@ -5085,9 +5349,11 @@ export async function fetchAdminAuditLogs(): Promise<import('../types').AuditLog
  * Fetch Full Aggregated Dashboard Statistics
  */
 export async function fetchAdminDashboardStats(): Promise<import('../types').AdminDashboardStats> {
-  // First try backend API endpoint
+  // First try backend API endpoint with admin authentication
   try {
-    const apiRes = await fetch(apiUrl('/api/admin/dashboard-stats'));
+    const apiRes = await fetch(apiUrl('/api/admin/dashboard-stats'), {
+      headers: getAdminAuthHeaders(),
+    });
     if (apiRes.ok) {
       const json = await apiRes.json();
       if (json.success && json.data) {
@@ -5240,6 +5506,32 @@ export async function fetchAdminDashboardStats(): Promise<import('../types').Adm
  */
 export async function fetchAdminUsers(searchQuery: string = ''): Promise<(import('../types').UserProfile & { availableBalance?: number; totalInvested?: number; activeDevices?: number })[]> {
   const query = searchQuery.trim().toLowerCase();
+
+  // 1. First try authenticated backend API
+  try {
+    const apiRes = await fetch(apiUrl('/api/admin/users'), {
+      headers: getAdminAuthHeaders(),
+    });
+    if (apiRes.ok) {
+      const json = await apiRes.json();
+      if (json.success && Array.isArray(json.data)) {
+        let mapped = json.data;
+        if (query) {
+          mapped = mapped.filter((u: any) =>
+            (u.username || '').toLowerCase().includes(query) ||
+            (u.whatsappNo || '').toLowerCase().includes(query) ||
+            (u.mobile || '').toLowerCase().includes(query) ||
+            (u.email || '').toLowerCase().includes(query) ||
+            (u.membershipNumber || '').toLowerCase().includes(query) ||
+            (u.referralCode || '').toLowerCase().includes(query)
+          );
+        }
+        return mapped;
+      }
+    }
+  } catch (err) {
+    console.warn('Backend admin/users fallback:', err);
+  }
 
   if (isSupabaseConfigured && supabase) {
     try {
@@ -5705,7 +5997,7 @@ export async function saveAdminNews(news: Partial<import('../types').NewsItem>, 
   try {
     const res = await fetch(apiUrl('/api/admin/news/save'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ newsItem: item, adminId }),
     });
     const json = await res.json();
@@ -5736,7 +6028,7 @@ export async function deleteAdminNews(newsId: string, adminId: string): Promise<
   try {
     const res = await fetch(apiUrl('/api/admin/news/delete'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ id: newsId, adminId }),
     });
     const json = await res.json();
@@ -6031,7 +6323,7 @@ export async function saveAdminBanner(
   try {
     const res = await fetch(apiUrl('/api/admin/banners/save'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ banner: item, adminId }),
     });
     const json = await res.json();
@@ -6068,7 +6360,7 @@ export async function deleteAdminBanner(bannerId: string, adminId: string): Prom
   try {
     const res = await fetch(apiUrl('/api/admin/banners/delete'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ id: bannerId, adminId }),
     });
     const json = await res.json();
@@ -6137,7 +6429,7 @@ export async function saveWebsitePopup(
   try {
     const resp = await fetch(apiUrl('/api/admin/website-popup'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ config, adminId }),
     });
     if (resp.ok) {
@@ -7658,7 +7950,7 @@ export async function createGiftCode(
   try {
     const res = await fetch(apiUrl('/api/admin/gift-codes/save'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ giftCode: newCode, adminId, isNew: true }),
     });
     const json = await res.json();
@@ -7698,7 +7990,7 @@ export async function updateGiftCode(
   try {
     const res = await fetch(apiUrl('/api/admin/gift-codes/save'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ giftCode: { id, ...updated }, adminId, isNew: false }),
     });
     const json = await res.json();
@@ -7732,7 +8024,7 @@ export async function deleteGiftCode(id: string, adminId: string): Promise<boole
   try {
     const res = await fetch(apiUrl('/api/admin/gift-codes/delete'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ id, adminId }),
     });
     const json = await res.json();
@@ -7875,9 +8167,13 @@ export async function claimGiftCode(
 
   // 0. Attempt Server-Side Atomic Redemption
   try {
+    const authHeaders = await getAuthHeaders();
     const res = await fetch(apiUrl('/api/gift-codes/redeem'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
       body: JSON.stringify({ code: cleanCode, userId }),
     });
     const json = await res.json();
@@ -8097,7 +8393,7 @@ export async function claimGiftCode(
     balanceAfter: balAfter,
     balanceType: isTopupDest ? 'TOPUP_WALLET' : 'WITHDRAW_WALLET',
     referenceId: 'GIFT-' + giftCode.code,
-    description: `Gift code reward — ${giftCode.code} (${isTopupDest ? 'Topup Wallet' : 'Withdraw Wallet'})`,
+    description: `Gift Code Bonus — ${giftCode.code}`,
     createdAt: new Date().toISOString(),
   });
   saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
@@ -8326,37 +8622,84 @@ export async function fetchVipLevels(includeInactive: boolean = false): Promise<
 }
 
 /**
- * Fetch Comprehensive User VIP Status calculated dynamically from investments
+ * Fetch Comprehensive User VIP Status calculated authoritatively from profile & database source of truth
  */
 export async function fetchUserVipStatus(userId: string): Promise<UserVipStatus> {
   const allLevels = await fetchVipLevels(false);
-  // Sort ascending by minInvestment
-  const sorted = [...allLevels].sort((a, b) => a.minInvestment - b.minInvestment);
+  // Sort ascending by levelNumber
+  const sorted = [...allLevels].sort((a, b) => a.levelNumber - b.levelNumber);
 
-  // Fetch all user purchases to get total qualifying investment
-  const purchases = await fetchPurchases(userId);
-  // Sum up all active or total qualifying investments
-  const totalInvested = purchases.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  // 1. Authoritative VIP Level from Server / Database
+  let effectiveVip = 0;
+  try {
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(apiUrl(`/api/user/vip-status?userId=${encodeURIComponent(userId)}`), {
+      headers: { ...authHeaders },
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.vipLevel !== undefined && json.vipLevel !== null) {
+        effectiveVip = Number(json.vipLevel);
+      }
+    }
+  } catch (_netErr) {}
 
-  // Find the highest level where user meets minInvestment
-  let currentLevel = sorted[0] || defaultVipLevels[0];
-  for (const level of sorted) {
-    if (totalInvested >= level.minInvestment) {
-      currentLevel = level;
+  if (effectiveVip === 0 && isSupabaseConfigured && supabase) {
+    try {
+      const { data: prof } = await supabase
+        .from('profiles')
+        .select('vip_level')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (prof && prof.vip_level !== undefined && prof.vip_level !== null) {
+        effectiveVip = Number(prof.vip_level);
+      }
+    } catch (_dbErr) {}
+  }
+
+  if (effectiveVip === 0) {
+    const localProf = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {} as any);
+    if (localProf && localProf.vipLevel !== undefined && localProf.vipLevel !== null) {
+      effectiveVip = Number(localProf.vipLevel);
     }
   }
 
-  // Find next tier if any
-  const nextLevel = sorted.find((l) => l.minInvestment > totalInvested) || null;
+  // Fetch all user purchases
+  const purchases = await fetchPurchases(userId);
+  const totalInvested = purchases.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
+  // Match current level by levelNumber
+  let currentLevel = sorted.find((l) => l.levelNumber === effectiveVip) ||
+    defaultVipLevels.find((l) => l.levelNumber === effectiveVip) ||
+    sorted[0] ||
+    defaultVipLevels[0];
+
+  // Match next level by levelNumber
+  const nextLevel = sorted.find((l) => l.levelNumber === effectiveVip + 1) ||
+    defaultVipLevels.find((l) => l.levelNumber === effectiveVip + 1) ||
+    null;
 
   let remainingForNextLevel = 0;
   let progressPercentage = 100;
 
   if (nextLevel) {
-    remainingForNextLevel = Math.max(0, +(nextLevel.minInvestment - totalInvested).toFixed(2));
-    const range = nextLevel.minInvestment - currentLevel.minInvestment;
-    const progressSoFar = totalInvested - currentLevel.minInvestment;
-    progressPercentage = Math.min(100, Math.max(0, Math.round((progressSoFar / (range > 0 ? range : 1)) * 100)));
+    if (effectiveVip === 0) {
+      // Rule 2: VIP 0 -> VIP 1 requires first qualifying purchase >= 550
+      const highestPurchase = purchases.reduce((max, p) => Math.max(max, Number(p.amount) || 0), 0);
+      remainingForNextLevel = Math.max(0, +(550 - highestPurchase).toFixed(2));
+      progressPercentage = Math.min(100, Math.max(0, Math.round((highestPurchase / 550) * 100)));
+    } else if (effectiveVip === 1) {
+      // Rule 4: VIP 1 -> VIP 2 requires purchasing a PRO plan
+      const hasPro = purchases.some((p) => (p.planCategory || '').toUpperCase() === 'PRO' || (p.planName || '').toUpperCase().includes('PRO'));
+      remainingForNextLevel = hasPro ? 0 : 1;
+      progressPercentage = hasPro ? 100 : 50;
+    } else {
+      // Rule 6: VIP 3-6 are deposit-based tiers
+      const range = nextLevel.minInvestment - currentLevel.minInvestment;
+      const progressSoFar = Math.max(0, totalInvested - currentLevel.minInvestment);
+      remainingForNextLevel = Math.max(0, +(nextLevel.minInvestment - totalInvested).toFixed(2));
+      progressPercentage = Math.min(100, Math.max(0, Math.round((progressSoFar / (range > 0 ? range : 1)) * 100)));
+    }
   }
 
   return {
@@ -8598,7 +8941,24 @@ export async function fetchDailyCheckInStatus(userId: string): Promise<import('.
   // Try backend API first for database-persistent status
   if (userId) {
     try {
-      const resp = await fetch(apiUrl(`/api/fortune/checkin-status?userId=${encodeURIComponent(userId)}`));
+      let accessToken: string | null = null;
+      if (isSupabaseConfigured && supabase) {
+        try {
+          const { data: sessionData } = await supabase.auth.getSession();
+          if (sessionData?.session?.access_token) {
+            accessToken = sessionData.session.access_token;
+          }
+        } catch (authErr) {
+          console.warn('[CHECKIN STATUS AUTH] Notice:', authErr);
+        }
+      }
+      const headers: Record<string, string> = {};
+      if (accessToken) {
+        headers['Authorization'] = `Bearer ${accessToken}`;
+      }
+      const resp = await fetch(apiUrl(`/api/fortune/checkin-status?userId=${encodeURIComponent(userId)}`), {
+        headers,
+      });
       if (resp.ok) {
         const json = await resp.json();
         if (json.success) {
@@ -8693,14 +9053,34 @@ export async function performDailyCheckIn(userId: string): Promise<{
 
   const storageKey = `${STORAGE_KEYS.DAILY_CHECKIN}_${userId}`;
 
-  // Call Server-Side Supabase Admin Backend API
+  // 1. Resolve active user session token if available
+  let accessToken: string | null = null;
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData?.session?.access_token) {
+        accessToken = sessionData.session.access_token;
+      }
+      if (!userId && sessionData?.session?.user?.id) {
+        userId = sessionData.session.user.id;
+      }
+    } catch (authErr) {
+      console.warn('[CHECKIN AUTH] Notice:', authErr);
+    }
+  }
+
+  // 2. Call Server-Side Supabase Admin Backend API with standard CORS-allowed headers
   try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (accessToken) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+    }
+
     const resp = await fetch(apiUrl('/api/fortune/checkin'), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-user-id': userId,
-      },
+      headers,
       body: JSON.stringify({ userId }),
     });
 
@@ -8879,7 +9259,7 @@ export async function updateAboutPlatformConfig(
   try {
     const res = await fetch(apiUrl('/api/admin/about-platform'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ config: updated, adminId }),
     });
     const contentType = res.headers.get('content-type') || '';
@@ -9019,7 +9399,7 @@ export async function createMission(
   try {
     const res = await fetch(apiUrl('/api/admin/missions/save'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ mission: newMission, adminId }),
     });
     const json = await res.json();
@@ -9073,7 +9453,7 @@ export async function updateMission(
   try {
     const res = await fetch(apiUrl('/api/admin/missions/save'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ mission: { id, ...updated }, adminId }),
     });
     const json = await res.json();
@@ -9124,7 +9504,7 @@ export async function deleteMission(id: string, adminId: string = 'adm_root_700'
   try {
     const res = await fetch(apiUrl('/api/admin/missions/delete'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ missionId: id, adminId }),
     });
     const json = await res.json();
@@ -9879,7 +10259,9 @@ export async function submitDepositComplaint(data: {
 
 export async function fetchAdminDepositComplaints(): Promise<import('../types').DepositComplaint[]> {
   try {
-    const resp = await fetch(apiUrl('/api/admin/complaints'));
+    const resp = await fetch(apiUrl('/api/admin/complaints'), {
+      headers: getAdminAuthHeaders(),
+    });
     if (resp.ok) {
       const json = await resp.json();
       if (json.success && Array.isArray(json.data)) {
@@ -9946,7 +10328,7 @@ export async function fetchAdminDepositComplaints(): Promise<import('../types').
 export async function approveDepositComplaint(complaintId: string, adminId: string, adminNote?: string): Promise<{ success: boolean; message: string }> {
   const resp = await fetch(apiUrl('/api/admin/approve-complaint'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAdminAuthHeaders(),
     body: JSON.stringify({ complaintId, adminId, adminNote }),
   });
 
@@ -9968,7 +10350,7 @@ export async function approveDepositComplaint(complaintId: string, adminId: stri
 export async function rejectDepositComplaint(complaintId: string, rejectionReason: string, adminId: string): Promise<{ success: boolean; message: string }> {
   const resp = await fetch(apiUrl('/api/admin/reject-complaint'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAdminAuthHeaders(),
     body: JSON.stringify({ complaintId, rejectionReason, adminId }),
   });
 
@@ -10030,7 +10412,7 @@ export async function saveSiteSettings(config: Partial<SiteSettings>, adminId = 
   try {
     const res = await fetch(apiUrl('/api/admin/site-settings'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ config, adminId }),
     });
     const contentType = res.headers.get('content-type') || '';
@@ -10084,7 +10466,7 @@ export async function uploadSiteAsset(file: File, prefix = 'branding'): Promise<
   try {
     const res = await fetch(apiUrl('/api/admin/upload-asset'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({
         fileName,
         fileData: dataUrl,
@@ -10169,7 +10551,7 @@ export async function saveRechargeSettings(config: Partial<RechargeSettings>, ad
   try {
     const res = await fetch(apiUrl('/api/admin/recharge-settings'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ config, adminId }),
     });
     const contentType = res.headers.get('content-type') || '';
@@ -10252,7 +10634,7 @@ export async function saveUsdtSettings(config: Partial<UsdtSettings>, adminId = 
   try {
     const res = await fetch(apiUrl('/api/admin/usdt-settings'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminAuthHeaders(),
       body: JSON.stringify({ config, adminId }),
     });
     const contentType = res.headers.get('content-type') || '';
@@ -10356,7 +10738,9 @@ export async function fetchUserUsdtDeposits(userId: string): Promise<UsdtDeposit
 
 export async function fetchAdminUsdtDeposits(): Promise<UsdtDepositItem[]> {
   try {
-    const res = await fetch(apiUrl('/api/admin/usdt-deposits'));
+    const res = await fetch(apiUrl('/api/admin/usdt-deposits'), {
+      headers: getAdminAuthHeaders(),
+    });
     const json = await res.json();
     if (json.success && Array.isArray(json.data)) {
       return json.data;
@@ -10387,7 +10771,7 @@ export async function fetchUsdtSignedUrl(userId: string, depositId?: string, fil
 export async function approveUsdtDeposit(depositId: string, adminId = 'adm_root', adminNote = ''): Promise<{ success: boolean; message: string }> {
   const res = await fetch(apiUrl('/api/admin/approve-usdt-deposit'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAdminAuthHeaders(),
     body: JSON.stringify({ depositId, adminId, adminNote }),
   });
   const json = await res.json();
@@ -10400,7 +10784,7 @@ export async function approveUsdtDeposit(depositId: string, adminId = 'adm_root'
 export async function rejectUsdtDeposit(depositId: string, rejectionReason: string, adminId = 'adm_root'): Promise<{ success: boolean; message: string }> {
   const res = await fetch(apiUrl('/api/admin/reject-usdt-deposit'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAdminAuthHeaders(),
     body: JSON.stringify({ depositId, rejectionReason, adminId }),
   });
   const json = await res.json();

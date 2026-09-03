@@ -7,6 +7,7 @@ interface HeaderProps {
   unreadCount?: number;
   title?: string;
   isDark?: boolean;
+  isLoading?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -14,20 +15,24 @@ export const Header: React.FC<HeaderProps> = ({
   unreadCount = 0,
   title,
   isDark = true,
+  isLoading = false,
 }) => {
-  const { siteSettings } = useSiteBranding();
+  const { siteSettings, isLoading: brandingLoading } = useSiteBranding();
   const [logoLoadError, setLogoLoadError] = React.useState(false);
 
   const displayTitle = title || siteSettings?.siteTitle || 'GAIN POWER';
   const logoUrl = siteSettings?.logoUrl;
+  const isLogoLoading = isLoading || brandingLoading;
 
   return (
     <header className={`w-full px-4 py-3 flex items-center justify-between transition-colors ${
       isDark ? 'bg-[#121212] text-white' : 'bg-white text-gray-900 border-b border-gray-100'
     }`}>
-      {/* Left: Brand logo area (ONLY uploaded logo image, no adjacent text title) */}
+      {/* Left: Brand logo area (shows sleek skeleton placeholder until dynamic logo data is ready) */}
       <div className="flex items-center">
-        {logoUrl && !logoLoadError ? (
+        {isLogoLoading ? (
+          <div className="h-7 w-28 rounded-md bg-white/10 animate-pulse border border-white/5" />
+        ) : logoUrl && !logoLoadError ? (
           <img
             src={logoUrl}
             alt={displayTitle || 'Platform Logo'}
@@ -53,7 +58,7 @@ export const Header: React.FC<HeaderProps> = ({
           }`}
         >
           <Bell className="w-4.5 h-4.5" />
-          {unreadCount > 0 && (
+          {!isLogoLoading && unreadCount > 0 && (
             <span className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 bg-[#FF6000] text-white text-[10px] font-black rounded-full flex items-center justify-center border-2 border-[#121212] shadow-sm animate-in zoom-in-50 duration-200">
               {unreadCount > 99 ? '99+' : unreadCount}
             </span>
