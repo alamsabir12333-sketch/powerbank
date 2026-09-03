@@ -1,3 +1,4 @@
+import { apiUrl } from './apiClient';
 import { supabase, isSupabaseConfigured, isTableMissingError, supabaseUrl, supabaseAnonKey } from '../lib/supabase';
 import {
   UserProfile,
@@ -94,39 +95,6 @@ const STORAGE_KEYS = {
   MISSIONS: 'pb_missions',
   MISSION_CLAIMS: 'pb_mission_claims',
 };
-
-// ==============================================================================
-// DYNAMIC BACKEND API ROUTER & BASE URL RESOLVER
-// ==============================================================================
-export function getApiBaseUrl(): string {
-  const envUrl = (
-    (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL)) ||
-    ''
-  ).trim();
-  if (envUrl) {
-    return envUrl.replace(/\/+$/, '');
-  }
-  // Hostinger production static domain safeguard
-  if (
-    typeof window !== 'undefined' &&
-    window.location &&
-    (window.location.hostname.includes('gainpower-top-1.com') || window.location.hostname.includes('gainpower'))
-  ) {
-    return 'https://ais-dev-d34grmbfgtflzvx45gft2s-97603468745.asia-southeast1.run.app';
-  }
-  return '';
-}
-
-export function apiUrl(endpoint: string): string {
-  const base = getApiBaseUrl();
-  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  return base ? `${base}${cleanEndpoint}` : cleanEndpoint;
-}
-
-export async function apiFetch(endpoint: string, init?: RequestInit): Promise<Response> {
-  const url = apiUrl(endpoint);
-  return fetch(url, init);
-}
 
 // Default initial state
 const defaultPaymentSettings: PaymentSettings = {
@@ -418,56 +386,35 @@ export async function verifyReferralCode(code: string): Promise<{
   referrerId?: string;
   referrerName?: string;
 }> {
-  const cleanCode = (code || '').trim();
+  const cleanCode = code.trim().toUpperCase();
   if (!cleanCode) {
     return { valid: false };
   }
 
   if (isSupabaseConfigured && supabase) {
-    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanCode);
-    const filter = isUUID
-      ? `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode},user_id.eq.${cleanCode},id.eq.${cleanCode}`
-      : `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode}`;
-
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, user_id, username, membership_number, referral_code')
-      .or(filter)
+      .select('user_id, username, membership_number, referral_code')
+      .or(`referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode}`)
       .limit(1);
 
-    if (data && data.length > 0) {
-      const refUser = data[0];
-      return {
-        valid: true,
-        referrerId: refUser.user_id || refUser.id,
-        referrerName: refUser.username || refUser.membership_number || refUser.referral_code,
-      };
+    if (error || !data || data.length === 0) {
+      return { valid: false };
     }
 
-    // Fallback: check by inviter phone/whatsapp_no/mobile
-    const { data: phoneData } = await supabase
-      .from('profiles')
-      .select('id, user_id, username, membership_number, referral_code')
-      .or(`phone.eq.${cleanCode},whatsapp_no.eq.${cleanCode},mobile.eq.${cleanCode}`)
-      .limit(1);
-
-    if (phoneData && phoneData.length > 0) {
-      const refUser = phoneData[0];
-      return {
-        valid: true,
-        referrerId: refUser.user_id || refUser.id,
-        referrerName: refUser.username || refUser.membership_number || refUser.referral_code,
-      };
-    }
-
-    return { valid: false };
+    const refUser = data[0];
+    return {
+      valid: true,
+      referrerId: refUser.user_id,
+      referrerName: refUser.username || refUser.membership_number,
+    };
   } else {
     const allUsers = getLocal<UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
     const current = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {} as UserProfile);
     const match = [...allUsers, current].find(
       (u) =>
-        u.referralCode?.toLowerCase() === cleanCode.toLowerCase() ||
-        u.membershipNumber?.toLowerCase() === cleanCode.toLowerCase()
+        u.referralCode?.toUpperCase() === cleanCode ||
+        u.membershipNumber?.toUpperCase() === cleanCode
     );
 
     if (match) {
@@ -475,6 +422,14 @@ export async function verifyReferralCode(code: string): Promise<{
         valid: true,
         referrerId: match.userId || match.id,
         referrerName: match.username || match.membershipNumber,
+      };
+    }
+    // Also accept default GP888999 or legacy PB for test / demo convenience
+    if (cleanCode === 'GP888999' || cleanCode === 'PB888999' || cleanCode.startsWith('GP') || cleanCode.startsWith('PB')) {
+      return {
+        valid: true,
+        referrerId: 'usr_demo_01',
+        referrerName: 'GAIN POWER Admin',
       };
     }
     return { valid: false };
@@ -554,12 +509,13 @@ export async function registerUserAccount(formData: RegisterFormData) {
     let serverProfile: any = null;
     let serverWallet: any = null;
 
-    // 4. Authoritative Registration via Server API (server.ts creates user with auto-confirmed email)
+    // 4. Authoritative Registration via Express backend (Cloud Run API)
+    const regUrl = apiUrl('/api/auth/register');
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     let regResp: Response;
     try {
-      regResp = await fetch(apiUrl('/api/auth/register'), {
+      regResp = await fetch(regUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
@@ -574,20 +530,26 @@ export async function registerUserAccount(formData: RegisterFormData) {
           membershipNumber,
         }),
       });
-    } catch (fetchErr: any) {
+    } catch (networkErr: any) {
       clearTimeout(timeoutId);
-      throw new Error(`Cannot connect to registration server: ${fetchErr?.message || 'Network error'}. Please check server connection.`);
+      throw new Error(`Registration network error: ${networkErr.message || 'Unable to reach backend server.'}`);
     }
     clearTimeout(timeoutId);
 
     const contentType = regResp.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      throw new Error(`Registration API endpoint returned non-JSON response (HTTP ${regResp.status}). Backend server may not be routing API requests.`);
+    if (contentType.includes('text/html')) {
+      throw new Error(`Backend API returned HTML instead of JSON (${regResp.status}). Check backend status.`);
     }
 
-    const regData = await regResp.json().catch(() => null);
+    let regData: any = null;
+    try {
+      regData = await regResp.json();
+    } catch {
+      throw new Error(`Invalid JSON response received from backend during registration.`);
+    }
+
     if (!regResp.ok || !regData?.success || !regData?.userId) {
-      const errorMsg = regData?.error || `Registration failed (HTTP ${regResp.status}).`;
+      const errorMsg = regData?.error || `Registration failed on server (Status: ${regResp.status}).`;
       if (errorMsg.toLowerCase().includes('already registered') || errorMsg.toLowerCase().includes('duplicate')) {
         throw new Error('This phone number is already registered. Please login instead.');
       }
@@ -600,7 +562,7 @@ export async function registerUserAccount(formData: RegisterFormData) {
     serverWallet = regData.wallet;
 
     if (!effectiveUserId) {
-      throw new Error('Registration failed: no valid user ID returned from database.');
+      throw new Error('Registration failed: no valid user ID returned from backend.');
     }
 
     // 5. Establish client Supabase Auth session with credentials

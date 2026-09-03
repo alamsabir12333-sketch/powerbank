@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { Wallet, DepositTransaction, RechargeSettings, UsdtSettings } from '../types';
+import { apiUrl } from '../services/apiClient';
 import {
   fetchDepositTransactions,
   submitDepositComplaint,
@@ -8,7 +9,6 @@ import {
   compressImageFile,
   fetchRechargeSettings,
   fetchUsdtSettings,
-  apiUrl,
 } from '../services/api';
 import {
   ChevronLeft,
@@ -439,6 +439,10 @@ export default function TopUpPage({
             customerPhone: effectivePhone,
           }),
         });
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('text/html')) {
+          throw new Error('Payment gateway backend returned an invalid response (HTML). Please verify backend status.');
+        }
         const backendData = await res.json().catch(() => null);
         response = { data: backendData, error: null };
       }

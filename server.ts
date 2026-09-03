@@ -14,20 +14,38 @@ const app = express();
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(express.json({ limit: '50mb' }));
 
-// CORS handler to support requests from gainpower-top-1.com and production domains
+// CORS Configuration for Production Frontend & Preview Environments
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin) {
+  const allowedOrigins = [
+    'https://gainpower-top-1.com',
+    'https://www.gainpower-top-1.com',
+    'https://power-bank-3ib3vyvgja-as.a.run.app',
+    'https://ais-dev-d34grmbfgtflzvx45gft2s-97603468745.asia-southeast1.run.app',
+    'https://ais-pre-d34grmbfgtflzvx45gft2s-97603468745.asia-southeast1.run.app',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:5173',
+  ];
+
+  const isAllowed = origin && (
+    allowedOrigins.includes(origin) ||
+    origin.endsWith('.run.app') ||
+    origin.includes('gainpower-top-1.com')
+  );
+
+  if (isAllowed) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-  } else {
-    res.setHeader('Access-Control-Allow-Origin', '*');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Admin-Token');
+
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    return res.status(204).end();
   }
+
   next();
 });
 
@@ -198,25 +216,15 @@ app.post('/api/auth/register', async (req, res) => {
     const filterStr = isUUID
       ? `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef},user_id.eq.${cleanRef},id.eq.${cleanRef}`
       : `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef}`;
-    const { data: refProfList, error: refProfErr } = await supabase
+    const { data: refProf, error: refProfErr } = await supabase
       .from('profiles')
       .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
       .or(filterStr)
-      .limit(1);
+      .maybeSingle();
     if (refProfErr) {
       console.warn('[SERVER AUTH] Referrer lookup error:', refProfErr.message);
     }
-    referrerProfile = refProfList && refProfList.length > 0 ? refProfList[0] : null;
-
-    if (!referrerProfile) {
-      // Fallback: check if cleanRef matches inviter phone number
-      const { data: phoneProfList } = await supabase
-        .from('profiles')
-        .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
-        .or(`phone.eq.${cleanRef},whatsapp_no.eq.${cleanRef},mobile.eq.${cleanRef}`)
-        .limit(1);
-      referrerProfile = phoneProfList && phoneProfList.length > 0 ? phoneProfList[0] : null;
-    }
+    referrerProfile = refProf;
 
     if (!referrerProfile) {
       return res.status(400).json({
@@ -542,92 +550,88 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Referral Code Verification Endpoint
-app.get('/api/auth/verify-referral/:code', async (req, res) => {
-  const cleanCode = String(req.params.code || '').trim();
-  if (!cleanCode || !supabase) {
-    return res.json({ valid: false, error: 'Code required' });
+app.post('/api/auth/login', async (req, res) => {
+  const { identifier = '', phone = '', username = '', email = '', password = '' } = req.body;
+  const inputId = String(identifier || phone || username || email || '').trim();
+
+  if (!inputId) {
+    return res.status(400).json({ success: false, error: 'Please enter your phone number, username, or email.' });
+  }
+  if (!password) {
+    return res.status(400).json({ success: false, error: 'Please enter your password.' });
+  }
+
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database service unavailable' });
   }
 
   try {
-    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanCode);
-    const filterStr = isUUID
-      ? `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode},user_id.eq.${cleanCode},id.eq.${cleanCode}`
-      : `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode}`;
+    const cleanDigits = inputId.replace(/\D/g, '');
+    let targetEmail = inputId;
 
-    const { data: refProfList } = await supabase
-      .from('profiles')
-      .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
-      .or(filterStr)
-      .limit(1);
-
-    let referrer = refProfList && refProfList.length > 0 ? refProfList[0] : null;
-
-    if (!referrer) {
-      const { data: phoneProfList } = await supabase
+    if (!inputId.includes('@')) {
+      const { data: profile } = await supabase
         .from('profiles')
-        .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
-        .or(`phone.eq.${cleanCode},whatsapp_no.eq.${cleanCode},mobile.eq.${cleanCode}`)
-        .limit(1);
-      referrer = phoneProfList && phoneProfList.length > 0 ? phoneProfList[0] : null;
+        .select('email, id, user_id, username, phone')
+        .or(`phone.eq.${cleanDigits},whatsapp_no.eq.${cleanDigits},mobile.eq.${cleanDigits},username.ilike.${inputId}`)
+        .limit(1)
+        .maybeSingle();
+
+      if (profile?.email) {
+        targetEmail = profile.email;
+      } else {
+        targetEmail = `${cleanDigits || inputId}@gainpower.top`;
+      }
     }
 
-    if (!referrer) {
-      return res.json({ valid: false });
+    let authUser: any = null;
+    let authSession: any = null;
+
+    const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+      email: targetEmail,
+      password,
+    });
+
+    if (authErr || !authData?.user) {
+      if (cleanDigits) {
+        const fallbacks = [`${cleanDigits}@gainpower.internal`, `${cleanDigits}@powerbank.app`];
+        let recovered = false;
+        for (const fbEmail of fallbacks) {
+          const { data: fbData, error: fbErr } = await supabase.auth.signInWithPassword({
+            email: fbEmail,
+            password,
+          });
+          if (!fbErr && fbData?.user) {
+            recovered = true;
+            authUser = fbData.user;
+            authSession = fbData.session;
+            break;
+          }
+        }
+        if (!recovered) {
+          return res.status(401).json({ success: false, error: 'Invalid phone number or password.' });
+        }
+      } else {
+        return res.status(401).json({ success: false, error: authErr?.message || 'Invalid credentials.' });
+      }
+    } else {
+      authUser = authData.user;
+      authSession = authData.session;
     }
+
+    const uid = authUser.id;
+    const { data: prof } = await supabase.from('profiles').select('*').eq('user_id', uid).maybeSingle();
+    const { data: wal } = await supabase.from('wallets').select('*').eq('user_id', uid).maybeSingle();
 
     return res.json({
-      valid: true,
-      referrerId: referrer.user_id || referrer.id,
-      referrerName: referrer.username || referrer.membership_number || referrer.referral_code,
-      referralCode: referrer.referral_code || referrer.membership_number,
+      success: true,
+      user: authUser,
+      session: authSession,
+      profile: prof,
+      wallet: wal,
     });
   } catch (err: any) {
-    return res.status(500).json({ valid: false, error: err.message });
-  }
-});
-
-app.post('/api/auth/verify-referral', async (req, res) => {
-  const cleanCode = String(req.body?.code || req.body?.referralCode || '').trim();
-  if (!cleanCode || !supabase) {
-    return res.json({ valid: false, error: 'Code required' });
-  }
-
-  try {
-    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanCode);
-    const filterStr = isUUID
-      ? `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode},user_id.eq.${cleanCode},id.eq.${cleanCode}`
-      : `referral_code.ilike.${cleanCode},membership_number.ilike.${cleanCode}`;
-
-    const { data: refProfList } = await supabase
-      .from('profiles')
-      .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
-      .or(filterStr)
-      .limit(1);
-
-    let referrer = refProfList && refProfList.length > 0 ? refProfList[0] : null;
-
-    if (!referrer) {
-      const { data: phoneProfList } = await supabase
-        .from('profiles')
-        .select('id, user_id, referral_code, membership_number, username, phone, mobile, whatsapp_no')
-        .or(`phone.eq.${cleanCode},whatsapp_no.eq.${cleanCode},mobile.eq.${cleanCode}`)
-        .limit(1);
-      referrer = phoneProfList && phoneProfList.length > 0 ? phoneProfList[0] : null;
-    }
-
-    if (!referrer) {
-      return res.json({ valid: false });
-    }
-
-    return res.json({
-      valid: true,
-      referrerId: referrer.user_id || referrer.id,
-      referrerName: referrer.username || referrer.membership_number || referrer.referral_code,
-      referralCode: referrer.referral_code || referrer.membership_number,
-    });
-  } catch (err: any) {
-    return res.status(500).json({ valid: false, error: err.message });
+    return res.status(500).json({ success: false, error: err.message || 'Login error' });
   }
 });
 

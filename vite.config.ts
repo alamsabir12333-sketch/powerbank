@@ -6,6 +6,9 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    define: {
+      'import.meta.env.VITE_API_BASE_URL': JSON.stringify('https://power-bank-3ib3vyvgja-as.a.run.app'),
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
