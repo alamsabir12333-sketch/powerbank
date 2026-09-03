@@ -121,12 +121,12 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
         adminId
       );
       onShowToast(
-        `Successfully ${adjustType === 'CREDIT' ? 'credited' : 'debited'} ₹${amountNum} (${adjustBalanceType.replace('_', ' ')})`
+        `Successfully ${adjustType === 'CREDIT' ? 'credited' : 'debited'} ₹${amountNum.toFixed(2)} (${adjustBalanceType.replace('_', ' ')}). New balance: ₹${(res.afterBalance ?? 0).toFixed(2)}`
       );
       setAdjustModalUser(null);
       setAdjustAmount('');
       setAdjustReason('');
-      loadUsers();
+      await loadUsers();
       onRefreshGlobalStats();
       if (selectedUserId === (adjustModalUser.userId || adjustModalUser.id)) {
         handleOpenDetails(selectedUserId);
@@ -143,9 +143,9 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
     setSubmittingStatus(true);
     try {
       await updateUserStatus(statusModalUser.userId || statusModalUser.id, newStatus, adminId);
-      onShowToast(`User status updated to ${newStatus}`);
+      onShowToast(`User status successfully updated to ${newStatus.toUpperCase()}`);
       setStatusModalUser(null);
-      loadUsers();
+      await loadUsers();
       onRefreshGlobalStats();
     } catch (e: any) {
       onShowToast(e.message || 'Failed to update status');
@@ -381,6 +381,23 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
               <div className="flex justify-between">
                 <span className="text-gray-500">Current Available Balance:</span>
                 <span className="font-bold text-emerald-400">₹{(adjustModalUser.availableBalance || adjustModalUser.walletBalance || 0).toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between text-[11px]">
+                <span className="text-gray-500">Target Account ({adjustBalanceType.replace('_', ' ')}):</span>
+                <span className="font-semibold text-cyan-400">
+                  ₹{(() => {
+                    if (adjustBalanceType === 'TOPUP_WALLET' || adjustBalanceType === 'RECHARGE_BALANCE') {
+                      return (adjustModalUser.rechargeBalance ?? adjustModalUser.topupBalance ?? 0).toFixed(2);
+                    }
+                    if (adjustBalanceType === 'WITHDRAW_WALLET' || adjustBalanceType === 'MY_WALLET') {
+                      return (adjustModalUser.withdrawBalance ?? adjustModalUser.myWalletBalance ?? 0).toFixed(2);
+                    }
+                    if (adjustBalanceType === 'REFERRAL_BALANCE') {
+                      return (adjustModalUser.teamCommission ?? 0).toFixed(2);
+                    }
+                    return (adjustModalUser.availableBalance ?? 0).toFixed(2);
+                  })()}
+                </span>
               </div>
             </div>
 

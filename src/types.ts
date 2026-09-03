@@ -36,6 +36,14 @@ export interface UserProfile {
   deviceEarnings: number;
   teamEarnings: number;
   walletBalance: number;
+  availableBalance?: number;
+  rechargeBalance?: number;
+  topupBalance?: number;
+  withdrawBalance?: number;
+  myWalletBalance?: number;
+  teamCommission?: number;
+  totalInvested?: number;
+  activeDevices?: number;
   withdrawalPassword?: string;
   avatarUrl?: string;
   createdAt?: string;

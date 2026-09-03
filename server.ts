@@ -4132,6 +4132,11 @@ app.get('/api/admin/users', verifyAdminAuth, async (req, res) => {
         status: p.status || 'active',
         availableBalance: Number(walletObj?.available_balance || 0),
         walletBalance: Number(walletObj?.available_balance || 0),
+        rechargeBalance: Number(walletObj?.recharge_balance || 0),
+        topupBalance: Number(walletObj?.recharge_balance || 0),
+        withdrawBalance: Number(walletObj?.withdraw_balance !== undefined && walletObj?.withdraw_balance !== null ? walletObj.withdraw_balance : (walletObj?.earned_balance || 0)),
+        myWalletBalance: Number(walletObj?.withdraw_balance !== undefined && walletObj?.withdraw_balance !== null ? walletObj.withdraw_balance : (walletObj?.earned_balance || 0)),
+        teamCommission: Number(walletObj?.team_commission || 0),
         totalInvested,
         activeDevices,
         createdAt: p.created_at,
@@ -4141,6 +4146,441 @@ app.get('/api/admin/users', verifyAdminAuth, async (req, res) => {
     return res.json({ success: true, data: formatted });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+const activeAdjustments = new Set<string>();
+
+app.get('/api/admin/users/:userId/wallet', verifyAdminAuth, async (req, res) => {
+  const targetId = String(req.params.userId || '').trim();
+  if (!targetId || !supabase) {
+    return res.status(400).json({ success: false, error: 'User ID is required.' });
+  }
+  try {
+    const { data: wallet, error: walErr } = await supabase
+      .from('wallets')
+      .select('*')
+      .or(`user_id.eq.${targetId},id.eq.${targetId}`)
+      .maybeSingle();
+
+    if (walErr) {
+      return res.status(500).json({ success: false, error: walErr.message });
+    }
+
+    const rechargeBalance = Number(wallet?.recharge_balance || 0);
+    const withdrawBalance = Number(wallet?.withdraw_balance !== undefined && wallet?.withdraw_balance !== null ? wallet.withdraw_balance : (wallet?.earned_balance || 0));
+    const teamCommission = Number(wallet?.team_commission || 0);
+    const availableBalance = Number(wallet?.available_balance ?? (rechargeBalance + withdrawBalance));
+
+    return res.json({
+      success: true,
+      data: {
+        userId: targetId,
+        rechargeBalance,
+        topupBalance: rechargeBalance,
+        withdrawBalance,
+        myWalletBalance: withdrawBalance,
+        teamCommission,
+        availableBalance,
+        totalEarned: Number(wallet?.total_earned || 0),
+        totalWithdrawn: Number(wallet?.total_withdrawn || 0),
+        pendingBalance: Number(wallet?.pending_balance || 0),
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/adjust-wallet', verifyAdminAuth, async (req, res) => {
+  const adminUser = (req as any).adminUser;
+  const adminId = String(req.body.adminId || adminUser?.adminId || adminUser?.id || 'adm_root_700').trim();
+  const {
+    userId,
+    targetUserId,
+    balanceType,
+    amount,
+    action,
+    reason,
+    idempotencyKey,
+  } = req.body;
+
+  const targetId = String(userId || targetUserId || '').trim();
+  if (!targetId) {
+    return res.status(400).json({ success: false, error: 'Target user ID is required.' });
+  }
+
+  const numAmount = Number(amount);
+  if (isNaN(numAmount) || numAmount <= 0 || !isFinite(numAmount)) {
+    return res.status(400).json({ success: false, error: 'Adjustment amount must be a valid number greater than zero.' });
+  }
+
+  const cleanReason = String(reason || '').trim();
+  if (!cleanReason) {
+    return res.status(400).json({ success: false, error: 'Mandatory audit justification reason is required.' });
+  }
+
+  const normAction = String(action || '').toUpperCase();
+  const isCredit = normAction === 'CREDIT' || normAction === 'ADMIN_CREDIT';
+  const isDebit = normAction === 'DEBIT' || normAction === 'ADMIN_DEDUCT';
+  if (!isCredit && !isDebit) {
+    return res.status(400).json({ success: false, error: 'Invalid adjustment type. Must be CREDIT or DEBIT.' });
+  }
+
+  const validBalanceTypes = ['TOPUP_WALLET', 'WITHDRAW_WALLET', 'MY_WALLET', 'RECHARGE_BALANCE', 'REFERRAL_BALANCE'];
+  const normBalanceType = String(balanceType || '').toUpperCase();
+  if (!validBalanceTypes.includes(normBalanceType)) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid balance account type. Valid types are: ${validBalanceTypes.join(', ')}`,
+    });
+  }
+
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database service is unavailable.' });
+  }
+
+  // Double-submit prevention / concurrency lock
+  const lockKey = `${targetId}_${normBalanceType}`;
+  if (activeAdjustments.has(lockKey)) {
+    return res.status(409).json({ success: false, error: 'An adjustment for this user is currently in progress. Please retry.' });
+  }
+  activeAdjustments.add(lockKey);
+
+  try {
+    // 1. Verify target user exists in profiles
+    const { data: profile, error: profErr } = await supabase
+      .from('profiles')
+      .select('id, user_id, username, phone, whatsapp_no, status')
+      .or(`id.eq.${targetId},user_id.eq.${targetId}`)
+      .maybeSingle();
+
+    if (profErr || !profile) {
+      return res.status(404).json({ success: false, error: 'Target user not found in the system.' });
+    }
+
+    const resolvedUserId = profile.user_id || profile.id;
+
+    // 2. Fetch or create user wallet
+    let { data: wallet, error: walErr } = await supabase
+      .from('wallets')
+      .select('*')
+      .or(`user_id.eq.${resolvedUserId},id.eq.${resolvedUserId}`)
+      .maybeSingle();
+
+    if (!wallet) {
+      const nowIso = new Date().toISOString();
+      const { data: newWal, error: createErr } = await supabase
+        .from('wallets')
+        .insert({
+          user_id: resolvedUserId,
+          recharge_balance: 0,
+          withdraw_balance: 0,
+          available_balance: 0,
+          pending_balance: 0,
+          total_earned: 0,
+          total_withdrawn: 0,
+          team_commission: 0,
+          created_at: nowIso,
+          updated_at: nowIso,
+        })
+        .select('*')
+        .single();
+
+      if (createErr || !newWal) {
+        return res.status(500).json({ success: false, error: 'Failed to initialize wallet for user.' });
+      }
+      wallet = newWal;
+    }
+
+    const currentRecharge = Number(wallet.recharge_balance || 0);
+    const currentWithdraw = Number(wallet.withdraw_balance !== undefined && wallet.withdraw_balance !== null ? wallet.withdraw_balance : (wallet.earned_balance || 0));
+    const currentCommission = Number(wallet.team_commission || 0);
+
+    let beforeBalance = 0;
+    let afterBalance = 0;
+    let newRecharge = currentRecharge;
+    let newWithdraw = currentWithdraw;
+    let newCommission = currentCommission;
+    let accountLabel = '';
+
+    if (normBalanceType === 'TOPUP_WALLET' || normBalanceType === 'RECHARGE_BALANCE') {
+      accountLabel = 'Topup Wallet';
+      beforeBalance = currentRecharge;
+      if (isDebit && beforeBalance < numAmount) {
+        return res.status(400).json({
+          success: false,
+          error: `Insufficient balance in ${accountLabel}. Current balance is ₹${beforeBalance.toFixed(2)}, cannot deduct ₹${numAmount.toFixed(2)}.`,
+        });
+      }
+      newRecharge = isCredit ? +(beforeBalance + numAmount).toFixed(2) : +(beforeBalance - numAmount).toFixed(2);
+      afterBalance = newRecharge;
+    } else if (normBalanceType === 'WITHDRAW_WALLET' || normBalanceType === 'MY_WALLET') {
+      accountLabel = 'Withdraw Wallet';
+      beforeBalance = currentWithdraw;
+      if (isDebit && beforeBalance < numAmount) {
+        return res.status(400).json({
+          success: false,
+          error: `Insufficient balance in ${accountLabel}. Current balance is ₹${beforeBalance.toFixed(2)}, cannot deduct ₹${numAmount.toFixed(2)}.`,
+        });
+      }
+      newWithdraw = isCredit ? +(beforeBalance + numAmount).toFixed(2) : +(beforeBalance - numAmount).toFixed(2);
+      afterBalance = newWithdraw;
+    } else if (normBalanceType === 'REFERRAL_BALANCE') {
+      accountLabel = 'Referral / Commission Balance';
+      beforeBalance = currentCommission;
+      if (isDebit && beforeBalance < numAmount) {
+        return res.status(400).json({
+          success: false,
+          error: `Insufficient balance in ${accountLabel}. Current balance is ₹${beforeBalance.toFixed(2)}, cannot deduct ₹${numAmount.toFixed(2)}.`,
+        });
+      }
+      newCommission = isCredit ? +(beforeBalance + numAmount).toFixed(2) : +(beforeBalance - numAmount).toFixed(2);
+      newWithdraw = isCredit ? +(currentWithdraw + numAmount).toFixed(2) : +Math.max(0, currentWithdraw - numAmount).toFixed(2);
+      afterBalance = newCommission;
+    }
+
+    const newAvailable = +(newRecharge + newWithdraw).toFixed(2);
+    const nowIso = new Date().toISOString();
+    const refId = idempotencyKey || `ADJ-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+
+    // 3. Step A: Update wallet balances
+    const walletUpdatePayload: Record<string, any> = {
+      recharge_balance: newRecharge,
+      withdraw_balance: newWithdraw,
+      earned_balance: newWithdraw,
+      available_balance: newAvailable,
+      team_commission: newCommission,
+      updated_at: nowIso,
+    };
+    if (isCredit && (normBalanceType === 'WITHDRAW_WALLET' || normBalanceType === 'MY_WALLET')) {
+      walletUpdatePayload.total_earned = +(Number(wallet.total_earned || 0) + numAmount).toFixed(2);
+    }
+
+    const { error: walUpdErr } = await supabase
+      .from('wallets')
+      .update(walletUpdatePayload)
+      .eq('id', wallet.id);
+
+    if (walUpdErr) {
+      return res.status(500).json({ success: false, error: `Failed to update wallet: ${walUpdErr.message}` });
+    }
+
+    // 4. Step B: Insert wallet transaction
+    const readableTxName = isCredit ? 'Manual Wallet Credit' : 'Manual Wallet Debit';
+    const txDesc = `${readableTxName} (${accountLabel}): ₹${numAmount.toFixed(2)} - ${cleanReason}`;
+
+    const { data: insertedTx, error: txErr } = await supabase
+      .from('wallet_transactions')
+      .insert({
+        user_id: resolvedUserId,
+        type: 'ADMIN_ADJUSTMENT',
+        amount: isCredit ? numAmount : -numAmount,
+        balance_before: beforeBalance,
+        balance_after: afterBalance,
+        reference_id: refId,
+        description: txDesc,
+        wallet_type: (normBalanceType === 'TOPUP_WALLET' || normBalanceType === 'RECHARGE_BALANCE') ? 'TOPUP' : 'WITHDRAWABLE',
+        balance_type: (normBalanceType === 'TOPUP_WALLET' || normBalanceType === 'RECHARGE_BALANCE') ? 'RECHARGE_WALLET' : 'WITHDRAW_WALLET',
+        status: 'COMPLETED',
+        metadata: {
+          adminId,
+          balanceType: normBalanceType,
+          action: isCredit ? 'ADMIN_CREDIT' : 'ADMIN_DEDUCT',
+          reason: cleanReason,
+        },
+        created_at: nowIso,
+      })
+      .select('*')
+      .single();
+
+    if (txErr) {
+      // ROLLBACK Step A
+      await supabase.from('wallets').update({
+        recharge_balance: currentRecharge,
+        withdraw_balance: currentWithdraw,
+        earned_balance: currentWithdraw,
+        available_balance: Number(wallet.available_balance || 0),
+        team_commission: currentCommission,
+        updated_at: nowIso,
+      }).eq('id', wallet.id);
+
+      return res.status(500).json({ success: false, error: `Failed to record wallet transaction: ${txErr.message}. Wallet change rolled back.` });
+    }
+
+    // Step B2: Also record in wallet_ledger
+    try {
+      await supabase.from('wallet_ledger').insert({
+        user_id: resolvedUserId,
+        wallet_type: (normBalanceType === 'TOPUP_WALLET' || normBalanceType === 'RECHARGE_BALANCE') ? 'TOPUP' : 'WITHDRAW',
+        transaction_type: isCredit ? 'MANUAL_CREDIT' : 'MANUAL_DEBIT',
+        amount: numAmount,
+        direction: isCredit ? 'CREDIT' : 'DEBIT',
+        reference_type: 'ADMIN_ADJUSTMENT',
+        reference_id: refId,
+        balance_before: beforeBalance,
+        balance_after: afterBalance,
+        description: txDesc,
+        created_at: nowIso,
+      });
+    } catch (_ledgerErr) {}
+
+    // 5. Step C: Insert admin audit log
+    const { error: auditErr } = await supabase
+      .from('admin_audit_logs')
+      .insert({
+        admin_user_id: adminId,
+        admin_id: adminId,
+        action: isCredit ? 'MANUAL_WALLET_CREDIT' : 'MANUAL_WALLET_DEBIT',
+        target_type: 'wallet',
+        target_id: resolvedUserId,
+        details: {
+          admin: adminId,
+          targetUser: resolvedUserId,
+          adjustmentType: isCredit ? 'CREDIT' : 'DEBIT',
+          walletAccount: normBalanceType,
+          amount: numAmount,
+          previousBalance: beforeBalance,
+          newBalance: afterBalance,
+          reason: cleanReason,
+          timestamp: nowIso,
+        },
+        description: `Admin ${isCredit ? 'credited' : 'debited'} ₹${numAmount.toFixed(2)} (${accountLabel}) for user ${profile.username || resolvedUserId}. Previous: ₹${beforeBalance.toFixed(2)}, New: ₹${afterBalance.toFixed(2)}. Reason: ${cleanReason}`,
+        created_at: nowIso,
+        metadata: {
+          referenceId: refId,
+          balanceType: normBalanceType,
+        },
+      });
+
+    if (auditErr) {
+      // ROLLBACK Step B & Step A
+      await supabase.from('wallet_transactions').delete().eq('reference_id', refId);
+      await supabase.from('wallet_ledger').delete().eq('reference_id', refId);
+      await supabase.from('wallets').update({
+        recharge_balance: currentRecharge,
+        withdraw_balance: currentWithdraw,
+        earned_balance: currentWithdraw,
+        available_balance: Number(wallet.available_balance || 0),
+        team_commission: currentCommission,
+        updated_at: nowIso,
+      }).eq('id', wallet.id);
+
+      return res.status(500).json({ success: false, error: `Failed to record audit log: ${auditErr.message}. Adjustment rolled back.` });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        userId: resolvedUserId,
+        balanceType: normBalanceType,
+        action: isCredit ? 'ADMIN_CREDIT' : 'ADMIN_DEDUCT',
+        amount: numAmount,
+        beforeBalance,
+        afterBalance,
+        availableBalance: newAvailable,
+        rechargeBalance: newRecharge,
+        withdrawBalance: newWithdraw,
+        teamCommission: newCommission,
+        referenceId: refId,
+        updatedAt: nowIso,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message || 'Internal error processing adjustment.' });
+  } finally {
+    activeAdjustments.delete(lockKey);
+  }
+});
+
+app.post('/api/admin/user-status', verifyAdminAuth, async (req, res) => {
+  const adminUser = (req as any).adminUser;
+  const adminId = String(req.body.adminId || adminUser?.adminId || adminUser?.id || 'adm_root_700').trim();
+  const { userId, targetUserId, status, newStatus } = req.body;
+
+  const targetId = String(userId || targetUserId || '').trim();
+  if (!targetId) {
+    return res.status(400).json({ success: false, error: 'User ID is required.' });
+  }
+
+  const requestedStatus = String(newStatus || status || '').toLowerCase().trim();
+  const validStatuses = ['active', 'suspended', 'banned'];
+  if (!validStatuses.includes(requestedStatus)) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid status "${requestedStatus}". Must be one of: ${validStatuses.join(', ')}`,
+    });
+  }
+
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database service is unavailable.' });
+  }
+
+  try {
+    // 1. Fetch user to verify existence and get previous status
+    const { data: profile, error: fetchErr } = await supabase
+      .from('profiles')
+      .select('id, user_id, username, phone, status, is_active')
+      .or(`id.eq.${targetId},user_id.eq.${targetId}`)
+      .maybeSingle();
+
+    if (fetchErr || !profile) {
+      return res.status(404).json({ success: false, error: 'User not found in profiles.' });
+    }
+
+    const prevStatus = profile.status || 'active';
+    const nowIso = new Date().toISOString();
+    const resolvedUserId = profile.user_id || profile.id;
+
+    // 2. Update profile in database
+    const updatePayload = {
+      status: requestedStatus,
+      is_active: requestedStatus === 'active',
+      updated_at: nowIso,
+    };
+
+    const { error: updErr } = await supabase
+      .from('profiles')
+      .update(updatePayload)
+      .or(`id.eq.${profile.id},user_id.eq.${resolvedUserId}`);
+
+    if (updErr) {
+      return res.status(500).json({ success: false, error: `Failed to update status in database: ${updErr.message}` });
+    }
+
+    // 3. Record Admin Audit Log
+    try {
+      await supabase.from('admin_audit_logs').insert({
+        admin_user_id: adminId,
+        admin_id: adminId,
+        action: `USER_STATUS_${requestedStatus.toUpperCase()}`,
+        target_type: 'user',
+        target_id: resolvedUserId,
+        details: {
+          admin: adminId,
+          targetUser: resolvedUserId,
+          previousStatus: prevStatus,
+          newStatus: requestedStatus,
+          timestamp: nowIso,
+        },
+        description: `Admin changed user ${profile.username || resolvedUserId} status from ${prevStatus} to ${requestedStatus}`,
+        created_at: nowIso,
+      });
+    } catch (_auditErr) {
+      console.warn('[ADMIN STATUS] Audit log note:', _auditErr);
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        userId: resolvedUserId,
+        status: requestedStatus,
+        isActive: requestedStatus === 'active',
+        updatedAt: nowIso,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message || 'Internal error updating user status.' });
   }
 });
 

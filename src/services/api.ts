@@ -5673,30 +5673,33 @@ export async function updateUserStatus(
   newStatus: 'active' | 'suspended' | 'banned',
   adminId: string
 ): Promise<void> {
-  if (isSupabaseConfigured && supabase) {
-    const { error } = await supabase.from('profiles').update({ status: newStatus }).eq('user_id', userId);
-    if (error) throw new Error(error.message);
-  } else {
-    const localUsers = getLocal<import('../types').UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
-    const user = localUsers.find((u) => u.userId === userId || u.id === userId);
-    if (user) {
-      user.status = newStatus;
-      saveLocal(STORAGE_KEYS.LOCAL_USERS, localUsers);
-    }
-    const profile = getLocal<import('../types').UserProfile | null>(STORAGE_KEYS.PROFILE, null);
-    if (profile && (profile.userId === userId || profile.id === userId)) {
-      profile.status = newStatus;
-      saveLocal(STORAGE_KEYS.PROFILE, profile);
-    }
+  const res = await fetch(apiUrl('/api/admin/user-status'), {
+    method: 'POST',
+    headers: getAdminAuthHeaders(),
+    body: JSON.stringify({
+      userId,
+      newStatus,
+      adminId,
+    }),
+  });
+
+  const json = await res.json();
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || 'Failed to update user status on server.');
   }
 
-  await recordAuditLog(
-    adminId,
-    `USER_STATUS_${newStatus.toUpperCase()}`,
-    'profiles',
-    userId,
-    `Admin changed user ${userId} account status to ${newStatus}`
-  );
+  // Update local storage cache if present
+  const localUsers = getLocal<import('../types').UserProfile[]>(STORAGE_KEYS.LOCAL_USERS, []);
+  const user = localUsers.find((u) => u.userId === userId || u.id === userId);
+  if (user) {
+    user.status = newStatus;
+    saveLocal(STORAGE_KEYS.LOCAL_USERS, localUsers);
+  }
+  const profile = getLocal<import('../types').UserProfile | null>(STORAGE_KEYS.PROFILE, null);
+  if (profile && (profile.userId === userId || profile.id === userId)) {
+    profile.status = newStatus;
+    saveLocal(STORAGE_KEYS.PROFILE, profile);
+  }
 }
 
 /**
@@ -5709,56 +5712,41 @@ export async function adminAdjustUserWallet(
   reason: string,
   adminId: string
 ): Promise<{ success: boolean; newBalance: number }> {
-  if (!reason.trim()) {
-    throw new Error('Mandatory audit justification reason is required for financial adjustments.');
+  const action = type === 'CREDIT' ? 'ADMIN_CREDIT' : 'ADMIN_DEDUCT';
+  const res = await adminAdjustUserBalance(
+    userId,
+    'WITHDRAW_WALLET',
+    amount,
+    action,
+    reason,
+    adminId
+  );
+  return { success: true, newBalance: res.afterBalance };
+}
+
+/**
+ * Fetch Fresh Real-time Wallet Details for Admin
+ */
+export async function fetchAdminUserWallet(userId: string): Promise<{
+  userId: string;
+  rechargeBalance: number;
+  topupBalance: number;
+  withdrawBalance: number;
+  myWalletBalance: number;
+  teamCommission: number;
+  availableBalance: number;
+  totalEarned: number;
+  totalWithdrawn: number;
+  pendingBalance: number;
+}> {
+  const res = await fetch(apiUrl(`/api/admin/users/${userId}/wallet`), {
+    headers: getAdminAuthHeaders(),
+  });
+  const json = await res.json();
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || 'Failed to fetch user wallet.');
   }
-  if (amount <= 0) {
-    throw new Error('Adjustment amount must be greater than zero.');
-  }
-
-  const delta = type === 'CREDIT' ? amount : -amount;
-
-  if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase.rpc('admin_adjust_wallet', {
-      p_user_id: userId,
-      p_amount: delta,
-      p_reason: reason,
-      p_admin_id: adminId,
-    });
-    if (error) throw new Error(error.message);
-    await recordAuditLog(adminId, 'ADMIN_WALLET_ADJUSTMENT', 'wallets', userId, `Admin ${type}ed ₹${amount}: ${reason}`);
-    return data;
-  } else {
-    const wallet = getLocal<import('../types').Wallet>(STORAGE_KEYS.WALLET, { availableBalance: 0 } as any);
-    const balBefore = wallet.availableBalance;
-    const balAfter = Math.max(0, +(balBefore + delta).toFixed(2));
-    wallet.availableBalance = balAfter;
-    saveLocal(STORAGE_KEYS.WALLET, wallet);
-
-    const txs = getLocal<import('../types').WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
-    const txId = 'tx_adj_' + Date.now();
-    txs.unshift({
-      id: txId,
-      userId,
-      type: 'ADMIN_ADJUSTMENT',
-      amount: delta,
-      balanceBefore: balBefore,
-      balanceAfter: balAfter,
-      referenceId: 'ADJ-' + Date.now(),
-      description: `Admin Adjustment (${type}): ${reason}`,
-      createdAt: new Date().toISOString(),
-    });
-    saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
-
-    await recordAuditLog(adminId, 'ADMIN_WALLET_ADJUSTMENT', 'wallets', userId, `Admin ${type}ed ₹${amount}: ${reason}`, {
-      amount,
-      type,
-      balBefore,
-      balAfter,
-    });
-
-    return { success: true, newBalance: balAfter };
-  }
+  return json.data;
 }
 
 /**
@@ -8449,119 +8437,71 @@ export async function adminAdjustUserBalance(
   afterBalance: number;
   balanceType: AdminBalanceType;
   action: 'ADMIN_CREDIT' | 'ADMIN_DEDUCT';
+  availableBalance?: number;
+  rechargeBalance?: number;
+  withdrawBalance?: number;
+  teamCommission?: number;
 }> {
-  if (!reason.trim()) {
-    throw new Error('Mandatory justification reason is required for financial balance adjustments.');
+  const cleanReason = String(reason || '').trim();
+  if (!cleanReason) {
+    throw new Error('Mandatory audit justification reason is required for financial balance adjustments.');
   }
-  if (amount <= 0 || isNaN(amount)) {
+  const numAmount = Number(amount);
+  if (numAmount <= 0 || isNaN(numAmount) || !isFinite(numAmount)) {
     throw new Error('Adjustment amount must be a valid number greater than zero.');
   }
 
-  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
-    id: 'w_' + userId,
-    userId,
-    topupBalance: 0,
-    withdrawBalance: 0,
-    availableBalance: 0,
-    rechargeBalance: 0,
-    earnedBalance: 0,
-    pendingBalance: 0,
-    totalEarned: 0,
-    totalWithdrawn: 0,
-  } as any);
-
-  const profile = getLocal<UserProfile>(STORAGE_KEYS.PROFILE, {
-    walletBalance: 0,
-    deviceEarnings: 0,
-    teamEarnings: 0,
-  } as any);
-
-  let currentBalance = 0;
-  if (balanceType === 'TOPUP_WALLET' || balanceType === 'RECHARGE_BALANCE') {
-    currentBalance = wallet.topupBalance !== undefined ? wallet.topupBalance : (wallet.rechargeBalance || 0);
-  } else if (balanceType === 'WITHDRAW_WALLET' || balanceType === 'MY_WALLET') {
-    currentBalance = wallet.withdrawBalance !== undefined ? wallet.withdrawBalance : (wallet.earnedBalance || wallet.availableBalance || profile.walletBalance || 0);
-  } else if (balanceType === 'REFERRAL_BALANCE') {
-    currentBalance = profile.teamEarnings || 0;
-  }
-
-  const beforeBalance = currentBalance;
-
-  if (action === 'ADMIN_DEDUCT' && currentBalance < amount) {
-    throw new Error(
-      `Cannot deduct ₹${amount}. User only has ₹${currentBalance} in ${balanceType.replace('_', ' ')}.`
-    );
-  }
-
-  const delta = action === 'ADMIN_CREDIT' ? amount : -amount;
-  const afterBalance = +(Math.max(0, currentBalance + delta).toFixed(2));
-
-  // Update specific balance
-  if (balanceType === 'TOPUP_WALLET' || balanceType === 'RECHARGE_BALANCE') {
-    wallet.topupBalance = afterBalance;
-    wallet.rechargeBalance = afterBalance;
-  } else if (balanceType === 'WITHDRAW_WALLET' || balanceType === 'MY_WALLET') {
-    wallet.withdrawBalance = afterBalance;
-    wallet.earnedBalance = afterBalance;
-    wallet.availableBalance = afterBalance;
-    profile.walletBalance = afterBalance;
-  } else if (balanceType === 'REFERRAL_BALANCE') {
-    profile.teamEarnings = afterBalance;
-  }
-
-  saveLocal(STORAGE_KEYS.WALLET, wallet);
-  saveLocal(STORAGE_KEYS.PROFILE, profile);
-
-  // Insert Transaction
-  const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
-  const txId = 'tx_adj_' + Date.now();
-  txs.unshift({
-    id: txId,
-    userId,
-    type: action === 'ADMIN_CREDIT' ? 'ADMIN_CREDIT' : 'ADMIN_DEDUCT',
-    amount: delta,
-    balanceBefore: beforeBalance,
-    balanceAfter: afterBalance,
-    balanceType: (balanceType === 'TOPUP_WALLET' || balanceType === 'RECHARGE_BALANCE') ? 'TOPUP_WALLET' : 'WITHDRAW_WALLET',
-    referenceId: 'ADJ-' + Date.now(),
-    description: `Admin ${action === 'ADMIN_CREDIT' ? 'Credit' : 'Deduction'} (${balanceType}): ${reason}`,
-    createdAt: new Date().toISOString(),
+  // 1. Authenticated Server-Side Mutation
+  const res = await fetch(apiUrl('/api/admin/adjust-wallet'), {
+    method: 'POST',
+    headers: getAdminAuthHeaders(),
+    body: JSON.stringify({
+      userId,
+      balanceType,
+      amount: numAmount,
+      action,
+      reason: cleanReason,
+      adminId,
+      idempotencyKey: `ADJ-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
+    }),
   });
-  saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
 
-  // Record Audit & Adjustment history
-  const adjustments = getLocal<AdminBalanceAdjustment[]>(STORAGE_KEYS.BALANCE_ADJUSTMENTS, []);
-  adjustments.unshift({
-    id: 'adj_' + Date.now(),
-    adminId,
-    userId,
-    username: profile.username || profile.name || 'Member',
-    mobile: profile.whatsappNo || profile.mobile || 'N/A',
-    action,
-    balanceType,
-    amount,
-    beforeBalance,
-    afterBalance,
-    reason,
-    reference: txId,
-    createdAt: new Date().toISOString(),
-  });
-  saveLocal(STORAGE_KEYS.BALANCE_ADJUSTMENTS, adjustments);
+  const json = await res.json();
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || 'Server error processing wallet adjustment.');
+  }
 
-  await recordAuditLog(
-    adminId,
-    action === 'ADMIN_CREDIT' ? 'ADMIN_CREDIT_BALANCE' : 'ADMIN_DEDUCT_BALANCE',
-    'wallets',
-    userId,
-    `Admin ${action === 'ADMIN_CREDIT' ? 'credited' : 'deducted'} ₹${amount} to ${balanceType} (Before: ₹${beforeBalance}, After: ₹${afterBalance}): ${reason}`
-  );
+  const data = json.data;
+
+  // 2. Synchronize local storage cache if user session is active on this device
+  try {
+    const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, null as any);
+    if (wallet && (wallet.userId === userId || wallet.id === userId)) {
+      if (data.rechargeBalance !== undefined) {
+        wallet.rechargeBalance = data.rechargeBalance;
+        wallet.topupBalance = data.rechargeBalance;
+      }
+      if (data.withdrawBalance !== undefined) {
+        wallet.withdrawBalance = data.withdrawBalance;
+        wallet.earnedBalance = data.withdrawBalance;
+      }
+      if (data.availableBalance !== undefined) {
+        wallet.availableBalance = data.availableBalance;
+      }
+      saveLocal(STORAGE_KEYS.WALLET, wallet);
+    }
+  } catch (_syncErr) {}
 
   return {
     success: true,
-    beforeBalance,
-    afterBalance,
-    balanceType,
-    action,
+    beforeBalance: data.beforeBalance,
+    afterBalance: data.afterBalance,
+    balanceType: data.balanceType,
+    action: data.action,
+    availableBalance: data.availableBalance,
+    rechargeBalance: data.rechargeBalance,
+    withdrawBalance: data.withdrawBalance,
+    teamCommission: data.teamCommission,
   };
 }
 
