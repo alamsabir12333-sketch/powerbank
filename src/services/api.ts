@@ -3450,47 +3450,45 @@ export function calculateDeviceHourlyStatus(device: PurchaseItem, now: number = 
   );
   const hourlyEarnings = device.hourlyEarnings || Number((dailyEarnings > 0 ? dailyEarnings / 24 : 0).toFixed(2));
 
-  const effectiveEndMs = Math.min(now, expiresMs);
-  const elapsedSeconds = Math.max(0, Math.floor((effectiveEndMs - startedMs) / 1000));
-
-  // Discrete formula: FLOOR( elapsed_seconds / 3600 ) - Never CEIL, never round up
-  const totalCompletedHours = Math.min(totalPlanHours, Math.floor(elapsedSeconds / 3600));
-  
-  // Authoritative claimed hours
-  const claimedAmount = Number(device.claimedAmount || 0);
-  const claimedHours = device.claimedHours !== undefined && device.claimedHours !== null
-    ? Number(device.claimedHours)
-    : (hourlyEarnings > 0 ? Math.round(claimedAmount / hourlyEarnings) : 0);
-
-  const unclaimedHours = Math.max(0, totalCompletedHours - claimedHours);
-  const isExpired = now >= expiresMs || totalCompletedHours >= totalPlanHours;
+  const isExpired = now >= expiresMs;
   const isActive = (device.status === 'ACTIVE' || (device.status as string) === 'active') && !isExpired;
+
+  // Current hourly cycle begins at lastClaimedAt, or startedAt if never claimed
+  const lastCycleStartMs = device.lastClaimedAt
+    ? new Date(device.lastClaimedAt).getTime()
+    : startedMs;
+
+  const msSinceLastCycle = Math.max(0, now - lastCycleStartMs);
 
   // SINGLE COMPLETED HOURLY CYCLE RULE:
   // ONE COMPLETED HOURLY CYCLE = ONE CLAIMABLE HOURLY EARNING UNIT.
-  // The system must NEVER add already-claimed amounts back into the current claimable amount.
-  // If at least 1 completed cycle is unclaimed, claimable amount is exactly 1 * hourlyEarnings.
-  const isEligibleCycle = unclaimedHours >= 1 && isActive;
+  // At least 1 full hour (3600 seconds) must elapse from cycle start.
+  const isEligibleCycle = isActive && msSinceLastCycle >= 3600 * 1000 && hourlyEarnings > 0;
   const claimableAmount = isEligibleCycle ? hourlyEarnings : 0;
-  const totalEarnedAmount = Number((device.totalEarned || claimedAmount || 0).toFixed(2));
-  const remainingHours = Math.max(0, totalPlanHours - totalCompletedHours);
+  const totalEarnedAmount = Number((device.totalEarned || device.claimedAmount || 0).toFixed(2));
+  
+  const claimedHours = hourlyEarnings > 0 ? Math.round((device.claimedAmount || 0) / hourlyEarnings) : 0;
+  const totalCompletedHours = Math.min(totalPlanHours, claimedHours + (isEligibleCycle ? 1 : 0));
+  const remainingHours = Math.max(0, totalPlanHours - claimedHours);
 
   // Next Earning Time calculation
   let nextEarningTimestamp: number | undefined = undefined;
   let nextEarningTimeFormatted = 'Completed';
   let formattedSecondsUntilNext = '';
 
-  if (totalCompletedHours < totalPlanHours) {
-    nextEarningTimestamp = startedMs + (totalCompletedHours + 1) * 3600 * 1000;
-    const diffMs = nextEarningTimestamp - now;
-    if (diffMs > 0) {
+  if (isActive) {
+    if (isEligibleCycle) {
+      nextEarningTimeFormatted = 'Cycle ready to claim';
+      nextEarningTimestamp = lastCycleStartMs + 3600 * 1000;
+      formattedSecondsUntilNext = '0m 0s';
+    } else {
+      nextEarningTimestamp = lastCycleStartMs + 3600 * 1000;
+      const diffMs = Math.max(0, nextEarningTimestamp - now);
       const diffMinutes = Math.floor(diffMs / 60000);
       const diffSeconds = Math.floor((diffMs % 60000) / 1000);
       formattedSecondsUntilNext = `${diffMinutes}m ${diffSeconds}s`;
       const timeStr = new Date(nextEarningTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      nextEarningTimeFormatted = `${timeStr} (in ${diffMinutes}m)`;
-    } else {
-      nextEarningTimeFormatted = isEligibleCycle ? 'Cycle ready to claim' : 'Processing cycle...';
+      nextEarningTimeFormatted = `${timeStr} (in ${diffMinutes}m ${diffSeconds}s)`;
     }
   }
 
@@ -3693,7 +3691,7 @@ export async function claimUserEarnings(userId: string): Promise<{
       }
     }
   } catch (e: any) {
-    if (e.message && (e.message.includes('No completed') || e.message.includes('No active'))) {
+    if (e.message && !e.message.includes('fetch') && !e.message.includes('Failed to fetch')) {
       throw e;
     }
   }
@@ -3952,7 +3950,20 @@ export async function fetchAdminEarningsAudit(): Promise<{
 // BANK ACCOUNTS & WITHDRAWALS (BANK ACCOUNT ONLY — FULL CRUD SUPPORT)
 // ==============================================================================
 
+const generateUUID = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
+
 export async function fetchBankAccounts(userId: string): Promise<BankAccount[]> {
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase
@@ -3962,7 +3973,7 @@ export async function fetchBankAccounts(userId: string): Promise<BankAccount[]> 
         .order('is_default', { ascending: false });
 
       if (!error && data && data.length > 0) {
-        return data
+        const active = data
           .filter((b) => !b.is_deleted && b.status !== 'deleted')
           .map((b) => ({
             id: b.id,
@@ -3981,6 +3992,9 @@ export async function fetchBankAccounts(userId: string): Promise<BankAccount[]> 
             createdAt: b.created_at,
             updatedAt: b.updated_at,
           }));
+
+        saveLocal(STORAGE_KEYS.BANKS, active);
+        return active;
       }
     } catch {
       // Fall through to local
@@ -3989,6 +4003,43 @@ export async function fetchBankAccounts(userId: string): Promise<BankAccount[]> 
 
   const banks = getLocal<BankAccount[]>(STORAGE_KEYS.BANKS, []);
   const activeBanks = banks.filter((b) => b.userId === userId && !b.isDeleted && b.status !== 'deleted');
+
+  // If local storage holds a legacy bank card with a non-UUID ID (e.g. bnk_...),
+  // seamlessly persist it into Supabase bank_accounts so it gets a real database UUID.
+  if (isSupabaseConfigured && supabase && activeBanks.length > 0) {
+    for (const bank of activeBanks) {
+      if (!UUID_REGEX.test(bank.id)) {
+        try {
+          const realUUID = generateUUID();
+          const { data: inserted, error: insErr } = await supabase
+            .from('bank_accounts')
+            .insert({
+              id: realUUID,
+              user_id: userId,
+              account_holder_name: bank.accountHolderName || bank.holderName,
+              holder_name: bank.holderName || bank.accountHolderName,
+              bank_name: bank.bankName,
+              account_number: bank.accountNumber,
+              ifsc: bank.ifsc || bank.ifscCode,
+              ifsc_code: bank.ifscCode || bank.ifsc,
+              is_default: Boolean(bank.isDefault),
+            })
+            .select()
+            .maybeSingle();
+
+          if (!insErr && inserted?.id) {
+            bank.id = inserted.id;
+          } else {
+            bank.id = realUUID;
+          }
+        } catch (e) {
+          console.warn('[BANK_SYNC] Failed to migrate legacy bank to Supabase:', e);
+        }
+      }
+    }
+    saveLocal(STORAGE_KEYS.BANKS, banks);
+  }
+
   // Sort so default is first
   return activeBanks.sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0));
 }
@@ -4018,7 +4069,7 @@ export async function saveBankAccount(
     });
   }
 
-  const newBankId = 'bnk_' + Date.now();
+  const newBankId = generateUUID();
   const newBank: BankAccount = {
     id: newBankId,
     userId,
@@ -4046,17 +4097,25 @@ export async function saveBankAccount(
           .eq('user_id', userId);
       }
 
-      const { error } = await supabase.from('bank_accounts').insert({
-        id: newBank.id,
-        user_id: userId,
-        account_holder_name: newBank.accountHolderName,
-        holder_name: newBank.accountHolderName,
-        bank_name: newBank.bankName,
-        account_number: newBank.accountNumber,
-        ifsc: newBank.ifsc,
-        ifsc_code: newBank.ifsc,
-        is_default: newBank.isDefault,
-      });
+      const { data: insertedBank, error } = await supabase
+        .from('bank_accounts')
+        .insert({
+          id: newBank.id,
+          user_id: userId,
+          account_holder_name: newBank.accountHolderName,
+          holder_name: newBank.accountHolderName,
+          bank_name: newBank.bankName,
+          account_number: newBank.accountNumber,
+          ifsc: newBank.ifsc,
+          ifsc_code: newBank.ifsc,
+          is_default: newBank.isDefault,
+        })
+        .select()
+        .maybeSingle();
+
+      if (insertedBank?.id) {
+        newBank.id = insertedBank.id;
+      }
       if (error && !isTableMissingError(error)) {
         console.warn('Supabase save bank error:', error.message);
       }

@@ -42,6 +42,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
   onRefreshData,
 }) => {
   const [amount, setAmount] = useState<number>(300);
+  const [customAmount, setCustomAmount] = useState<string>('');
   const [withdrawalPassword, setWithdrawalPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
@@ -88,7 +89,25 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
 
   const activeBank = bankAccounts.find((b) => b.id === selectedBankId) || (bankAccounts.length > 0 ? bankAccounts[0] : null);
 
-  const feeAmount = (amount * withdrawalFeePercent) / 100;
+  const handlePresetSelect = (amt: number) => {
+    setAmount(amt);
+    setCustomAmount('');
+    setError(null);
+  };
+
+  const handleCustomAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const digits = e.target.value.replace(/\D/g, '');
+    setCustomAmount(digits);
+    if (digits) {
+      const parsed = parseInt(digits, 10);
+      setAmount(parsed);
+    } else {
+      setAmount(0);
+    }
+    setError(null);
+  };
+
+  const feeAmount = amount > 0 ? (amount * withdrawalFeePercent) / 100 : 0;
   const receivedAmount = Math.max(0, amount - feeAmount);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -100,6 +119,11 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
       } else {
         onNavigateTab('bank_card');
       }
+      return;
+    }
+
+    if (!amount || amount <= 0) {
+      setError('Please enter a valid withdrawal amount.');
       return;
     }
 
@@ -292,12 +316,12 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
           {/* Grid of Preset Withdrawal Amounts (3 columns) */}
           <div className="grid grid-cols-3 gap-3">
             {PRESET_WITHDRAW_AMOUNTS.map((amt) => {
-              const isSelected = amount === amt;
+              const isSelected = amount === amt && !customAmount;
               return (
                 <button
                   key={amt}
                   type="button"
-                  onClick={() => setAmount(amt)}
+                  onClick={() => handlePresetSelect(amt)}
                   className={`py-4 px-2 rounded-2xl font-extrabold text-base sm:text-lg transition-all text-center flex items-center justify-center cursor-pointer ${
                     isSelected
                       ? 'bg-[#FFF4EB] border-2 border-[#FF6000] text-[#FF6000] shadow-sm'
@@ -310,12 +334,45 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
             })}
           </div>
 
+          {/* Custom Amount Input Field immediately below preset buttons */}
+          <div className="space-y-1">
+            <div className="relative">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-bold text-base select-none">
+                ₹
+              </span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={customAmount}
+                onChange={handleCustomAmountChange}
+                placeholder="Enter custom amount"
+                className={`w-full bg-[#FAFAFA] border ${
+                  customAmount && amount > 0
+                    ? 'border-[#FF6000] bg-[#FFF4EB]/20 ring-1 ring-[#FF6000]/20'
+                    : 'border-gray-200 focus:border-[#FF6000] focus:bg-white'
+                } rounded-2xl pl-9 pr-14 py-3.5 text-gray-900 font-bold text-base focus:outline-none transition-all placeholder:font-normal placeholder:text-gray-400`}
+              />
+              {customAmount && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomAmount('');
+                    setAmount(300);
+                  }}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 px-2 py-1 text-xs font-semibold rounded-lg bg-gray-100 cursor-pointer"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
           {/* Calculation Details Section */}
           <div className="pt-2 space-y-2">
             <div>
               <span className="text-xs font-semibold text-gray-400 block">Total Withdrawal</span>
               <span className="text-2xl sm:text-3xl font-extrabold text-[#FF6000] tracking-tight">
-                ₹{amount}
+                ₹{amount > 0 ? amount.toLocaleString('en-IN') : 0}
               </span>
             </div>
 
@@ -369,6 +426,39 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
             </div>
           </div>
 
+          {/* Confirm Button immediately BELOW the Withdrawal PIN section */}
+          <div className="pt-2">
+            {!activeBank ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (onOpenBindCard) onOpenBindCard();
+                  else onNavigateTab('bank_card');
+                }}
+                className="w-full py-4 rounded-2xl bg-[#FF6000] hover:bg-[#E05300] active:scale-[0.99] text-white font-bold text-base shadow-lg shadow-orange-600/20 transition-all cursor-pointer flex items-center justify-center gap-2"
+              >
+                <Plus className="w-5 h-5" />
+                <span>Bind Bank Card to Withdraw</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={submitting || !amount || amount <= 0}
+                className="w-full py-4 rounded-2xl bg-[#FF6000] hover:bg-[#E05300] active:scale-[0.99] text-white font-bold text-base shadow-lg shadow-orange-700/20 transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
+              >
+                {submitting ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Submitting Withdrawal...</span>
+                  </>
+                ) : (
+                  <span>Confirm Bank Withdrawal (₹{amount > 0 ? amount.toLocaleString('en-IN') : 0})</span>
+                )}
+              </button>
+            )}
+          </div>
+
           {/* Notice Box */}
           <div className="p-4 bg-[#f8f9fa] rounded-2xl border border-gray-100 text-xs text-gray-500 leading-relaxed space-y-1">
             <p className="font-semibold text-gray-700">Withdrawal Rules:</p>
@@ -377,39 +467,6 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
             <p>3. Ensure bank account details and IFSC are accurate to avoid payout delays.</p>
             <p>4. Standard processing fee of {withdrawalFeePercent}% applies on all withdrawals.</p>
           </div>
-        </div>
-
-        {/* Fixed / Sticky Bottom Action Button */}
-        <div className="pt-8">
-          {!activeBank ? (
-            <button
-              type="button"
-              onClick={() => {
-                if (onOpenBindCard) onOpenBindCard();
-                else onNavigateTab('bank_card');
-              }}
-              className="w-full py-4 rounded-2xl bg-[#FF6000] hover:bg-[#E05300] active:scale-[0.99] text-white font-bold text-base shadow-lg shadow-orange-600/20 transition-all cursor-pointer flex items-center justify-center gap-2"
-            >
-              <Plus className="w-5 h-5" />
-              <span>Bind Bank Card to Withdraw</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={submitting}
-              className="w-full py-4 rounded-2xl bg-[#FF6000] hover:bg-[#E05300] active:scale-[0.99] text-white font-bold text-base shadow-lg shadow-orange-700/20 transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
-            >
-              {submitting ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Submitting Withdrawal...</span>
-                </>
-              ) : (
-                <span>Confirm Bank Withdrawal (₹{amount})</span>
-              )}
-            </button>
-          )}
         </div>
       </div>
     </div>

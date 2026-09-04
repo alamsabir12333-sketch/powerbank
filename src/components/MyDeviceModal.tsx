@@ -24,6 +24,7 @@ import {
   claimUserEarnings,
   settleAndCalculateEarnings,
   calculateDeviceHourlyStatus,
+  fetchPurchases,
   DeviceHourlyStatus,
 } from '../services/api';
 import { playCoinSound, playSuccessChime } from '../utils/audio';
@@ -47,6 +48,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
   onShowToast,
   onClaimSuccess,
 }) => {
+  const [devices, setDevices] = useState<PurchaseItem[]>(purchases);
   const [claimableData, setClaimableData] = useState<{
     totalClaimable: number;
     count: number;
@@ -62,6 +64,10 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
     batchId: string;
   }>({ isOpen: false, amount: 0, batchId: '' });
 
+  useEffect(() => {
+    setDevices(purchases);
+  }, [purchases]);
+
   const loadEarnings = async () => {
     if (!userId) return;
     setIsLoadingEarnings(true);
@@ -70,6 +76,10 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
       await settleAndCalculateEarnings(userId);
       const claimable = await fetchClaimableEarnings(userId);
       setClaimableData(claimable);
+      const freshPurchases = await fetchPurchases(userId);
+      if (freshPurchases && freshPurchases.length > 0) {
+        setDevices(freshPurchases);
+      }
     } catch (e) {
       console.error('Error loading claimable earnings:', e);
     } finally {
@@ -80,10 +90,10 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       loadEarnings();
-      // Tick every 10 seconds to keep countdown fresh
+      // Tick every 1 second to keep countdown fresh
       const interval = setInterval(() => {
         setTick((t) => t + 1);
-      }, 10000);
+      }, 1000);
       return () => clearInterval(interval);
     }
   }, [isOpen, userId]);
@@ -107,8 +117,28 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
         batchId: res.claimBatchId,
       });
 
-      // Reset local claimable amount to 0
+      // Immediately reset local claimable amount to 0
       setClaimableData({ totalClaimable: 0, count: 0, records: [] });
+
+      // Immediately update local devices so each claimed active device resets its claimable to ₹0.00
+      const nowIso = new Date().toISOString();
+      setDevices((prev) =>
+        prev.map((d) => {
+          if (d.status === 'ACTIVE' || (d.status as string) === 'active') {
+            const status = calculateDeviceHourlyStatus(d, Date.now());
+            if (status.claimableAmount > 0) {
+              return {
+                ...d,
+                claimedAmount: Number(((d.claimedAmount || 0) + status.claimableAmount).toFixed(2)),
+                totalEarned: Number(((d.totalEarned || 0) + status.claimableAmount).toFixed(2)),
+                lastClaimedAt: nowIso,
+                lastSettledAt: nowIso,
+              };
+            }
+          }
+          return d;
+        })
+      );
 
       if (onShowToast) {
         onShowToast(`🎉 Claimed ₹${res.amount.toFixed(2)} to your wallet!`);
@@ -132,13 +162,13 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
   if (!isOpen) return null;
 
   const now = Date.now();
-  const activeDevices = purchases.filter((p) => p.status === 'ACTIVE');
+  const activeDevices = devices.filter((p) => p.status === 'ACTIVE' || (p.status as string) === 'active');
   const totalInvested = activeDevices.reduce((sum, p) => sum + p.amount, 0);
   const totalDailyEarn = activeDevices.reduce(
-    (sum, p) => sum + (p.dailyEarnings || p.earningRate * 24),
+    (sum, p) => sum + (p.dailyEarnings || (p.earningRate ? p.earningRate * 24 : 0)),
     0
   );
-  const totalEarnedSoFar = purchases.reduce((sum, p) => sum + (p.totalEarned || 0), 0);
+  const totalEarnedSoFar = devices.reduce((sum, p) => sum + (p.totalEarned || 0), 0);
 
   return (
     <AnimatePresence>
@@ -194,7 +224,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
           </div>
 
           {/* CLAIMABLE EARNINGS HERO SECTION (EXCLUSIVE CLAIM ENTRY POINT) */}
-          <div className="p-3.5 mx-4 mt-3 bg-gradient-to-br from-[#2b1f14] via-[#221810] to-[#1a1512] border border-orange-500/35 rounded-2xl shadow-lg relative overflow-hidden">
+          <div className="shrink-0 p-3.5 mx-4 mt-3 bg-gradient-to-br from-[#2b1f14] via-[#221810] to-[#1a1512] border border-orange-500/35 rounded-2xl shadow-lg relative overflow-hidden">
             {/* Ambient background glow */}
             <div className="absolute top-0 right-0 w-28 h-28 bg-orange-500/10 rounded-full blur-2xl pointer-events-none" />
 
@@ -259,7 +289,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
           </div>
 
           {/* Overview Stat Strip */}
-          <div className="grid grid-cols-3 gap-2 p-3.5 bg-[#141414] border-y border-[#262626] text-center mt-3">
+          <div className="shrink-0 grid grid-cols-3 gap-2 p-3.5 bg-[#141414] border-y border-[#262626] text-center mt-3">
             <div className="p-2 rounded-xl bg-[#1e1e1e] border border-[#2a2a2a]">
               <span className="text-[9.5px] text-gray-400 uppercase font-semibold block">
                 Active Devices
@@ -285,8 +315,8 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
           </div>
 
           {/* Devices List Body */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar">
-            {purchases.length === 0 ? (
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 pb-6 no-scrollbar overscroll-contain">
+            {devices.length === 0 ? (
               <div className="py-10 px-4 text-center space-y-3">
                 <div className="w-14 h-14 rounded-2xl bg-[#222] border border-[#333] flex items-center justify-center mx-auto text-gray-500">
                   <Zap className="w-7 h-7" />
@@ -303,14 +333,14 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                     onClose();
                     onNavigateTab('purchase');
                   }}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#FF6000] hover:bg-[#E65100] text-white text-xs font-bold shadow-md shadow-orange-500/20"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#FF6000] hover:bg-[#E65100] text-white text-xs font-bold shadow-md shadow-orange-500/20 cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Go to Purchase Hall</span>
                 </button>
               </div>
             ) : (
-              purchases.map((device) => {
+              devices.map((device) => {
                 const status = calculateDeviceHourlyStatus(device, now);
                 const isPro = status.planCategory === 'PRO';
 
@@ -418,14 +448,14 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
           </div>
 
           {/* Footer Action Buttons */}
-          <div className="p-3.5 bg-[#1a1a1a] border-t border-[#2a2a2a] flex items-center gap-2">
+          <div className="shrink-0 p-3.5 bg-[#1a1a1a] border-t border-[#2a2a2a] flex items-center gap-2">
             <button
               type="button"
               onClick={() => {
                 onClose();
                 onNavigateTab('transactions');
               }}
-              className="flex-1 py-2.5 rounded-xl bg-[#2a2a2a] hover:bg-[#333] text-gray-200 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
+              className="flex-1 py-2.5 rounded-xl bg-[#2a2a2a] hover:bg-[#333] text-gray-200 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
             >
               <Receipt className="w-3.5 h-3.5 text-orange-400" />
               <span>View Ledger</span>
@@ -437,7 +467,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                 onClose();
                 onNavigateTab('purchase');
               }}
-              className="flex-1 py-2.5 rounded-xl bg-[#FF6000] hover:bg-[#E65100] text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-orange-500/20 transition-all active:scale-98"
+              className="flex-1 py-2.5 rounded-xl bg-[#FF6000] hover:bg-[#E65100] text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-md shadow-orange-500/20 transition-all active:scale-98 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Purchase Device</span>
@@ -474,7 +504,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                 </div>
 
                 <div className="p-3.5 bg-orange-500/10 rounded-2xl border border-orange-500/30 text-center">
-                  <span className="text-xs text-orange-300 font-semibold block">Credited to Withdraw Wallet:</span>
+                  <span className="text-xs text-orange-300 font-semibold block">Credited to Wallet:</span>
                   <span className="text-2xl font-black text-amber-400 mt-0.5 block">
                     +₹{claimSuccessModal.amount.toFixed(2)}
                   </span>

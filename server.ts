@@ -2483,8 +2483,46 @@ app.post('/api/wallet/withdraw', async (req, res) => {
     return res.status(400).json({ success: false, error: 'Withdrawal PIN must be exactly 4 digits.' });
   }
 
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const cleanBankId = String(bankAccountId || '').trim();
+  if (!cleanBankId || !UUID_REGEX.test(cleanBankId)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid bank account identifier. Please select a valid bound bank card.',
+    });
+  }
+
   if (supabase) {
-    // 1. Verify withdrawal password hash from user_security table
+    // 1. Verify bank account exists and belongs to the authenticated user (Ownership Verification)
+    const { data: bankRecord, error: bankErr } = await supabase
+      .from('bank_accounts')
+      .select('id, user_id, bank_name, account_holder_name, account_number')
+      .eq('id', cleanBankId)
+      .maybeSingle();
+
+    if (bankErr) {
+      console.error('[SERVER WITHDRAW] Bank verification error:', bankErr);
+      return res.status(400).json({
+        success: false,
+        error: 'Failed to verify bank account details.',
+      });
+    }
+
+    if (!bankRecord) {
+      return res.status(400).json({
+        success: false,
+        error: 'Bank account not found. Please bind a valid bank account first.',
+      });
+    }
+
+    if (bankRecord.user_id !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied. The specified bank account does not belong to your account.',
+      });
+    }
+
+    // 2. Verify withdrawal password hash from user_security table
     const cleanPass = cleanPin;
 
     const { data: secData } = await supabase
@@ -2537,12 +2575,12 @@ app.post('/api/wallet/withdraw', async (req, res) => {
       }
     }
 
-    // 2. Execute atomic request_withdrawal RPC in Supabase
+    // 3. Execute atomic request_withdrawal RPC in Supabase
     try {
       const { data: rpcData, error: rpcErr } = await supabase.rpc('request_withdrawal', {
         p_user_id: userId,
         p_amount: numAmount,
-        p_bank_account_id: bankAccountId,
+        p_bank_account_id: cleanBankId,
       });
 
       if (rpcErr) {
@@ -2588,7 +2626,7 @@ app.post('/api/wallet/withdraw', async (req, res) => {
             amount: numAmount,
             fee: feeAmount,
             net_amount: netAmount,
-            bank_account_id: bankAccountId || null,
+            bank_account_id: cleanBankId,
             status: 'PENDING',
             created_at: new Date().toISOString(),
           })
@@ -3800,20 +3838,22 @@ app.post('/api/earnings/claim', async (req, res) => {
       const dailyEarnings = Number(p.daily_earnings || (Number(p.earning_rate || 0) * 24) || 0);
       const hourlyEarnings = Number(p.earning_rate || (dailyEarnings > 0 ? dailyEarnings / 24 : 0));
 
-      const effectiveEndMs = Math.min(nowMs, expiresMs);
-      const elapsedSeconds = Math.max(0, Math.floor((effectiveEndMs - startedMs) / 1000));
-      const totalCompletedHours = Math.min(totalPlanHours, Math.floor(elapsedSeconds / 3600));
-
-      const claimedAmount = Number(p.claimed_amount || 0);
-      const claimedHours = Number(p.claimed_hours || (hourlyEarnings > 0 ? Math.round(claimedAmount / hourlyEarnings) : 0));
-      const unclaimedHours = Math.max(0, totalCompletedHours - claimedHours);
-      const isExpired = nowMs >= expiresMs || totalCompletedHours >= totalPlanHours;
+      const isExpired = nowMs >= expiresMs;
       const isActive = (p.status === 'ACTIVE' || p.status === 'active') && !isExpired;
+
+      // Current hourly cycle begins at last_claimed_at, or started_at if never claimed
+      const lastCycleStartMs = p.last_claimed_at
+        ? new Date(p.last_claimed_at).getTime()
+        : startedMs;
+
+      const msSinceLastCycle = Math.max(0, nowMs - lastCycleStartMs);
 
       // SINGLE COMPLETED HOURLY CYCLE RULE:
       // One completed hourly cycle = ONE claimable hourly earning unit.
       // Do NOT combine multiple cycles or add previously claimed amounts.
-      if (unclaimedHours >= 1 && hourlyEarnings > 0 && isActive) {
+      const isEligibleCycle = isActive && msSinceLastCycle >= 3600 * 1000 && hourlyEarnings > 0;
+
+      if (isEligibleCycle) {
         const deviceClaimAmount = Number(hourlyEarnings.toFixed(2));
         totalClaimAmount = Number((totalClaimAmount + deviceClaimAmount).toFixed(2));
         totalEligibleCycles += 1;
@@ -3915,20 +3955,56 @@ app.post('/api/earnings/claim', async (req, res) => {
       created_at: nowIso,
     });
 
-    // Record in wallet_ledger if exists
-    try {
-      await supabase.from('wallet_ledger').insert({
-        user_id: userId,
-        wallet_type: 'WITHDRAW',
-        transaction_type: 'DEVICE_EARNING_CLAIM',
-        amount: totalClaimAmount,
-        direction: 'CREDIT',
-        reference_type: 'CLAIM_BATCH',
-        reference_id: claimBatchId,
-        description: `Hourly Device Claim ${claimBatchId}`,
-        created_at: nowIso,
+    // Record in wallet_ledger (Immutable Financial Double-Entry Audit Trail)
+    const { error: ledgerErr } = await supabase.from('wallet_ledger').insert({
+      user_id: userId,
+      wallet_type: 'DEVICE_EARNING',
+      transaction_type: 'DEVICE_EARNING_CLAIM',
+      amount: totalClaimAmount,
+      direction: 'CREDIT',
+      reference_type: 'CLAIM_BATCH',
+      reference_id: claimBatchId,
+      balance_before: curWithdraw,
+      balance_after: newWithdraw,
+      description: `Device Hourly Yield Claim (${claimBatchId}) • ${totalEligibleCycles} cycle(s)`,
+      created_at: nowIso,
+    });
+
+    if (ledgerErr) {
+      console.error('[CLAIM] Failed to insert wallet_ledger:', ledgerErr);
+      // Revert wallet, transactions, and purchases so wallet is NOT left credited without corresponding ledger
+      await supabase
+        .from('wallets')
+        .update({
+          withdraw_balance: curWithdraw,
+          earned_balance: curWithdraw,
+          available_balance: wallet.available_balance,
+          total_earned: wallet.total_earned,
+          updated_at: nowIso,
+        })
+        .eq('user_id', userId);
+      await supabase.from('wallet_transactions').delete().eq('reference_id', claimBatchId);
+      for (const purUpd of purchasesToUpdate) {
+        const origP = purchases.find((p: any) => p.id === purUpd.id);
+        if (origP) {
+          await supabase
+            .from('purchases')
+            .update({
+              claimed_amount: origP.claimed_amount || 0,
+              total_earned: origP.total_earned || 0,
+              last_claimed_at: origP.last_claimed_at,
+              last_settled_at: origP.last_settled_at,
+              status: origP.status,
+              updated_at: nowIso,
+            })
+            .eq('id', origP.id);
+        }
+      }
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to record financial ledger entry: ' + ledgerErr.message,
       });
-    } catch {}
+    }
 
     // 6. Send Notification
     try {
@@ -4019,16 +4095,17 @@ app.get('/api/user/earnings-summary', async (req, res) => {
       const dailyEarnings = Number(p.daily_earnings || (Number(p.earning_rate || 0) * 24) || 0);
       const hourlyEarnings = Number(p.earning_rate || (dailyEarnings > 0 ? dailyEarnings / 24 : 0));
 
-      const effectiveEndMs = Math.min(nowMs, expiresMs);
-      const elapsedSeconds = Math.max(0, Math.floor((effectiveEndMs - startedMs) / 1000));
-      const totalCompletedHours = Math.min(totalPlanHours, Math.floor(elapsedSeconds / 3600));
+      const isExpired = nowMs >= expiresMs;
+      const isActive = !isExpired;
 
-      const claimedAmount = Number(p.claimed_amount || 0);
-      const claimedHours = Number(p.claimed_hours || (hourlyEarnings > 0 ? Math.round(claimedAmount / hourlyEarnings) : 0));
-      const unclaimedHours = Math.max(0, totalCompletedHours - claimedHours);
-      const isExpired = nowMs >= expiresMs || totalCompletedHours >= totalPlanHours;
+      const lastCycleStartMs = p.last_claimed_at
+        ? new Date(p.last_claimed_at).getTime()
+        : startedMs;
 
-      if (unclaimedHours >= 1 && hourlyEarnings > 0 && !isExpired) {
+      const msSinceLastCycle = Math.max(0, nowMs - lastCycleStartMs);
+      const isEligibleCycle = isActive && msSinceLastCycle >= 3600 * 1000 && hourlyEarnings > 0;
+
+      if (isEligibleCycle) {
         totalClaimable = Number((totalClaimable + hourlyEarnings).toFixed(2));
       }
 
@@ -8203,7 +8280,7 @@ app.post('/api/gift-codes/redeem', async (req, res) => {
     let prevBalance = 0;
     if (curWallet) {
       // Topup Wallet = +₹AMOUNT, Withdraw Wallet = +₹0
-      prevBalance = Number(curWallet.recharge_balance !== undefined && curWallet.recharge_balance !== null ? curWallet.recharge_balance : (curWallet.topup_balance || 0));
+      prevBalance = Number(curWallet.recharge_balance !== undefined && curWallet.recharge_balance !== null ? curWallet.recharge_balance : 0);
       newBalance = +(prevBalance + reward).toFixed(2);
       const curWithdraw = Number(curWallet.withdraw_balance !== undefined && curWallet.withdraw_balance !== null ? curWallet.withdraw_balance : (curWallet.earned_balance || 0));
       const newAvail = +(newBalance + curWithdraw).toFixed(2);

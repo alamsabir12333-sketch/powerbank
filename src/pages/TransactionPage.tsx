@@ -525,17 +525,6 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
               const { icon, bg } = getTransactionIcon(tx.type);
               const isCredit = tx.amount > 0;
               const formattedAmt = `${isCredit ? '+' : ''}₹${Math.abs(tx.amount).toFixed(2)}`;
-              const isTopupWallet =
-                tx.walletType === 'TOPUP' ||
-                tx.balanceType === 'TOPUP_WALLET' ||
-                tx.balanceType === 'RECHARGE_BALANCE' ||
-                tx.balanceType === 'RECHARGE_WALLET' ||
-                tx.type === 'RECHARGE' ||
-                tx.type === 'PLAN_PURCHASE' ||
-                tx.type === 'PRO_PLAN_PURCHASE' ||
-                (tx.description && tx.description.toLowerCase().includes('gift code')) ||
-                (tx.referenceId && tx.referenceId.toUpperCase().startsWith('GIFT-'));
-
               return (
                 <motion.div
                   key={tx.id}
@@ -553,19 +542,10 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
                       {icon}
                     </div>
                     <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
+                      <div className="flex items-center gap-1.5">
                         <h4 className="text-xs font-bold text-gray-900 truncate">
                           {getTransactionTitle(tx)}
                         </h4>
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold whitespace-nowrap ${
-                            isTopupWallet
-                              ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                              : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                          }`}
-                        >
-                          {isTopupWallet ? 'Topup Wallet' : 'Withdraw Wallet'}
-                        </span>
                       </div>
                       <div className="flex items-center gap-2 text-[11px] text-gray-400 mt-0.5">
                         <span>{formatDateTime(tx.createdAt)}</span>
@@ -708,31 +688,9 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
                   </div>
                 )}
 
-                {(() => {
-                  const isModalTopup =
-                    selectedTx.walletType === 'TOPUP' ||
-                    selectedTx.balanceType === 'TOPUP_WALLET' ||
-                    selectedTx.balanceType === 'RECHARGE_BALANCE' ||
-                    selectedTx.balanceType === 'RECHARGE_WALLET' ||
-                    selectedTx.type === 'RECHARGE' ||
-                    selectedTx.type === 'PLAN_PURCHASE' ||
-                    selectedTx.type === 'PRO_PLAN_PURCHASE' ||
-                    (selectedTx.description && selectedTx.description.toLowerCase().includes('gift code')) ||
-                    (selectedTx.referenceId && selectedTx.referenceId.toUpperCase().startsWith('GIFT-'));
-
-                  return (
-                    <div className="flex justify-between items-center p-2 bg-gray-50 rounded-xl">
-                      <span className="text-gray-500">Wallet Target</span>
-                      <span className={`font-bold text-xs ${isModalTopup ? 'text-amber-700' : 'text-emerald-700'}`}>
-                        {isModalTopup ? 'Topup Wallet (Recharge/Plan Lease)' : 'Withdraw Wallet (Withdrawable)'}
-                      </span>
-                    </div>
-                  );
-                })()}
-
                 {selectedTx.balanceBefore !== undefined && selectedTx.balanceAfter !== undefined && (
                   <div className="flex justify-between items-center p-2 bg-gray-50 rounded-xl">
-                    <span className="text-gray-500">Wallet Balance Delta</span>
+                    <span className="text-gray-500">Balance Delta</span>
                     <span className="font-mono text-gray-700">
                       ₹{selectedTx.balanceBefore.toFixed(2)} → ₹{selectedTx.balanceAfter.toFixed(2)}
                     </span>
