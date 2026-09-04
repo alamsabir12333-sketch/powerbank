@@ -8208,6 +8208,9 @@ export async function claimGiftCode(
       if (isTopup) {
         wallet.topupBalance = json.newBalance;
         wallet.rechargeBalance = json.newBalance;
+        const curWithdraw = Number(wallet.withdrawBalance !== undefined ? wallet.withdrawBalance : (wallet.earnedBalance || 0));
+        wallet.availableBalance = +(json.newBalance + curWithdraw).toFixed(2);
+        userProfile.walletBalance = wallet.availableBalance;
       } else {
         wallet.withdrawBalance = json.newBalance;
         wallet.earnedBalance = json.newBalance;

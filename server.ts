@@ -8203,16 +8203,15 @@ app.post('/api/gift-codes/redeem', async (req, res) => {
     let prevBalance = 0;
     if (curWallet) {
       // Topup Wallet = +₹AMOUNT, Withdraw Wallet = +₹0
-      prevBalance = Number(curWallet.recharge_balance || curWallet.topup_balance || 0);
+      prevBalance = Number(curWallet.recharge_balance !== undefined && curWallet.recharge_balance !== null ? curWallet.recharge_balance : (curWallet.topup_balance || 0));
       newBalance = +(prevBalance + reward).toFixed(2);
-      const curWithdraw = Number(curWallet.withdraw_balance !== undefined ? curWallet.withdraw_balance : (curWallet.earned_balance || 0));
+      const curWithdraw = Number(curWallet.withdraw_balance !== undefined && curWallet.withdraw_balance !== null ? curWallet.withdraw_balance : (curWallet.earned_balance || 0));
       const newAvail = +(newBalance + curWithdraw).toFixed(2);
 
       await supabase
         .from('wallets')
         .update({
           recharge_balance: newBalance,
-          topup_balance: newBalance,
           available_balance: newAvail,
           updated_at: nowIso,
         })
