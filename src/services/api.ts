@@ -1578,7 +1578,12 @@ export async function checkProEligibility(userId: string, targetPlanId?: string)
 }> {
   const config = await fetchProEligibilityConfig();
   const purchases = await fetchPurchases(userId);
-  const activePurchases = purchases.filter((p) => p.status === 'ACTIVE');
+  const now = Date.now();
+  const activePurchases = purchases.filter((p) => {
+    const isActive = (p.status || '').toUpperCase() === 'ACTIVE';
+    const expiresMs = p.expiresAt ? new Date(p.expiresAt).getTime() : 0;
+    return isActive && (!expiresMs || expiresMs > now);
+  });
   
   // Active hourly plans
   const activeHourly = activePurchases.filter(
@@ -1594,27 +1599,6 @@ export async function checkProEligibility(userId: string, targetPlanId?: string)
       activeHourlyCount,
       activeHourlyInvestment,
     };
-  }
-
-  if (config.requireActiveHourlyPlan) {
-    const minPlans = config.minimumActiveHourlyPlans || 1;
-    if (activeHourlyCount < minPlans) {
-      return {
-        eligible: false,
-        reason: `Active Hourly Plan required. You need at least ${minPlans} active Hourly Plan to activate PRO Plans.`,
-        activeHourlyCount,
-        activeHourlyInvestment,
-      };
-    }
-
-    if (config.minimumHourlyInvestment > 0 && activeHourlyInvestment < config.minimumHourlyInvestment) {
-      return {
-        eligible: false,
-        reason: `Minimum active Hourly investment of ₹${config.minimumHourlyInvestment} required (Current: ₹${activeHourlyInvestment}).`,
-        activeHourlyCount,
-        activeHourlyInvestment,
-      };
-    }
   }
 
   // Check duplicate purchase if specific plan
@@ -2236,6 +2220,39 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
 
   const myCode = profile.referralCode || profile.membershipNumber || '2829906';
   const settings = await fetchReferralSettings();
+  const siteBaseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://gainpower-top-1.com';
+
+  // 0. Live Server API Query
+  try {
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(apiUrl(`/api/referrals/team-summary?userId=${encodeURIComponent(userId)}`), {
+      headers: { 'x-user-id': userId, ...authHeaders },
+    });
+    const json = await res.json();
+    if (res.ok && json.success && json.data) {
+      const d = json.data;
+      return {
+        referralCode: myCode,
+        referralLink: `${siteBaseUrl}/invite/${myCode}`,
+        totalMembers: d.totalMembers,
+        directMembers: d.directMembers,
+        activeDevices: d.activeDevicesCount,
+        totalCommission: d.totalTeamCommission,
+        level1Commission: d.level1Commission,
+        level2Commission: d.level2Commission,
+        level3Commission: d.level3Commission,
+        subordinates: {
+          1: d.level1Members || [],
+          2: d.level2Members || [],
+          3: d.level3Members || [],
+        },
+        rewardHistory: [],
+        settings,
+      };
+    }
+  } catch (err) {
+    console.warn('[fetchUserTeamSummary] Server API fallback:', err);
+  }
 
   // 1. Live Supabase Query (when configured)
   if (isSupabaseConfigured && supabase) {
@@ -2906,7 +2923,7 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
   if (isPro) {
     const check = await checkProEligibility(userId, plan.id);
     if (!check.eligible) {
-      throw new Error(check.reason || 'Active Hourly Plan required to activate PRO Plan.');
+      throw new Error(check.reason || 'PRO plan is currently unavailable.');
     }
   }
 
@@ -9650,6 +9667,20 @@ export async function calculateActiveDirectReferrals(userId: string): Promise<{
  * Fetch Comprehensive User Mission Summary
  */
 export async function fetchUserMissionSummary(userId: string): Promise<UserMissionSummary> {
+  // 0. Live Server API Query
+  try {
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(apiUrl(`/api/missions/user-summary?userId=${encodeURIComponent(userId)}`), {
+      headers: { 'x-user-id': userId, ...authHeaders },
+    });
+    const json = await res.json();
+    if (res.ok && json.success && json.data) {
+      return json.data;
+    }
+  } catch (err) {
+    console.warn('[fetchUserMissionSummary] Server API fallback:', err);
+  }
+
   const [missions, { activeCount }] = await Promise.all([
     fetchMissions(false),
     calculateActiveDirectReferrals(userId),
@@ -9729,6 +9760,48 @@ export async function claimMissionReward(
     throw new Error('User ID and Mission ID are required.');
   }
 
+  // 0. Live Server API Claim
+  try {
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(apiUrl('/api/missions/claim'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-user-id': userId, ...authHeaders },
+      body: JSON.stringify({ userId, missionId }),
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      // Update local wallet cache if present
+      const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
+        availableBalance: 0,
+        topupBalance: 0,
+        withdrawBalance: 0,
+        rechargeBalance: 0,
+        earnedBalance: 0,
+        totalEarned: 0,
+      } as Wallet);
+      if (data.newWithdrawBalance !== undefined) {
+        wallet.withdrawBalance = data.newWithdrawBalance;
+        wallet.earnedBalance = data.newWithdrawBalance;
+        wallet.availableBalance = data.newWithdrawBalance;
+        wallet.totalEarned = +((wallet.totalEarned || 0) + Number(data.rewardAmount || 0)).toFixed(2);
+        saveLocal(STORAGE_KEYS.WALLET, wallet);
+      }
+      return {
+        success: true,
+        reward: Number(data.rewardAmount || 0),
+        message: data.message || `Mission claimed!`,
+        transactionId: data.transactionId,
+      };
+    }
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'Failed to claim mission');
+    }
+  } catch (err: any) {
+    if (err.message && !err.message.includes('Failed to fetch') && !err.message.includes('NetworkError')) {
+      throw err;
+    }
+  }
+
   // 1. Fetch missions and verify requirement
   const allMissions = await fetchMissions(true);
   const mission = allMissions.find((m) => m.id === missionId);
@@ -9776,8 +9849,8 @@ export async function claimMissionReward(
     throw new Error('Invalid reward amount.');
   }
 
-  const txId = 'tx_msn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
-  const claimId = 'mclm_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+  const txId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'tx_msn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+  const claimId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'mclm_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
   const nowStr = new Date().toISOString();
 
   // 4. Fetch User Profile
@@ -9797,13 +9870,14 @@ export async function claimMissionReward(
         .maybeSingle();
 
       if (walletData) {
-        curWithdraw = Number(walletData.earned_balance ?? walletData.available_balance ?? 0);
+        curWithdraw = Number(walletData.withdraw_balance ?? walletData.earned_balance ?? walletData.available_balance ?? 0);
         newWithdraw = +(curWithdraw + reward).toFixed(2);
         const newTotalEarned = +((Number(walletData.total_earned || 0)) + reward).toFixed(2);
 
         await supabase
           .from('wallets')
           .update({
+            withdraw_balance: newWithdraw,
             earned_balance: newWithdraw,
             available_balance: newWithdraw,
             total_earned: newTotalEarned,
@@ -9814,15 +9888,15 @@ export async function claimMissionReward(
         await supabase.from('wallet_transactions').insert({
           id: txId,
           user_id: userId,
-          type: 'ADMIN_ADJUSTMENT',
+          type: 'EARNING',
           amount: reward,
           balance_before: curWithdraw,
           balance_after: newWithdraw,
-          balance_type: 'WITHDRAW_WALLET',
-          wallet_type: 'WITHDRAWABLE',
+          wallet_type: 'WITHDRAW',
           status: 'COMPLETED',
           reference_id: mission.id,
           description: `Mission completed: ${mission.title}`,
+          metadata: { missionId: mission.id, rewardType: 'MISSION' },
           created_at: nowStr,
         });
 
@@ -9833,7 +9907,6 @@ export async function claimMissionReward(
           mission_title: mission.title,
           reward_amount: reward,
           wallet_type: 'WITHDRAW_WALLET',
-          transaction_id: txId,
           claimed_at: nowStr,
         });
       }

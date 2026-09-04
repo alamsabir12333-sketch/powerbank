@@ -144,6 +144,161 @@ async function recordGatewayLog(params: {
 }
 
 // ==============================================================================
+// USER STATUS ENFORCEMENT MIDDLEWARE
+// ==============================================================================
+function extractTargetUserId(req: express.Request): string | null {
+  // 1. Headers
+  const headerUser = req.headers['x-user-id'] || req.headers['x-target-user-id'];
+  if (typeof headerUser === 'string' && headerUser.trim()) {
+    return headerUser.trim();
+  }
+
+  // 2. Route Params
+  if (req.params && req.params.userId) {
+    return String(req.params.userId).trim();
+  }
+
+  // 3. Request Body
+  if (req.body && typeof req.body === 'object') {
+    const bId = req.body.userId || req.body.user_id;
+    if (typeof bId === 'string' && bId.trim()) {
+      return bId.trim();
+    }
+  }
+
+  // 4. Query String
+  if (req.query) {
+    const qId = req.query.userId || req.query.user_id;
+    if (typeof qId === 'string' && qId.trim()) {
+      return qId.trim();
+    }
+  }
+
+  return null;
+}
+
+async function enforceActiveUserStatus(req: express.Request, res: express.Response, next: express.NextFunction) {
+  // Only intercept /api and /functions routes
+  if (!req.path.startsWith('/api') && !req.path.startsWith('/functions')) {
+    return next();
+  }
+
+  // Exempt routes:
+  // 1. Health checks
+  if (req.path === '/api/health') return next();
+
+  // 2. Auth routes: login and register handle their own specific auth/status flows
+  if (req.path === '/api/auth/login' || req.path === '/api/auth/register') return next();
+
+  // 3. Admin routes are strictly governed by admin authentication (verifyAdminAuth)
+  // Admins MUST be able to view and manage suspended/banned users
+  if (req.path.startsWith('/api/admin')) return next();
+
+  // 4. UniVePay gateway callbacks and endpoints (DO NOT TOUCH)
+  if (
+    req.path.startsWith('/api/univepay') ||
+    req.path.startsWith('/functions/v1') ||
+    req.path === '/api/payment-callback' ||
+    req.path === '/api/order-query' ||
+    req.path === '/api/create-payin-order'
+  ) {
+    return next();
+  }
+
+  // 5. Public read-only endpoints (when called without user parameter)
+  if (req.method === 'GET') {
+    const publicGetPaths = [
+      '/api/plans',
+      '/api/about-platform',
+      '/api/banners',
+      '/api/news',
+      '/api/website-popup',
+      '/api/site-settings',
+      '/api/recharge-settings',
+      '/api/usdt-settings',
+      '/api/payment-settings',
+      '/api/referral-settings',
+      '/api/missions',
+      '/api/gift-codes',
+    ];
+    if (publicGetPaths.includes(req.path) && !req.query.userId && !req.query.user_id) {
+      return next();
+    }
+  }
+
+  let targetUserId = extractTargetUserId(req);
+
+  // 6. Check Bearer token if present and not an admin token
+  if (!targetUserId && req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+    const token = req.headers.authorization.slice(7).trim();
+    if (token && !token.startsWith('adm_tok_') && supabase) {
+      try {
+        const { data: authData } = await supabase.auth.getUser(token);
+        if (authData?.user?.id) {
+          targetUserId = authData.user.id;
+        }
+      } catch {}
+    }
+  }
+
+  if (!targetUserId || !supabase) {
+    return next();
+  }
+
+  try {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('id, user_id, status, is_active')
+      .or(`id.eq.${targetUserId},user_id.eq.${targetUserId}`)
+      .maybeSingle();
+
+    if (!profile) {
+      return next();
+    }
+
+    const rawStatus = String(profile.status || '').toLowerCase().trim();
+    const isActive = profile.is_active !== false && rawStatus !== 'suspended' && rawStatus !== 'banned';
+
+    if (rawStatus === 'suspended' || (!isActive && rawStatus === 'suspended')) {
+      return res.status(403).json({
+        success: false,
+        error: 'ACCOUNT_SUSPENDED',
+        code: 'ACCOUNT_SUSPENDED',
+        message: 'Your account has been suspended. Please contact support.',
+      });
+    }
+
+    if (rawStatus === 'banned' || (!isActive && rawStatus === 'banned')) {
+      return res.status(403).json({
+        success: false,
+        error: 'ACCOUNT_BANNED',
+        code: 'ACCOUNT_BANNED',
+        message: 'Your account has been banned. Please contact support.',
+      });
+    }
+
+    if (!isActive && rawStatus !== 'active') {
+      const isBan = rawStatus.includes('ban');
+      return res.status(403).json({
+        success: false,
+        error: isBan ? 'ACCOUNT_BANNED' : 'ACCOUNT_SUSPENDED',
+        code: isBan ? 'ACCOUNT_BANNED' : 'ACCOUNT_SUSPENDED',
+        message: isBan
+          ? 'Your account has been banned. Please contact support.'
+          : 'Your account has been suspended. Please contact support.',
+      });
+    }
+
+    return next();
+  } catch (err) {
+    console.warn('[AUTH STATUS MIDDLEWARE] Error verifying user status:', err);
+    return next();
+  }
+}
+
+app.use(enforceActiveUserStatus);
+
+// ==============================================================================
 // AUTHENTICATION & ONBOARDING API ENDPOINTS (REAL DATABASE PERSISTENCE)
 // ==============================================================================
 app.post('/api/auth/register', async (req, res) => {
@@ -535,13 +690,6 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(500).json({ success: false, error: 'Database onboarding verification failed: referral record missing.' });
     }
 
-    // 12. Trigger Referral Rule One: Registration + Login Referral Reward
-    if (supabase) {
-      processRegistrationReferralRewardServer(supabase, createdUserId).catch((e) =>
-        console.warn('[SERVER AUTH] Registration referral reward error:', e)
-      );
-    }
-
     return res.json({
       success: true,
       user: authUserObj,
@@ -634,7 +782,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Trigger Referral Rule One upon successful login (if invited friend registers and logs in)
     if (supabase && uid) {
-      processRegistrationReferralRewardServer(supabase, uid).catch((e) =>
+      await processRegistrationReferralRewardServer(supabase, uid).catch((e) =>
         console.warn('[SERVER AUTH] Login referral reward error:', e)
       );
     }
@@ -1014,45 +1162,94 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
         .maybeSingle();
       if (set?.value && Array.isArray(set.value)) {
         tiers = set.value;
+      } else {
+        const { data: refSet } = await supabaseClient
+          .from('admin_settings')
+          .select('value')
+          .eq('id', 'referral_settings')
+          .maybeSingle();
+        if (refSet?.value?.tiers && Array.isArray(refSet.value.tiers)) {
+          tiers = refSet.value.tiers;
+        } else if (refSet?.value?.commissionRates) {
+          tiers = [
+            { tier: 1, percentage: Number(refSet.value.commissionRates.level1 ?? 10) },
+            { tier: 2, percentage: Number(refSet.value.commissionRates.level2 ?? 5) },
+            { tier: 3, percentage: Number(refSet.value.commissionRates.level3 ?? 2) },
+          ];
+        }
       }
     } catch (_e) {}
 
-    // Find Level 1 referrer (direct parent of userId)
-    const { data: l1Ref } = await supabaseClient
-      .from('referrals')
-      .select('*')
-      .eq('referee_id', userId)
-      .maybeSingle();
+    // Helper to find a user's parent inviter
+    const findParentReferrer = async (childId: string) => {
+      const { data: rRow } = await supabaseClient
+        .from('referrals')
+        .select('*')
+        .eq('referee_id', childId)
+        .maybeSingle();
 
-    const l1ReferrerId = l1Ref?.referrer_id;
-    if (!l1ReferrerId) return;
+      if (rRow?.referrer_id && rRow.referrer_id !== childId) {
+        return { referrerId: rRow.referrer_id, refRowId: rRow.id, currentCommission: Number(rRow.commission_earned || 0) };
+      }
+
+      // Check profiles.referred_by
+      const { data: childProf } = await supabaseClient
+        .from('profiles')
+        .select('referred_by')
+        .or(`user_id.eq.${childId},id.eq.${childId}`)
+        .maybeSingle();
+
+      if (childProf?.referred_by) {
+        const cleanRef = String(childProf.referred_by).trim();
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanRef);
+        const filterStr = isUUID
+          ? `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef},user_id.eq.${cleanRef},id.eq.${cleanRef}`
+          : `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef}`;
+        const { data: pProf } = await supabaseClient
+          .from('profiles')
+          .select('id, user_id')
+          .or(filterStr)
+          .maybeSingle();
+
+        if (pProf) {
+          const pId = pProf.user_id || pProf.id;
+          if (pId && pId !== childId) {
+            try {
+              const { data: insRef } = await supabaseClient.from('referrals').insert({
+                referrer_id: pId,
+                referee_id: childId,
+                level: 1,
+                bonus_amount: 0,
+                status: 'ACTIVE',
+                qualifying_recharge_done: true,
+                commission_earned: 0,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              }).select('id').maybeSingle();
+              return { referrerId: pId, refRowId: insRef?.id || null, currentCommission: 0 };
+            } catch {
+              return { referrerId: pId, refRowId: null, currentCommission: 0 };
+            }
+          }
+        }
+      }
+      return null;
+    };
+
+    // Find Level 1 referrer (direct parent of userId)
+    const l1Info = await findParentReferrer(userId);
+    if (!l1Info?.referrerId) return;
 
     // Find Level 2 referrer (parent of Level 1)
-    let l2ReferrerId: string | null = null;
-    if (l1ReferrerId) {
-      const { data: l2Ref } = await supabaseClient
-        .from('referrals')
-        .select('*')
-        .eq('referee_id', l1ReferrerId)
-        .maybeSingle();
-      l2ReferrerId = l2Ref?.referrer_id || null;
-    }
+    const l2Info = await findParentReferrer(l1Info.referrerId);
 
     // Find Level 3 referrer (parent of Level 2)
-    let l3ReferrerId: string | null = null;
-    if (l2ReferrerId) {
-      const { data: l3Ref } = await supabaseClient
-        .from('referrals')
-        .select('*')
-        .eq('referee_id', l2ReferrerId)
-        .maybeSingle();
-      l3ReferrerId = l3Ref?.referrer_id || null;
-    }
+    const l3Info = l2Info?.referrerId ? await findParentReferrer(l2Info.referrerId) : null;
 
     const tierTargets = [
-      { tierNum: 1, referrerId: l1ReferrerId, refRowId: l1Ref?.id },
-      { tierNum: 2, referrerId: l2ReferrerId, refRowId: null },
-      { tierNum: 3, referrerId: l3ReferrerId, refRowId: null },
+      { tierNum: 1, referrerId: l1Info.referrerId, refRowId: l1Info.refRowId, currentCommission: l1Info.currentCommission },
+      { tierNum: 2, referrerId: l2Info?.referrerId || null, refRowId: l2Info?.refRowId || null, currentCommission: l2Info?.currentCommission || 0 },
+      { tierNum: 3, referrerId: l3Info?.referrerId || null, refRowId: l3Info?.refRowId || null, currentCommission: l3Info?.currentCommission || 0 },
     ];
 
     const nowIso = new Date().toISOString();
@@ -1068,8 +1265,8 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
       const isPurchase = String(traceno).startsWith('PUR-');
       const refId = isPurchase ? `PLAN-REF-L${target.tierNum}-${traceno}` : `TOPUP-REF-L${target.tierNum}-${traceno}`;
       const commDesc = isPurchase
-        ? `Level ${target.tierNum} Team Commission (${tierConfig.percentage}%) from Plan Purchase`
-        : `Level ${target.tierNum} Team Commission (${tierConfig.percentage}%) from Topup #${traceno}`;
+        ? `Tier ${target.tierNum} Referral Commission (${tierConfig.percentage}%) from Plan Purchase`
+        : `Tier ${target.tierNum} Referral Commission (${tierConfig.percentage}%) from Topup #${traceno}`;
 
       // Idempotency: check both wallet_ledger and wallet_transactions
       const { data: existingLedger } = await supabaseClient
@@ -1132,24 +1329,33 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
         });
       }
 
+      const txId = crypto.randomUUID();
       await supabaseClient.from('wallet_transactions').insert({
+        id: txId,
         user_id: target.referrerId,
-        type: 'EARNING',
+        type: 'TEAM_BONUS',
         amount: commission,
         balance_before: curWithdraw,
         balance_after: newWithdraw,
         reference_id: refId,
         description: commDesc,
         wallet_type: 'WITHDRAW',
-        status: 'Completed',
+        status: 'COMPLETED',
+        metadata: {
+          rewardType: 'TOPUP_COMMISSION',
+          tier: target.tierNum,
+          type: 'COMMISSION',
+          refId,
+        },
         created_at: nowIso,
       });
 
       try {
         await supabaseClient.from('wallet_ledger').insert({
+          id: crypto.randomUUID(),
           user_id: target.referrerId,
-          wallet_type: 'WITHDRAW',
-          transaction_type: `REFERRAL_L${target.tierNum}`,
+          wallet_type: 'DEVICE_EARNING',
+          transaction_type: 'REFERRAL_COMMISSION',
           amount: commission,
           direction: 'CREDIT',
           reference_type: 'REFERRAL_COMMISSION',
@@ -1163,24 +1369,29 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
         console.warn('[REFERRAL COMMISSION LEDGER NOTICE]', ledErr.message);
       }
 
-      await supabaseClient.from('notifications').insert({
-        user_id: target.referrerId,
-        title: `Tier ${target.tierNum} Team Commission Earned! 💰`,
-        message: `You received ₹${commission.toFixed(2)} (${tierConfig.percentage}%) commission from a team member recharge.`,
-        type: 'EARNING',
-        read: false,
-        created_at: nowIso,
-      });
+      try {
+        await supabaseClient.from('notifications').insert({
+          user_id: target.referrerId,
+          title: `Tier ${target.tierNum} Team Commission Earned! 💰`,
+          message: `You received ₹${commission.toFixed(2)} (${tierConfig.percentage}%) commission from a team member purchase.`,
+          type: 'EARNING',
+          is_read: false,
+          created_at: nowIso,
+        });
+      } catch {}
 
       if (target.refRowId) {
-        await supabaseClient
-          .from('referrals')
-          .update({
-            qualifying_recharge_done: true,
-            commission_earned: +((l1Ref?.commission_earned || 0) + commission).toFixed(2),
-            updated_at: nowIso,
-          })
-          .eq('id', target.refRowId);
+        try {
+          await supabaseClient
+            .from('referrals')
+            .update({
+              qualifying_recharge_done: true,
+              status: 'ACTIVE',
+              commission_earned: +(target.currentCommission + commission).toFixed(2),
+              updated_at: nowIso,
+            })
+            .eq('id', target.refRowId);
+        } catch {}
       }
     }
   } catch (err: any) {
@@ -1212,24 +1423,63 @@ async function processRegistrationReferralRewardServer(supabaseClient: any, refe
     const isSysEnabled = settings.isReferralSystemEnabled !== false;
     const regConfig = settings.registrationReward || {};
     const isRegEnabled = regConfig.enabled !== false;
-    const rewardAmount = Number(regConfig.rewardAmount ?? 5);
+    const rewardAmount = Number(regConfig.rewardAmount ?? 10);
 
     if (!isSysEnabled || !isRegEnabled || rewardAmount <= 0) {
       return { success: false, reason: 'registration_reward_disabled' };
     }
 
-    // 2. Find Referrer
+    // 2. Find Referrer (from referrals table or referee profile)
+    let referrerId = '';
     const { data: refRow } = await supabaseClient
       .from('referrals')
       .select('*')
       .eq('referee_id', refereeUserId)
       .maybeSingle();
 
-    if (!refRow || !refRow.referrer_id || refRow.referrer_id === refereeUserId) {
-      return { success: false, reason: 'no_referrer' };
+    if (refRow && refRow.referrer_id && refRow.referrer_id !== refereeUserId) {
+      referrerId = refRow.referrer_id;
+    } else {
+      const { data: refProf } = await supabaseClient
+        .from('profiles')
+        .select('referred_by')
+        .or(`user_id.eq.${refereeUserId},id.eq.${refereeUserId}`)
+        .maybeSingle();
+
+      if (refProf?.referred_by) {
+        const cleanRef = String(refProf.referred_by).trim();
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanRef);
+        const filterStr = isUUID
+          ? `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef},user_id.eq.${cleanRef},id.eq.${cleanRef}`
+          : `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef}`;
+        const { data: inviterProf } = await supabaseClient
+          .from('profiles')
+          .select('id, user_id')
+          .or(filterStr)
+          .maybeSingle();
+
+        if (inviterProf) {
+          referrerId = inviterProf.user_id || inviterProf.id;
+          try {
+            await supabaseClient.from('referrals').insert({
+              referrer_id: referrerId,
+              referee_id: refereeUserId,
+              level: 1,
+              bonus_amount: 0,
+              status: 'ACTIVE',
+              qualifying_recharge_done: false,
+              commission_earned: 0,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            });
+          } catch {}
+        }
+      }
     }
 
-    const referrerId = refRow.referrer_id;
+    if (!referrerId || referrerId === refereeUserId) {
+      return { success: false, reason: 'no_referrer' };
+    }
 
     // 3. Idempotency Check - Exactly once per qualifying invited friend
     const regRefId = `REG-${refereeUserId}`;
@@ -1240,6 +1490,16 @@ async function processRegistrationReferralRewardServer(supabaseClient: any, refe
       .maybeSingle();
 
     if (existingTx) {
+      return { success: false, reason: 'already_rewarded' };
+    }
+
+    const { data: existingLedger } = await supabaseClient
+      .from('wallet_ledger')
+      .select('id')
+      .eq('reference_id', regRefId)
+      .maybeSingle();
+
+    if (existingLedger) {
       return { success: false, reason: 'already_rewarded' };
     }
 
@@ -1297,11 +1557,11 @@ async function processRegistrationReferralRewardServer(supabaseClient: any, refe
     }
 
     // 5. Record in wallet_transactions
-    const txId = `tx_reg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const txId = crypto.randomUUID();
     await supabaseClient.from('wallet_transactions').insert({
       id: txId,
       user_id: referrerId,
-      type: 'EARNING',
+      type: 'REFERRAL_BONUS',
       amount: rewardAmount,
       balance_before: curWithdraw,
       balance_after: newWithdraw,
@@ -1309,25 +1569,33 @@ async function processRegistrationReferralRewardServer(supabaseClient: any, refe
       status: 'COMPLETED',
       reference_id: regRefId,
       description: 'Registration Referral Reward: Invited friend registered & logged in',
+      metadata: {
+        rewardType: 'REGISTRATION_REFERRAL',
+        refereeUserId,
+        refId: regRefId,
+      },
       created_at: nowIso,
     });
 
     // 6. Record in wallet_ledger
     try {
       await supabaseClient.from('wallet_ledger').insert({
+        id: crypto.randomUUID(),
         user_id: referrerId,
-        wallet_type: 'WITHDRAW',
+        wallet_type: 'DEVICE_EARNING',
         transaction_type: 'REFERRAL_REGISTRATION',
         amount: rewardAmount,
         direction: 'CREDIT',
-        balance_before: curWithdraw,
-        balance_after: newWithdraw,
         reference_type: 'REFERRAL_REWARD',
         reference_id: regRefId,
+        balance_before: curWithdraw,
+        balance_after: newWithdraw,
         description: 'Referral bonus from invited friend registration',
         created_at: nowIso,
       });
-    } catch (_ledgerErr) {}
+    } catch (_ledgerErr: any) {
+      console.warn('[REGISTRATION REWARD LEDGER NOTICE]', _ledgerErr?.message);
+    }
 
     // 7. Notification to inviter
     try {
@@ -1483,11 +1751,11 @@ async function processConsecutiveClaimReferralRewardServer(supabaseClient: any, 
         }
 
         // Record in wallet_transactions
-        const txId = `tx_strk_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const txId = crypto.randomUUID();
         await supabaseClient.from('wallet_transactions').insert({
           id: txId,
           user_id: referrerId,
-          type: 'EARNING',
+          type: 'REFERRAL_BONUS',
           amount: rewardAmount,
           balance_before: curWithdraw,
           balance_after: newWithdraw,
@@ -1495,25 +1763,33 @@ async function processConsecutiveClaimReferralRewardServer(supabaseClient: any, 
           status: 'COMPLETED',
           reference_id: streakRefId,
           description: `Streak Claim Reward: Invited friend claimed device earnings for ${requiredDays} consecutive days`,
+          metadata: {
+            rewardType: 'STREAK_REFERRAL',
+            refereeUserId,
+            refId: streakRefId,
+          },
           created_at: nowIso,
         });
 
         // Record in wallet_ledger
         try {
           await supabaseClient.from('wallet_ledger').insert({
+            id: crypto.randomUUID(),
             user_id: referrerId,
-            wallet_type: 'WITHDRAW',
+            wallet_type: 'DEVICE_EARNING',
             transaction_type: 'REFERRAL_STREAK_CLAIM',
             amount: rewardAmount,
             direction: 'CREDIT',
-            balance_before: curWithdraw,
-            balance_after: newWithdraw,
             reference_type: 'REFERRAL_REWARD',
             reference_id: streakRefId,
+            balance_before: curWithdraw,
+            balance_after: newWithdraw,
             description: `Consecutive claim bonus for ${requiredDays} days streak`,
             created_at: nowIso,
           });
-        } catch (_ledgerErr) {}
+        } catch (_ledgerErr: any) {
+          console.warn('[STREAK REWARD LEDGER NOTICE]', _ledgerErr?.message);
+        }
 
         // Notification to inviter
         try {
@@ -3446,9 +3722,19 @@ app.post('/api/plans/purchase', async (req, res) => {
 
     // Distribute multi-tier referral commissions (L1, L2, L3) for plan purchase
     if (supabase) {
-      processReferralCommissionsServer(supabase, userId, planPrice, 'PUR-' + purchaseId).catch((cErr) =>
+      await processReferralCommissionsServer(supabase, userId, planPrice, 'PUR-' + purchaseId).catch((cErr) =>
         console.warn('[PLAN PURCHASE] Referral commission error:', cErr)
       );
+      try {
+        await supabase
+          .from('referrals')
+          .update({
+            qualifying_recharge_done: true,
+            status: 'ACTIVE',
+            updated_at: nowIso,
+          })
+          .eq('referee_id', userId);
+      } catch {}
     }
 
     return res.json({
@@ -6980,7 +7266,147 @@ app.get('/api/admin/missions/claims', async (req, res) => {
   }
 });
 
+async function getActiveDirectReferralsCount(supabaseClient: any, userId: string): Promise<{ activeCount: number; activeUserIds: string[] }> {
+  try {
+    const { data: refs } = await supabaseClient
+      .from('referrals')
+      .select('referee_id')
+      .eq('referrer_id', userId);
+
+    const refereeIdSet = new Set<string>();
+    (refs || []).forEach((r: any) => {
+      if (r.referee_id && r.referee_id !== userId) refereeIdSet.add(r.referee_id);
+    });
+
+    const { data: userProf } = await supabaseClient
+      .from('profiles')
+      .select('id, user_id, referral_code, membership_number')
+      .or(`id.eq.${userId},user_id.eq.${userId}`)
+      .maybeSingle();
+
+    if (userProf) {
+      const codes = [userProf.referral_code, userProf.membership_number, userProf.user_id, userProf.id].filter(Boolean);
+      if (codes.length > 0) {
+        const { data: referredProfs } = await supabaseClient
+          .from('profiles')
+          .select('id, user_id, referred_by')
+          .in('referred_by', codes);
+
+        (referredProfs || []).forEach((p: any) => {
+          const uid = p.user_id || p.id;
+          if (uid && uid !== userId) refereeIdSet.add(uid);
+        });
+      }
+    }
+
+    const allRefereeIds = Array.from(refereeIdSet);
+    if (allRefereeIds.length === 0) {
+      return { activeCount: 0, activeUserIds: [] };
+    }
+
+    const { data: purchases } = await supabaseClient
+      .from('purchases')
+      .select('user_id, status')
+      .in('user_id', allRefereeIds);
+
+    const activeUserIdsSet = new Set<string>();
+    (purchases || []).forEach((p: any) => {
+      const st = String(p.status || '').toUpperCase();
+      if (p.user_id && (st === 'ACTIVE' || st === 'COMPLETED' || st === 'EXPIRED')) {
+        activeUserIdsSet.add(p.user_id);
+      }
+    });
+
+    const activeUserIds = Array.from(activeUserIdsSet);
+    return { activeCount: activeUserIds.length, activeUserIds };
+  } catch (err) {
+    console.error('[GET ACTIVE DIRECT REFERRALS COUNT ERROR]', err);
+    return { activeCount: 0, activeUserIds: [] };
+  }
+}
+
+app.get('/api/missions/user-summary', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || req.headers['x-user-id'] || '');
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'User ID required' });
+    }
+    if (!supabase) {
+      return res.status(500).json({ success: false, error: 'Database unavailable' });
+    }
+
+    const { activeCount } = await getActiveDirectReferralsCount(supabase, userId);
+
+    const [missionsRes, claimsRes] = await Promise.all([
+      supabase.from('missions').select('*').order('display_order', { ascending: true }),
+      supabase.from('mission_claims').select('*').eq('user_id', userId),
+    ]);
+
+    const allMissions = missionsRes.data || [];
+    const claims = claimsRes.data || [];
+    const claimedMap = new Map<string, any>();
+    claims.forEach((c: any) => claimedMap.set(c.mission_id, c));
+
+    let totalBonusEarned = 0;
+    claims.forEach((c: any) => {
+      totalBonusEarned += Number(c.reward_amount || 0);
+    });
+
+    const mappedMissions = allMissions.map((m: any) => {
+      const required = Math.max(1, Number(m.required_referrals ?? m.target_count ?? m.target ?? 1));
+      const isClaimed = claimedMap.has(m.id);
+      const isCompleted = activeCount >= required;
+      const progress = Math.min(activeCount, required);
+      const claim = claimedMap.get(m.id);
+
+      return {
+        id: m.id,
+        title: m.title,
+        description: m.description,
+        requiredReferrals: required,
+        rewardAmount: Number(m.reward_amount ?? 50),
+        walletType: 'WITHDRAW_WALLET',
+        icon: m.icon || 'Target',
+        status: (m.status === 'active' || m.status === 'ACTIVE' || m.is_active ? 'ACTIVE' : 'DISABLED'),
+        displayOrder: Number(m.display_order ?? m.sort_order ?? 1),
+        currentProgress: progress,
+        isCompleted,
+        isClaimed,
+        claimedAt: claim?.created_at,
+        progressPercent: Math.min(100, Math.round((progress / required) * 100)),
+      };
+    });
+
+    const completedMissionsCount = mappedMissions.filter((m: any) => m.isCompleted).length;
+    const pendingMissionsCount = mappedMissions.filter((m: any) => !m.isCompleted).length;
+
+    return res.json({
+      success: true,
+      data: {
+        totalActiveReferrals: activeCount,
+        completedMissionsCount,
+        pendingMissionsCount,
+        totalBonusEarned: +totalBonusEarned.toFixed(2),
+        missions: mappedMissions,
+        history: claims.map((c: any) => ({
+          id: c.id,
+          missionId: c.mission_id,
+          missionTitle: c.mission_title,
+          rewardAmount: Number(c.reward_amount || 0),
+          claimedAt: c.created_at,
+        })),
+      },
+    });
+  } catch (err: any) {
+    console.error('[GET USER MISSIONS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post('/api/missions/claim', async (req, res) => {
+  let createdClaimId: string | null = null;
+  let prevWalletState: any = null;
+
   try {
     const { userId, missionId } = req.body;
     if (!userId || !missionId) {
@@ -7017,29 +7443,10 @@ app.post('/api/missions/claim', async (req, res) => {
       return res.status(400).json({ success: false, error: 'You have already claimed this mission bonus!' });
     }
 
-    // 3. Count active qualifying direct referrals
-    const { data: refs } = await supabase
-      .from('referrals')
-      .select('referee_id, qualifying_recharge_done, status')
-      .eq('referrer_id', userId);
+    // 3. Count active qualifying direct referrals from purchases
+    const { activeCount } = await getActiveDirectReferralsCount(supabase, userId);
+    const reqRefs = Math.max(1, Number(mission.required_referrals ?? mission.target_count ?? 1));
 
-    let activeCount = 0;
-    const refereeIds = (refs || []).map((r: any) => r.referee_id).filter(Boolean);
-
-    if (refereeIds.length > 0) {
-      const { data: purchases } = await supabase
-        .from('user_purchases')
-        .select('user_id')
-        .in('user_id', refereeIds);
-
-      const purchaseUserSet = new Set((purchases || []).map((p: any) => p.user_id));
-
-      activeCount = (refs || []).filter((r: any) => {
-        return r.qualifying_recharge_done === true || r.status === 'ACTIVE' || purchaseUserSet.has(r.referee_id);
-      }).length;
-    }
-
-    const reqRefs = Number(mission.required_referrals ?? mission.target_count ?? 1);
     if (activeCount < reqRefs) {
       return res.status(400).json({
         success: false,
@@ -7049,10 +7456,32 @@ app.post('/api/missions/claim', async (req, res) => {
 
     const reward = Number(mission.reward_amount ?? 50);
     const nowIso = new Date().toISOString();
-    const claimId = `mclm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const txId = `tx_msn_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-    // 4. Atomic credit to user's Withdraw Wallet
+    // 4. STEP ONE: Insert mission_claims record FIRST (guarded by UNIQUE(user_id, mission_id))
+    const { data: claimRecord, error: claimErr } = await supabase
+      .from('mission_claims')
+      .insert({
+        user_id: userId,
+        mission_id: mission.id,
+        mission_title: mission.title,
+        reward_amount: reward,
+        wallet_type: 'WITHDRAW_WALLET',
+        status: 'CLAIMED',
+        claimed_at: nowIso,
+      })
+      .select()
+      .single();
+
+    if (claimErr || !claimRecord) {
+      if (claimErr?.code === '23505' || claimErr?.message?.includes('unique constraint') || claimErr?.message?.includes('duplicate key')) {
+        return res.status(400).json({ success: false, error: 'You have already claimed this mission bonus!' });
+      }
+      throw new Error(claimErr?.message || 'Failed to record mission claim.');
+    }
+
+    createdClaimId = claimRecord.id;
+
+    // 5. STEP TWO: Credit user's Withdraw Wallet
     const { data: wallet } = await supabase
       .from('wallets')
       .select('*')
@@ -7068,7 +7497,8 @@ app.post('/api/missions/claim', async (req, res) => {
     const newTotalEarned = +(curTotalEarned + reward).toFixed(2);
 
     if (wallet) {
-      await supabase
+      prevWalletState = { ...wallet };
+      const { error: walUpdateErr } = await supabase
         .from('wallets')
         .update({
           withdraw_balance: newWithdraw,
@@ -7078,8 +7508,10 @@ app.post('/api/missions/claim', async (req, res) => {
           updated_at: nowIso,
         })
         .eq('user_id', userId);
+
+      if (walUpdateErr) throw walUpdateErr;
     } else {
-      await supabase
+      const { error: walInsErr } = await supabase
         .from('wallets')
         .insert({
           user_id: userId,
@@ -7092,21 +7524,13 @@ app.post('/api/missions/claim', async (req, res) => {
           created_at: nowIso,
           updated_at: nowIso,
         });
+
+      if (walInsErr) throw walInsErr;
     }
 
-    // 5. Insert claim record
-    await supabase.from('mission_claims').insert({
-      id: claimId,
-      user_id: userId,
-      mission_id: mission.id,
-      mission_title: mission.title,
-      reward_amount: reward,
-      wallet_credited: 'WITHDRAW_WALLET',
-      created_at: nowIso,
-    });
-
-    // 6. Insert wallet_transactions
-    await supabase.from('wallet_transactions').insert({
+    // 6. STEP THREE: Insert wallet_transactions record with valid UUID
+    const txId = crypto.randomUUID();
+    const { error: txErr } = await supabase.from('wallet_transactions').insert({
       id: txId,
       user_id: userId,
       type: 'EARNING',
@@ -7117,25 +7541,38 @@ app.post('/api/missions/claim', async (req, res) => {
       status: 'COMPLETED',
       reference_id: mission.id,
       description: `Mission completed: ${mission.title}`,
+      metadata: {
+        missionId: mission.id,
+        missionTitle: mission.title,
+        claimId: createdClaimId,
+        rewardType: 'MISSION',
+      },
       created_at: nowIso,
     });
 
-    // 7. Insert wallet_ledger
+    if (txErr) {
+      console.warn('[MISSION TRANSACTION ERROR]', txErr.message);
+    }
+
+    // 7. STEP FOUR: Insert wallet_ledger record
     try {
       await supabase.from('wallet_ledger').insert({
+        id: crypto.randomUUID(),
         user_id: userId,
-        wallet_type: 'WITHDRAW',
+        wallet_type: 'DEVICE_EARNING',
         transaction_type: 'MISSION_REWARD',
         amount: reward,
         direction: 'CREDIT',
-        balance_before: curWithdraw,
-        balance_after: newWithdraw,
         reference_type: 'MISSION',
         reference_id: mission.id,
-        description: `Mission Bonus: ${mission.title}`,
+        balance_before: curWithdraw,
+        balance_after: newWithdraw,
+        description: `Mission completed: ${mission.title}`,
         created_at: nowIso,
       });
-    } catch (_lErr) {}
+    } catch (_lErr: any) {
+      console.warn('[MISSION LEDGER NOTICE]', _lErr?.message);
+    }
 
     // 8. Notification
     try {
@@ -7153,11 +7590,360 @@ app.post('/api/missions/claim', async (req, res) => {
       success: true,
       rewardAmount: reward,
       newWithdrawBalance: newWithdraw,
+      newAvailableBalance: newAvail,
+      mission: {
+        id: mission.id,
+        title: mission.title,
+      },
+      claimId: createdClaimId,
+      claimedAt: nowIso,
       message: `🎉 Mission completed! ₹${reward.toFixed(2)} added to your Withdraw Wallet.`,
     });
   } catch (err: any) {
     console.error('[MISSION CLAIM ERROR]', err);
-    return res.status(500).json({ success: false, error: err.message || 'Failed to claim mission bonus.' });
+
+    // Rollback claim record if it was inserted but subsequent steps failed
+    if (createdClaimId && supabase) {
+      try {
+        await supabase.from('mission_claims').delete().eq('id', createdClaimId);
+      } catch (_rbErr) {}
+    }
+    // Revert wallet if changed
+    if (prevWalletState && supabase && req.body?.userId) {
+      try {
+        await supabase
+          .from('wallets')
+          .update({
+            withdraw_balance: prevWalletState.withdraw_balance,
+            earned_balance: prevWalletState.earned_balance,
+            available_balance: prevWalletState.available_balance,
+            total_earned: prevWalletState.total_earned,
+          })
+          .eq('user_id', req.body.userId);
+      } catch (_walRbErr) {}
+    }
+
+    return res.status(500).json({ success: false, error: err.message || 'Failed to claim mission reward' });
+  }
+});
+
+app.get('/api/referrals/team-summary', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || req.headers['x-user-id'] || '');
+    if (!userId) return res.status(400).json({ success: false, error: 'User ID required' });
+    if (!supabase) return res.status(500).json({ success: false, error: 'Database unavailable' });
+
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('*')
+      .or(`user_id.eq.${userId},id.eq.${userId}`)
+      .maybeSingle();
+
+    const myCode = profile?.referral_code || profile?.membership_number || '';
+    const myCodes = new Set([myCode, profile?.membership_number, profile?.user_id, profile?.id, userId].filter(Boolean));
+
+    const [referralsRes, profilesRes, purchasesRes, txsRes] = await Promise.all([
+      supabase.from('referrals').select('*'),
+      supabase.from('profiles').select('id, user_id, username, phone, mobile, whatsapp_no, referral_code, membership_number, referred_by, created_at'),
+      supabase.from('purchases').select('id, user_id, amount, status, started_at, created_at'),
+      supabase.from('wallet_transactions').select('*').eq('user_id', userId),
+    ]);
+
+    const allRefs = referralsRes.data || [];
+    const allProfs = profilesRes.data || [];
+    const allPurchases = purchasesRes.data || [];
+    const allTxs = txsRes.data || [];
+
+    // Level 1 Members
+    const l1RefereeIds = new Set<string>();
+    allRefs
+      .filter((r: any) => r.referrer_id === userId)
+      .forEach((r: any) => { if (r.referee_id) l1RefereeIds.add(r.referee_id); });
+
+    const l1Users = allProfs.filter((u: any) => {
+      const uid = u.user_id || u.id;
+      if (!uid || uid === userId) return false;
+      if (l1RefereeIds.has(uid)) return true;
+      if (u.referred_by && (myCodes.has(u.referred_by) || myCodes.has(String(u.referred_by).toUpperCase()))) return true;
+      return false;
+    });
+
+    const l1UserIds = new Set(l1Users.map((u: any) => u.user_id || u.id));
+    const l1Codes = new Set(l1Users.flatMap((u: any) => [u.referral_code, u.membership_number, u.user_id, u.id].filter(Boolean)));
+
+    // Level 2 Members
+    const l2RefereeIds = new Set<string>();
+    allRefs
+      .filter((r: any) => l1UserIds.has(r.referrer_id))
+      .forEach((r: any) => { if (r.referee_id && !l1UserIds.has(r.referee_id)) l2RefereeIds.add(r.referee_id); });
+
+    const l2Users = allProfs.filter((u: any) => {
+      const uid = u.user_id || u.id;
+      if (!uid || uid === userId || l1UserIds.has(uid)) return false;
+      if (l2RefereeIds.has(uid)) return true;
+      if (u.referred_by && (l1Codes.has(u.referred_by) || l1Codes.has(String(u.referred_by).toUpperCase()))) return true;
+      return false;
+    });
+
+    const l2UserIds = new Set(l2Users.map((u: any) => u.user_id || u.id));
+    const l2Codes = new Set(l2Users.flatMap((u: any) => [u.referral_code, u.membership_number, u.user_id, u.id].filter(Boolean)));
+
+    // Level 3 Members
+    const l3RefereeIds = new Set<string>();
+    allRefs
+      .filter((r: any) => l2UserIds.has(r.referrer_id))
+      .forEach((r: any) => { if (r.referee_id && !l1UserIds.has(r.referee_id) && !l2UserIds.has(r.referee_id)) l3RefereeIds.add(r.referee_id); });
+
+    const l3Users = allProfs.filter((u: any) => {
+      const uid = u.user_id || u.id;
+      if (!uid || uid === userId || l1UserIds.has(uid) || l2UserIds.has(uid)) return false;
+      if (l3RefereeIds.has(uid)) return true;
+      if (u.referred_by && (l2Codes.has(u.referred_by) || l2Codes.has(String(u.referred_by).toUpperCase()))) return true;
+      return false;
+    });
+
+    const nowTime = Date.now();
+    const mapMember = (u: any, tier: 1 | 2 | 3) => {
+      const uid = u.user_id || u.id;
+      const userPurchases = allPurchases.filter((p: any) => {
+        const uidMatch = p.user_id === uid;
+        const isStatusActive = String(p.status).toUpperCase() === 'ACTIVE';
+        const endDate = p.expires_at || p.end_date || p.endDate;
+        const isUnexpired = !endDate || new Date(endDate).getTime() > nowTime;
+        return uidMatch && isStatusActive && isUnexpired;
+      });
+      const totalInvested = allPurchases.filter((p: any) => p.user_id === uid).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+      const rawMobile = u.whatsapp_no || u.phone || u.mobile || '9800000000';
+      const maskedMobile = rawMobile.length >= 10 ? `${rawMobile.substring(0, 4)}****${rawMobile.substring(rawMobile.length - 2)}` : rawMobile;
+
+      const refEntry = allRefs.find((r: any) => r.referrer_id === userId && r.referee_id === uid);
+      let commEarned = Number(refEntry?.commission_earned || 0);
+
+      if (commEarned === 0 && totalInvested > 0) {
+        const pct = tier === 1 ? 0.10 : tier === 2 ? 0.05 : 0.02;
+        commEarned = +(totalInvested * pct).toFixed(2);
+      }
+
+      return {
+        id: u.id || u.user_id,
+        userId: uid,
+        username: u.username || 'Member',
+        mobile: maskedMobile,
+        joined: u.created_at ? u.created_at.split('T')[0] : '2026-08-20',
+        devices: userPurchases.length,
+        totalInvested,
+        totalCommissionEarned: +commEarned.toFixed(2),
+        tier,
+      };
+    };
+
+    const level1Items = l1Users.map((u: any) => mapMember(u, 1));
+    const level2Items = l2Users.map((u: any) => mapMember(u, 2));
+    const level3Items = l3Users.map((u: any) => mapMember(u, 3));
+
+    const commTxs = allTxs.filter((t: any) => {
+      const desc = (t.description || '').toLowerCase();
+      const ref = (t.reference_id || '').toLowerCase();
+      const type = (t.type || '').toUpperCase();
+      return type.includes('COMMISSION') || type.includes('REFERRAL') || type.includes('TEAM_BONUS') || desc.includes('commission') || desc.includes('referral') || ref.includes('ref-');
+    });
+
+    const l1Comm = +commTxs.filter((t: any) => {
+      const desc = (t.description || '').toLowerCase();
+      const ref = (t.reference_id || '').toLowerCase();
+      return desc.includes('tier 1') || desc.includes('level 1') || desc.includes('direct') || ref.includes('ref-l1');
+    }).reduce((s: number, t: any) => s + Number(t.amount || 0), 0).toFixed(2);
+
+    const l2Comm = +commTxs.filter((t: any) => {
+      const desc = (t.description || '').toLowerCase();
+      const ref = (t.reference_id || '').toLowerCase();
+      return desc.includes('tier 2') || desc.includes('level 2') || ref.includes('ref-l2');
+    }).reduce((s: number, t: any) => s + Number(t.amount || 0), 0).toFixed(2);
+
+    const l3Comm = +commTxs.filter((t: any) => {
+      const desc = (t.description || '').toLowerCase();
+      const ref = (t.reference_id || '').toLowerCase();
+      return desc.includes('tier 3') || desc.includes('level 3') || ref.includes('ref-l3');
+    }).reduce((s: number, t: any) => s + Number(t.amount || 0), 0).toFixed(2);
+
+    const computedTotalComm = +(l1Comm + l2Comm + l3Comm).toFixed(2);
+    const totalTeamCommission = computedTotalComm > 0 ? computedTotalComm : +(level1Items.reduce((s, m) => s + m.totalCommissionEarned, 0) + level2Items.reduce((s, m) => s + m.totalCommissionEarned, 0) + level3Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2);
+
+    const activeDevicesCount = level1Items.reduce((s, m) => s + m.devices, 0) + level2Items.reduce((s, m) => s + m.devices, 0) + level3Items.reduce((s, m) => s + m.devices, 0);
+
+    return res.json({
+      success: true,
+      data: {
+        totalMembers: level1Items.length + level2Items.length + level3Items.length,
+        directMembers: level1Items.length,
+        indirectMembers: level2Items.length + level3Items.length,
+        totalTeamCommission,
+        level1Commission: l1Comm || +(level1Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2),
+        level2Commission: l2Comm || +(level2Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2),
+        level3Commission: l3Comm || +(level3Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2),
+        activeDevicesCount,
+        level1Members: level1Items,
+        level2Members: level2Items,
+        level3Members: level3Items,
+      },
+    });
+  } catch (err: any) {
+    console.error('[GET TEAM SUMMARY ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Process Referral Commissions Endpoint
+app.post('/api/referrals/process-commissions', async (req, res) => {
+  try {
+    const { userId, depositAmount, amount, traceno, planName, purchaseId } = req.body;
+    if (!supabase) return res.status(500).json({ success: false, error: 'Database unavailable' });
+
+    let targetUserId = userId;
+    let targetAmount = Number(depositAmount || amount || 0);
+    let targetTraceno = traceno || `MANUAL-${Date.now()}`;
+    let targetPlanName = planName;
+
+    if (purchaseId) {
+      const { data: purchase } = await supabase
+        .from('purchases')
+        .select('*')
+        .eq('id', purchaseId)
+        .maybeSingle();
+
+      if (purchase) {
+        targetUserId = purchase.user_id;
+        targetAmount = Number(purchase.amount || 0);
+        targetTraceno = purchase.id;
+        targetPlanName = purchase.plan_name;
+      }
+    }
+
+    if (!targetUserId || targetAmount <= 0) {
+      return res.status(400).json({ success: false, error: 'userId and depositAmount/amount are required' });
+    }
+
+    await processReferralCommissionsServer(
+      supabase,
+      targetUserId,
+      targetAmount,
+      targetTraceno
+    );
+
+    return res.json({
+      success: true,
+      message: 'Commissions processed successfully',
+      data: {
+        userId: targetUserId,
+        amount: targetAmount,
+        traceno: targetTraceno,
+      },
+    });
+  } catch (err: any) {
+    console.error('[PROCESS COMMISSIONS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// User Devices and PRO Eligibility Endpoints
+app.get('/api/user-devices', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || req.headers['x-user-id'] || '');
+    if (!userId) return res.status(400).json({ success: false, error: 'User ID required' });
+    if (!supabase) return res.status(500).json({ success: false, error: 'Database unavailable' });
+
+    const { data: purchases, error: pErr } = await supabase
+      .from('purchases')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (pErr) throw pErr;
+
+    const allPurchases = purchases || [];
+    const now = Date.now();
+
+    // An active device is status = 'ACTIVE' and unexpired (endDate in the future or no endDate specified)
+    const activePurchases = allPurchases.filter((p: any) => {
+      const isStatusActive = String(p.status).toUpperCase() === 'ACTIVE';
+      const endDate = p.expires_at || p.end_date || p.endDate;
+      const isUnexpired = !endDate || new Date(endDate).getTime() > now;
+      return isStatusActive && isUnexpired;
+    });
+
+    const activeCount = activePurchases.length;
+    const totalCount = allPurchases.length;
+    const isProEligible = activeCount >= 3;
+
+    return res.json({
+      success: true,
+      data: {
+        activeCount,
+        totalCount,
+        isProEligible,
+        requiredForPro: 3,
+        devices: allPurchases.map((p: any) => {
+          const endDate = p.expires_at || p.end_date || p.endDate;
+          const isActive = String(p.status).toUpperCase() === 'ACTIVE' && (!endDate || new Date(endDate).getTime() > now);
+          return {
+            id: p.id,
+            planId: p.plan_id || p.planId,
+            planName: p.plan_name || p.planName,
+            planCategory: p.plan_category || p.planCategory,
+            amount: Number(p.amount || 0),
+            status: isActive ? 'ACTIVE' : (p.status || 'EXPIRED'),
+            startedAt: p.started_at || p.startedAt || p.created_at,
+            endDate: endDate,
+            isActive,
+          };
+        }),
+      },
+    });
+  } catch (err: any) {
+    console.error('[GET USER DEVICES ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/user-devices/summary', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || req.headers['x-user-id'] || '');
+    if (!userId) return res.status(400).json({ success: false, error: 'User ID required' });
+    if (!supabase) return res.status(500).json({ success: false, error: 'Database unavailable' });
+
+    const { data: purchases, error: pErr } = await supabase
+      .from('purchases')
+      .select('id, status, expires_at, created_at')
+      .eq('user_id', userId);
+
+    if (pErr) throw pErr;
+
+    const allPurchases = purchases || [];
+    const now = Date.now();
+
+    const activePurchases = allPurchases.filter((p: any) => {
+      const isStatusActive = String(p.status).toUpperCase() === 'ACTIVE';
+      const endDate = p.expires_at;
+      const isUnexpired = !endDate || new Date(endDate).getTime() > now;
+      return isStatusActive && isUnexpired;
+    });
+
+    const activeCount = activePurchases.length;
+    const totalCount = allPurchases.length;
+    const isProEligible = activeCount >= 3;
+
+    return res.json({
+      success: true,
+      data: {
+        activeCount,
+        totalCount,
+        isProEligible,
+        requiredForPro: 3,
+      },
+    });
+  } catch (err: any) {
+    console.error('[GET USER DEVICES SUMMARY ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

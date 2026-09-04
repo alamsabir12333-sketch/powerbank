@@ -10,8 +10,8 @@ export const initialUserProfile: UserProfile = {
 
 export const defaultProEligibilityConfig: ProEligibilityConfig = {
   proEnabled: true,
-  requireActiveHourlyPlan: true,
-  minimumActiveHourlyPlans: 1,
+  requireActiveHourlyPlan: false,
+  minimumActiveHourlyPlans: 0,
   minimumHourlyInvestment: 0,
   allowDuplicateProPurchase: true,
   claimEnabled: true,
@@ -368,9 +368,9 @@ export const defaultReferralSettings: import('../types').ReferralSettings = {
   registrationReward: {
     enabled: true,
     name: 'Registration Reward',
-    rewardAmount: 5,
+    rewardAmount: 10,
     trigger: 'REGISTRATION_AND_FIRST_LOGIN',
-    description: 'Earn ₹5 when your invited friend successfully registers and logs in.',
+    description: 'Earn ₹10 when your invited friend successfully registers and logs in.',
   },
   streakReward: {
     enabled: true,
