@@ -32,6 +32,7 @@ import {
   fetchUserHomeSummary,
   fetchActiveBanners,
   fetchWebsitePopup,
+  calculateDeviceHourlyStatus,
 } from '../services/api';
 import {
   X,
@@ -281,9 +282,12 @@ export const HomePage: React.FC<HomePageProps> = ({
     }
   };
 
-  // Undrawn yield across active hardware devices
-  const activePurchases = purchases.filter((p) => p.status === 'ACTIVE');
-  const undrawnDeviceYield = activePurchases.reduce((acc, p) => acc + Number(p.totalEarned || 0), 0);
+  // Undrawn claimable yield across active hardware devices strictly calculated on completed hourly cycles
+  const activePurchases = purchases.filter((p) => p.status === 'ACTIVE' || (p.status as string) === 'active');
+  const undrawnDeviceYield = activePurchases.reduce(
+    (acc, p) => acc + calculateDeviceHourlyStatus(p, Date.now()).claimableAmount,
+    0
+  );
 
   // Master loading condition: shows skeleton while essential Home data is being fetched
   const showSkeleton = !hasTimedOut && (isHomeLoading || authLoading || isRefreshing);

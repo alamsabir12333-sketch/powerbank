@@ -2662,6 +2662,7 @@ app.post('/api/wallet/withdraw', async (req, res) => {
             balance_after: newWithdrawBal,
             wallet_type: 'WITHDRAWABLE',
             status: 'PENDING',
+            reference_id: newWth.id,
             description: `Withdrawal request of ₹${numAmount.toFixed(2)} (Net: ₹${netAmount.toFixed(2)})`,
             created_at: new Date().toISOString(),
           });
@@ -3835,28 +3836,32 @@ app.post('/api/earnings/claim', async (req, res) => {
       const startedMs = new Date(p.started_at || nowMs).getTime();
       const expiresMs = p.expires_at ? new Date(p.expires_at).getTime() : startedMs + totalPlanHours * 3600 * 1000;
 
-      const dailyEarnings = Number(p.daily_earnings || (Number(p.earning_rate || 0) * 24) || 0);
-      const hourlyEarnings = Number(p.earning_rate || (dailyEarnings > 0 ? dailyEarnings / 24 : 0));
+      const hourlyEarnings = Number(
+        p.earning_rate ||
+        p.hourly_earnings ||
+        (p.daily_earnings ? Number(p.daily_earnings) / 24 : 0)
+      );
 
       const isExpired = nowMs >= expiresMs;
-      const isActive = (p.status === 'ACTIVE' || p.status === 'active') && !isExpired;
+      const isActive = (p.status === 'ACTIVE' || p.status === 'active') && startedMs < expiresMs;
 
       // Current hourly cycle begins at last_claimed_at, or started_at if never claimed
       const lastCycleStartMs = p.last_claimed_at
         ? new Date(p.last_claimed_at).getTime()
         : startedMs;
 
-      const msSinceLastCycle = Math.max(0, nowMs - lastCycleStartMs);
+      // Respect the existing plan duration/end date. Do not calculate earnings beyond the existing plan's valid duration.
+      const effectiveEndMs = Math.min(nowMs, expiresMs);
+      const elapsedMs = Math.max(0, effectiveEndMs - lastCycleStartMs);
 
-      // SINGLE COMPLETED HOURLY CYCLE RULE:
-      // One completed hourly cycle = ONE claimable hourly earning unit.
-      // Do NOT combine multiple cycles or add previously claimed amounts.
-      const isEligibleCycle = isActive && msSinceLastCycle >= 3600 * 1000 && hourlyEarnings > 0;
+      // FORMULA: completed hours × hourly earning rate = current claimable earning
+      const completedHours = Math.floor(elapsedMs / (3600 * 1000));
+      const isEligibleCycle = isActive && completedHours > 0 && hourlyEarnings > 0;
 
       if (isEligibleCycle) {
-        const deviceClaimAmount = Number(hourlyEarnings.toFixed(2));
+        const deviceClaimAmount = Number((completedHours * hourlyEarnings).toFixed(2));
         totalClaimAmount = Number((totalClaimAmount + deviceClaimAmount).toFixed(2));
-        totalEligibleCycles += 1;
+        totalEligibleCycles += completedHours;
 
         const newClaimedAmount = Number(((Number(p.claimed_amount || 0)) + deviceClaimAmount).toFixed(2));
         const newTotalEarned = Number(((Number(p.total_earned || 0)) + deviceClaimAmount).toFixed(2));
@@ -4057,7 +4062,7 @@ app.get('/api/user/earnings-summary', async (req, res) => {
     const todayStr = new Date(nowMs).toISOString().split('T')[0];
     const todayStart = todayStr + 'T00:00:00.000Z';
 
-    const [walRes, purRes, claimsTodayRes] = await Promise.all([
+    const [walRes, purRes, claimsTodayRes, allTxsRes, missionClaimsRes, profRes] = await Promise.all([
       supabase.from('wallets').select('*').eq('user_id', userId).maybeSingle(),
       supabase.from('purchases').select('*').eq('user_id', userId),
       supabase
@@ -4066,11 +4071,86 @@ app.get('/api/user/earnings-summary', async (req, res) => {
         .eq('user_id', userId)
         .in('type', ['EARNING', 'EARNING_CLAIM'])
         .gte('created_at', todayStart),
+      supabase
+        .from('wallet_transactions')
+        .select('*')
+        .eq('user_id', userId),
+      supabase
+        .from('mission_claims')
+        .select('reward_amount')
+        .eq('user_id', userId),
+      supabase
+        .from('profiles')
+        .select('team_earnings, referral_earnings')
+        .or(`user_id.eq.${userId},id.eq.${userId}`)
+        .maybeSingle(),
     ]);
 
     const wallet = walRes.data || {};
     const purchases = purRes.data || [];
     const claimsToday = claimsTodayRes.data || [];
+    const allTxs = allTxsRes.data || [];
+    const missionClaims = missionClaimsRes.data || [];
+    const profile = profRes.data || {};
+
+    // 1. Team commission (from wallet_transactions or wallet.team_commission / profile.team_earnings)
+    const teamCommTxSum = allTxs
+      .filter((t: any) => {
+        const type = String(t.type || '').toUpperCase();
+        const desc = String(t.description || '').toLowerCase();
+        const metaType = String(t.metadata?.type || '').toUpperCase();
+        const metaReward = String(t.metadata?.rewardType || '').toUpperCase();
+        return (
+          type === 'TEAM_BONUS' ||
+          type === 'COMMISSION' ||
+          metaType === 'COMMISSION' ||
+          metaReward === 'TOPUP_COMMISSION' ||
+          desc.includes('team commission') ||
+          desc.includes('tier') ||
+          desc.includes('level') ||
+          desc.includes('referral commission')
+        );
+      })
+      .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
+
+    const teamCommission = teamCommTxSum > 0 ? teamCommTxSum : Number(wallet.team_commission || profile.team_earnings || 0);
+
+    // 2. Mission rewards (from mission_claims or wallet_transactions)
+    const missionClaimsSum = missionClaims.reduce((sum: number, m: any) => sum + (Number(m.reward_amount) || 0), 0);
+    const missionTxSum = allTxs
+      .filter((t: any) => {
+        const type = String(t.type || '').toUpperCase();
+        const desc = String(t.description || '').toLowerCase();
+        const metaReward = String(t.metadata?.rewardType || '').toUpperCase();
+        return type === 'MISSION_REWARD' || metaReward === 'MISSION' || desc.includes('mission completed') || desc.includes('mission reward');
+      })
+      .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
+    const missionRewards = Math.max(missionClaimsSum, missionTxSum);
+
+    // 3. Referral commission/rewards (registration reward, streak reward, etc.)
+    const referralTxSum = allTxs
+      .filter((t: any) => {
+        const type = String(t.type || '').toUpperCase();
+        const desc = String(t.description || '').toLowerCase();
+        const txType = String(t.transaction_type || '').toUpperCase();
+        return (
+          type === 'REFERRAL_BONUS' ||
+          type === 'REFERRAL_REWARD' ||
+          type === 'REFERRAL' ||
+          txType.includes('REFERRAL_REGISTRATION') ||
+          txType.includes('REFERRAL_STREAK') ||
+          desc.includes('referral registration') ||
+          desc.includes('referral streak') ||
+          desc.includes('invitation bonus') ||
+          desc.includes('referral reward') ||
+          desc.includes('invite reward')
+        );
+      })
+      .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
+    const referralRewards = referralTxSum > 0 ? referralTxSum : Number(profile.referral_earnings || 0);
+
+    // Aggregated real Promotion Total
+    const promotionEarnings = Number((teamCommission + missionRewards + referralRewards).toFixed(2));
 
     // Sum of successful claims made TODAY
     const todayEarnings = claimsToday.reduce((sum: number, c: any) => sum + (Number(c.amount) || 0), 0);
@@ -4092,21 +4172,27 @@ app.get('/api/user/earnings-summary', async (req, res) => {
       const startedMs = new Date(p.started_at || nowMs).getTime();
       const expiresMs = p.expires_at ? new Date(p.expires_at).getTime() : startedMs + totalPlanHours * 3600 * 1000;
 
-      const dailyEarnings = Number(p.daily_earnings || (Number(p.earning_rate || 0) * 24) || 0);
-      const hourlyEarnings = Number(p.earning_rate || (dailyEarnings > 0 ? dailyEarnings / 24 : 0));
+      const hourlyEarnings = Number(
+        p.earning_rate ||
+        p.hourly_earnings ||
+        (p.daily_earnings ? Number(p.daily_earnings) / 24 : 0)
+      );
 
       const isExpired = nowMs >= expiresMs;
-      const isActive = !isExpired;
+      const isActive = !isExpired && startedMs < expiresMs;
 
       const lastCycleStartMs = p.last_claimed_at
         ? new Date(p.last_claimed_at).getTime()
         : startedMs;
 
-      const msSinceLastCycle = Math.max(0, nowMs - lastCycleStartMs);
-      const isEligibleCycle = isActive && msSinceLastCycle >= 3600 * 1000 && hourlyEarnings > 0;
+      // Respect the existing plan duration/end date. Do not calculate earnings beyond the existing plan's valid duration.
+      const effectiveEndMs = Math.min(nowMs, expiresMs);
+      const elapsedMs = Math.max(0, effectiveEndMs - lastCycleStartMs);
+      const completedHours = Math.floor(elapsedMs / (3600 * 1000));
 
-      if (isEligibleCycle) {
-        totalClaimable = Number((totalClaimable + hourlyEarnings).toFixed(2));
+      if (isActive && completedHours > 0 && hourlyEarnings > 0) {
+        const claimable = Number((completedHours * hourlyEarnings).toFixed(2));
+        totalClaimable = Number((totalClaimable + claimable).toFixed(2));
       }
 
       const remainingHours = Math.max(0, Math.ceil((expiresMs - nowMs) / 3600000));
@@ -4125,6 +4211,10 @@ app.get('/api/user/earnings-summary', async (req, res) => {
       totalEarned,
       remainingHours: maxRemainingHours,
       activeDevicesCount: activePurchases.length,
+      promotionEarnings,
+      teamCommission: Number(teamCommission.toFixed(2)),
+      missionRewards: Number(missionRewards.toFixed(2)),
+      referralRewards: Number(referralRewards.toFixed(2)),
     });
   } catch (err: any) {
     console.error('Earnings summary error:', err);
@@ -5300,7 +5390,6 @@ app.get('/api/wallet/transactions', async (req, res) => {
     // 5. Process withdrawals
     if (!withRes.error && withRes.data) {
       for (const w of withRes.data) {
-        const ref = w.id;
         const rawStatus = (w.status || '').toUpperCase();
         let mappedStatus = 'Pending';
         if (rawStatus === 'APPROVED' || rawStatus === 'PAID' || rawStatus === 'SUCCESS' || rawStatus === 'COMPLETED' || rawStatus === 'PROCESSED') {
@@ -5309,8 +5398,45 @@ app.get('/api/wallet/transactions', async (req, res) => {
           mappedStatus = 'Failed';
         }
 
-        if (!txMap.has(ref)) {
-          txMap.set(ref, {
+        // Check if a transaction for this withdrawal already exists in txMap
+        let existingKey: string | null = null;
+        if (txMap.has(w.id)) {
+          existingKey = w.id;
+        } else if (w.traceno && txMap.has(w.traceno)) {
+          existingKey = w.traceno;
+        } else if (w.order_id && txMap.has(w.order_id)) {
+          existingKey = w.order_id;
+        } else {
+          // Search existing txMap entries for matching withdrawal request
+          const wTime = new Date(w.created_at).getTime();
+          const wAmt = Math.abs(Number(w.amount));
+          for (const [k, tx] of txMap.entries()) {
+            const txTypeUpper = (tx.type || '').toUpperCase();
+            if (txTypeUpper === 'WITHDRAWAL' || txTypeUpper === 'WITHDRAWAL_REQUEST') {
+              const txAmt = Math.abs(Number(tx.amount));
+              const txTime = new Date(tx.createdAt).getTime();
+              // Check reference match
+              if (tx.referenceId === w.id || (w.traceno && tx.referenceId === w.traceno) || (w.bank_ref_no && tx.referenceId === w.bank_ref_no)) {
+                existingKey = k;
+                break;
+              }
+              // Check amount and timestamp match within 2 minutes
+              if (Math.abs(txAmt - wAmt) < 0.01 && Math.abs(txTime - wTime) <= 120000) {
+                existingKey = k;
+                break;
+              }
+            }
+          }
+        }
+
+        if (existingKey) {
+          const existing = txMap.get(existingKey);
+          existing.referenceId = w.id;
+          if (mappedStatus === 'Completed') existing.status = 'Completed';
+          else if (mappedStatus === 'Failed') existing.status = 'Failed';
+          if (w.bank_ref_no) existing.utr = w.bank_ref_no;
+        } else {
+          txMap.set(w.id, {
             id: w.id,
             userId: w.user_id,
             type: 'WITHDRAWAL',
@@ -5440,7 +5566,16 @@ app.get('/api/admin/withdrawals', async (req, res) => {
 
     const formatted = (withdrawalsRes.data || []).map((w: any) => {
       const prof = profileMap.get(w.user_id) || {};
-      const bank = bankMap.get(w.bank_account_id) || {};
+      let bank = bankMap.get(w.bank_account_id) || {};
+      if (!bank.id && banksRes.data) {
+        bank = banksRes.data.find((b: any) => b.user_id === w.user_id && b.is_default) ||
+               banksRes.data.find((b: any) => b.user_id === w.user_id) || {};
+      }
+      const actualHolderName = w.account_holder_name || bank.account_holder_name || w.holder_name || bank.holder_name || prof.username || 'Account Holder';
+      const actualAccountNumber = w.account_number || bank.account_number || '';
+      const actualIfsc = w.ifsc_code || w.ifsc || bank.ifsc || bank.ifsc_code || '';
+      const actualBankName = w.bank_name || bank.bank_name || 'Bank';
+
       return {
         id: w.id,
         userId: w.user_id,
@@ -5451,13 +5586,27 @@ app.get('/api/admin/withdrawals', async (req, res) => {
         actualAmount: Number(w.actual_amount || w.net_amount || w.amount || 0),
         fee: Number(w.fee || 0),
         status: w.status,
-        accountNumber: w.account_number || bank.account_number || '',
-        ifscCode: w.ifsc_code || bank.ifsc || bank.ifsc_code || '',
-        holderName: w.holder_name || bank.account_holder_name || bank.holder_name || prof.username || '',
-        bankName: w.bank_name || bank.bank_name || '',
+        accountNumber: actualAccountNumber,
+        ifscCode: actualIfsc,
+        ifsc: actualIfsc,
+        holderName: actualHolderName,
+        accountHolderName: actualHolderName,
+        bankName: actualBankName,
         bankRefNo: w.bank_ref_no || '',
         rejectedReason: w.rejection_reason || w.rejected_reason || '',
         createdAt: w.created_at,
+        bankDetails: {
+          id: bank.id || w.bank_account_id,
+          userId: bank.user_id || w.user_id,
+          accountHolderName: actualHolderName,
+          holderName: actualHolderName,
+          accountNumber: actualAccountNumber,
+          ifsc: actualIfsc,
+          ifscCode: actualIfsc,
+          bankName: actualBankName,
+          upiId: bank.upi_id || w.upi_id,
+          isDefault: bank.is_default,
+        },
       };
     });
 
@@ -7719,17 +7868,19 @@ app.get('/api/referrals/team-summary', async (req, res) => {
     const myCode = profile?.referral_code || profile?.membership_number || '';
     const myCodes = new Set([myCode, profile?.membership_number, profile?.user_id, profile?.id, userId].filter(Boolean));
 
-    const [referralsRes, profilesRes, purchasesRes, txsRes] = await Promise.all([
+    const [referralsRes, profilesRes, purchasesRes, txsRes, walRes] = await Promise.all([
       supabase.from('referrals').select('*'),
       supabase.from('profiles').select('id, user_id, username, phone, mobile, whatsapp_no, referral_code, membership_number, referred_by, created_at'),
       supabase.from('purchases').select('id, user_id, amount, status, started_at, created_at'),
       supabase.from('wallet_transactions').select('*').eq('user_id', userId),
+      supabase.from('wallets').select('*').eq('user_id', userId).maybeSingle(),
     ]);
 
     const allRefs = referralsRes.data || [];
     const allProfs = profilesRes.data || [];
     const allPurchases = purchasesRes.data || [];
     const allTxs = txsRes.data || [];
+    const userWallet = walRes.data || {};
 
     // Level 1 Members
     const l1RefereeIds = new Set<string>();
@@ -7779,17 +7930,19 @@ app.get('/api/referrals/team-summary', async (req, res) => {
       return false;
     });
 
-    const nowTime = Date.now();
+    const isSuccessfulPurchase = (p: any) => {
+      if (!p) return false;
+      const s = String(p.status || '').toUpperCase().trim();
+      if (['PENDING', 'REJECTED', 'CANCELLED', 'FAILED', 'ERROR', 'PAYMENT_PENDING'].includes(s)) {
+        return false;
+      }
+      return s === 'ACTIVE' || s === 'COMPLETED' || s === 'SUCCESS' || s === 'EXPIRED';
+    };
+
     const mapMember = (u: any, tier: 1 | 2 | 3) => {
       const uid = u.user_id || u.id;
-      const userPurchases = allPurchases.filter((p: any) => {
-        const uidMatch = p.user_id === uid;
-        const isStatusActive = String(p.status).toUpperCase() === 'ACTIVE';
-        const endDate = p.expires_at || p.end_date || p.endDate;
-        const isUnexpired = !endDate || new Date(endDate).getTime() > nowTime;
-        return uidMatch && isStatusActive && isUnexpired;
-      });
-      const totalInvested = allPurchases.filter((p: any) => p.user_id === uid).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+      const userPurchases = allPurchases.filter((p: any) => p.user_id === uid && isSuccessfulPurchase(p));
+      const totalInvested = userPurchases.reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
       const rawMobile = u.whatsapp_no || u.phone || u.mobile || '9800000000';
       const maskedMobile = rawMobile.length >= 10 ? `${rawMobile.substring(0, 4)}****${rawMobile.substring(rawMobile.length - 2)}` : rawMobile;
 
@@ -7818,6 +7971,13 @@ app.get('/api/referrals/team-summary', async (req, res) => {
     const level2Items = l2Users.map((u: any) => mapMember(u, 2));
     const level3Items = l3Users.map((u: any) => mapMember(u, 3));
 
+    const level1PurchaseNumber = level1Items.reduce((s, m) => s + m.devices, 0);
+    const level1PurchaseAmount = +level1Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2);
+    const level2PurchaseNumber = level2Items.reduce((s, m) => s + m.devices, 0);
+    const level2PurchaseAmount = +level2Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2);
+    const level3PurchaseNumber = level3Items.reduce((s, m) => s + m.devices, 0);
+    const level3PurchaseAmount = +level3Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2);
+
     const commTxs = allTxs.filter((t: any) => {
       const desc = (t.description || '').toLowerCase();
       const ref = (t.reference_id || '').toLowerCase();
@@ -7844,7 +8004,14 @@ app.get('/api/referrals/team-summary', async (req, res) => {
     }).reduce((s: number, t: any) => s + Number(t.amount || 0), 0).toFixed(2);
 
     const computedTotalComm = +(l1Comm + l2Comm + l3Comm).toFixed(2);
-    const totalTeamCommission = computedTotalComm > 0 ? computedTotalComm : +(level1Items.reduce((s, m) => s + m.totalCommissionEarned, 0) + level2Items.reduce((s, m) => s + m.totalCommissionEarned, 0) + level3Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2);
+    const calculatedMemberComm = +(level1Items.reduce((s, m) => s + m.totalCommissionEarned, 0) + level2Items.reduce((s, m) => s + m.totalCommissionEarned, 0) + level3Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2);
+    const walletTeamComm = Number(userWallet.team_commission || 0);
+    const profileTeamComm = Number(profile?.team_earnings || 0);
+    const totalTeamCommission = +(Math.max(
+      computedTotalComm > 0 ? computedTotalComm : calculatedMemberComm,
+      walletTeamComm,
+      profileTeamComm
+    )).toFixed(2);
 
     const activeDevicesCount = level1Items.reduce((s, m) => s + m.devices, 0) + level2Items.reduce((s, m) => s + m.devices, 0) + level3Items.reduce((s, m) => s + m.devices, 0);
 
@@ -7855,10 +8022,17 @@ app.get('/api/referrals/team-summary', async (req, res) => {
         directMembers: level1Items.length,
         indirectMembers: level2Items.length + level3Items.length,
         totalTeamCommission,
+        teamCommission: totalTeamCommission,
         level1Commission: l1Comm || +(level1Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2),
         level2Commission: l2Comm || +(level2Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2),
         level3Commission: l3Comm || +(level3Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2),
         activeDevicesCount,
+        level1PurchaseNumber,
+        level1PurchaseAmount,
+        level2PurchaseNumber,
+        level2PurchaseAmount,
+        level3PurchaseNumber,
+        level3PurchaseAmount,
         level1Members: level1Items,
         level2Members: level2Items,
         level3Members: level3Items,

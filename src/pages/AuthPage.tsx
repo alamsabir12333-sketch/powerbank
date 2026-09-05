@@ -320,10 +320,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({
               </div>
             </div>
           )}
-          <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight flex items-center gap-1.5">
-            {siteSettings?.siteTitle || 'GAIN POWER'}
-            <span className="text-[#FF7A00] inline-block">⚡</span>
-          </h1>
           <p className="text-xs text-gray-400 font-medium mt-1">
             Smart Power Infrastructure & Yield Sharing
           </p>

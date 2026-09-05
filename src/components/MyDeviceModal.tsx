@@ -99,7 +99,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
   }, [isOpen, userId]);
 
   const handleClaim = async () => {
-    if (!userId || isClaiming || claimableData.totalClaimable <= 0) {
+    if (!userId || isClaiming || displayTotalClaimable <= 0) {
       return;
     }
 
@@ -163,6 +163,11 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
 
   const now = Date.now();
   const activeDevices = devices.filter((p) => p.status === 'ACTIVE' || (p.status as string) === 'active');
+  const liveTotalClaimable = activeDevices.reduce(
+    (sum, d) => sum + calculateDeviceHourlyStatus(d, now).claimableAmount,
+    0
+  );
+  const displayTotalClaimable = Number(liveTotalClaimable.toFixed(2));
   const totalInvested = activeDevices.reduce((sum, p) => sum + p.amount, 0);
   const totalDailyEarn = activeDevices.reduce(
     (sum, p) => sum + (p.dailyEarnings || (p.earningRate ? p.earningRate * 24 : 0)),
@@ -239,7 +244,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                   </span>
                   <div className="flex items-baseline gap-1 mt-0.5">
                     <span className="text-2xl font-black text-white tracking-tight">
-                      ₹{claimableData.totalClaimable.toFixed(2)}
+                      ₹{displayTotalClaimable.toFixed(2)}
                     </span>
                   </div>
                 </div>
@@ -249,9 +254,9 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
               <button
                 type="button"
                 onClick={handleClaim}
-                disabled={isClaiming || claimableData.totalClaimable <= 0}
+                disabled={isClaiming || displayTotalClaimable <= 0}
                 className={`px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider transition-all shadow-md active:scale-95 flex items-center gap-1.5 shrink-0 ${
-                  claimableData.totalClaimable > 0
+                  displayTotalClaimable > 0
                     ? 'bg-gradient-to-r from-[#FF6000] to-[#FFA000] text-white hover:brightness-110 shadow-orange-500/30 cursor-pointer animate-pulse'
                     : 'bg-[#282828] text-gray-500 cursor-not-allowed border border-[#383838]'
                 }`}

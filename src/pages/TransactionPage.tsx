@@ -63,7 +63,18 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
     setLoading(true);
     try {
       const data = await fetchWalletTransactions(userId);
-      setTransactions(data);
+      const deduped: WalletTransaction[] = [];
+      const seenIds = new Set<string>();
+      for (const t of data) {
+        const ref = t.referenceId;
+        if (seenIds.has(t.id) || (ref && seenIds.has(ref))) {
+          continue;
+        }
+        seenIds.add(t.id);
+        if (ref) seenIds.add(ref);
+        deduped.push(t);
+      }
+      setTransactions(deduped);
     } catch (err: any) {
       console.error('Error fetching transactions:', err);
       onShowToast?.(err.message || 'Failed to load transaction history');

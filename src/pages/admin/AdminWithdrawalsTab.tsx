@@ -128,8 +128,8 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
         (w.username || '').toLowerCase().includes(q) ||
         (w.userMobile || '').toLowerCase().includes(q) ||
         (w.bankDetails?.accountNumber || '').toLowerCase().includes(q) ||
-        (w.bankDetails?.holderName || '').toLowerCase().includes(q) ||
-        (w.bankDetails?.ifscCode || '').toLowerCase().includes(q) ||
+        (w.bankDetails?.accountHolderName || w.bankDetails?.holderName || '').toLowerCase().includes(q) ||
+        (w.bankDetails?.ifscCode || w.bankDetails?.ifsc || '').toLowerCase().includes(q) ||
         (w.bankDetails?.upiId || '').toLowerCase().includes(q)
       );
     }
@@ -289,7 +289,7 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
                           </div>
                         ) : (
                           <div>
-                            <div className="text-white font-bold">{item.bankDetails?.holderName || 'Account Holder'}</div>
+                            <div className="text-white font-bold">{item.bankDetails?.accountHolderName || item.bankDetails?.holderName || 'Account Holder'}</div>
                             <div className="text-gray-400 flex items-center gap-1">
                               <span>A/C: <span className="text-amber-400">{item.bankDetails?.accountNumber}</span></span>
                               {item.bankDetails?.accountNumber && (
@@ -306,15 +306,15 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
                                   )}
                                 </button>
                               )}
-                              <span>• IFSC: <span className="text-cyan-400">{item.bankDetails?.ifscCode}</span></span>
-                              {item.bankDetails?.ifscCode && (
+                              <span>• IFSC: <span className="text-cyan-400">{item.bankDetails?.ifscCode || item.bankDetails?.ifsc || 'N/A'}</span></span>
+                              {(item.bankDetails?.ifscCode || item.bankDetails?.ifsc) && (item.bankDetails?.ifscCode !== 'N/A' && item.bankDetails?.ifsc !== 'N/A') && (
                                 <button
                                   type="button"
-                                  onClick={() => handleCopy(item.bankDetails!.ifscCode)}
+                                  onClick={() => handleCopy((item.bankDetails?.ifscCode || item.bankDetails?.ifsc)!)}
                                   className="p-0.5 text-gray-400 hover:text-white"
                                   title="Copy IFSC"
                                 >
-                                  {copiedText === item.bankDetails.ifscCode ? (
+                                  {copiedText === (item.bankDetails?.ifscCode || item.bankDetails?.ifsc) ? (
                                     <Check className="w-3 h-3 text-emerald-400" />
                                   ) : (
                                     <Copy className="w-3 h-3" />
@@ -412,7 +412,7 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
             <div className="bg-[#0d1117] p-3 rounded-xl border border-gray-800 mb-4 text-xs space-y-1.5 font-mono">
               <div className="flex justify-between font-sans">
                 <span className="text-gray-400">Recipient Name:</span>
-                <span className="font-bold text-white">{payoutItem.bankDetails?.holderName || 'Account Holder'}</span>
+                <span className="font-bold text-white">{payoutItem.bankDetails?.accountHolderName || payoutItem.bankDetails?.holderName || 'Account Holder'}</span>
               </div>
               {payoutItem.bankDetails?.accountNumber && (
                 <div className="flex justify-between">
@@ -420,10 +420,10 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
                   <span className="text-amber-400 font-bold">{payoutItem.bankDetails?.accountNumber}</span>
                 </div>
               )}
-              {payoutItem.bankDetails?.ifscCode && (
+              {(payoutItem.bankDetails?.ifscCode || payoutItem.bankDetails?.ifsc) && (
                 <div className="flex justify-between">
                   <span className="text-gray-400 font-sans">IFSC Code:</span>
-                  <span className="text-cyan-400 font-bold">{payoutItem.bankDetails?.ifscCode}</span>
+                  <span className="text-cyan-400 font-bold">{payoutItem.bankDetails?.ifscCode || payoutItem.bankDetails?.ifsc}</span>
                 </div>
               )}
               {payoutItem.bankDetails?.bankName && (

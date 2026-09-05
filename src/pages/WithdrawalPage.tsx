@@ -42,7 +42,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
   onRefreshData,
 }) => {
   const [amount, setAmount] = useState<number>(300);
-  const [customAmount, setCustomAmount] = useState<string>('');
+  const [customAmount, setCustomAmount] = useState<string>('300');
   const [withdrawalPassword, setWithdrawalPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
@@ -91,7 +91,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
 
   const handlePresetSelect = (amt: number) => {
     setAmount(amt);
-    setCustomAmount('');
+    setCustomAmount(String(amt));
     setError(null);
   };
 
@@ -316,7 +316,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
           {/* Grid of Preset Withdrawal Amounts (3 columns) */}
           <div className="grid grid-cols-3 gap-3">
             {PRESET_WITHDRAW_AMOUNTS.map((amt) => {
-              const isSelected = amount === amt && !customAmount;
+              const isSelected = amount === amt;
               return (
                 <button
                   key={amt}
@@ -357,7 +357,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
                   type="button"
                   onClick={() => {
                     setCustomAmount('');
-                    setAmount(300);
+                    setAmount(0);
                   }}
                   className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 px-2 py-1 text-xs font-semibold rounded-lg bg-gray-100 cursor-pointer"
                 >

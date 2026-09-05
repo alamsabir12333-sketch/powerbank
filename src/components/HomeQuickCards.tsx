@@ -32,7 +32,7 @@ export const HomeQuickCards: React.FC<HomeQuickCardsProps> = ({
             </span>
             <div className="mt-1 flex items-baseline">
               <span className="text-white font-black text-2xl tracking-tight">
-                {undrawnAmount}₹
+                ₹{Number(undrawnAmount || 0).toFixed(2)}
               </span>
             </div>
           </div>

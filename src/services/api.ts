@@ -864,7 +864,7 @@ export async function fetchUserProfile(userId: string): Promise<UserProfile> {
       const { data: profile, error } = await supabase
         .from('profiles')
         .select('*')
-        .eq('user_id', userId)
+        .or(`user_id.eq.${userId},id.eq.${userId}`)
         .maybeSingle();
 
       if (error && !isTableMissingError(error) && error.code !== 'PGRST116') {
@@ -874,7 +874,7 @@ export async function fetchUserProfile(userId: string): Promise<UserProfile> {
       const { data: wallet, error: walletError } = await supabase
         .from('wallets')
         .select('*')
-        .eq('user_id', userId)
+        .or(`user_id.eq.${userId},id.eq.${userId}`)
         .maybeSingle();
 
       if (walletError && !isTableMissingError(walletError) && walletError.code !== 'PGRST116') {
@@ -896,7 +896,7 @@ export async function fetchUserProfile(userId: string): Promise<UserProfile> {
           role: profile.role || localProfile.role || 'user',
           status: profile.status || localProfile.status || 'active',
           deviceEarnings: Number(wallet?.total_earned ?? localWallet.totalEarned ?? 0),
-          teamEarnings: 0,
+          teamEarnings: Number(wallet?.team_commission ?? profile.team_earnings ?? 0),
           walletBalance: Number(wallet?.available_balance ?? localWallet.availableBalance ?? 0),
           avatarUrl: profile.avatar_url || localProfile.avatarUrl,
           createdAt: profile.created_at || localProfile.createdAt,
@@ -1240,17 +1240,55 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
       // E. Process withdrawals
       if (!withRes.error && withRes.data) {
         for (const w of withRes.data) {
-          const ref = w.id;
           const rawStatus = (w.status || '').toUpperCase();
           let mappedStatus: 'Completed' | 'Pending' | 'Failed' = 'Pending';
-          if (rawStatus === 'APPROVED' || rawStatus === 'PAID' || rawStatus === 'SUCCESS' || rawStatus === 'PROCESSED') {
+          if (rawStatus === 'APPROVED' || rawStatus === 'PAID' || rawStatus === 'SUCCESS' || rawStatus === 'PROCESSED' || rawStatus === 'COMPLETED') {
             mappedStatus = 'Completed';
           } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED') {
             mappedStatus = 'Failed';
           }
 
-          if (!txMap.has(ref)) {
-            txMap.set(ref, {
+          // Check if a transaction for this withdrawal already exists in txMap
+          let existingKey: string | null = null;
+          if (txMap.has(w.id)) {
+            existingKey = w.id;
+          } else if (w.traceno && txMap.has(w.traceno)) {
+            existingKey = w.traceno;
+          } else if (w.order_id && txMap.has(w.order_id)) {
+            existingKey = w.order_id;
+          } else {
+            // Search existing txMap entries for matching withdrawal request
+            const wTime = new Date(w.created_at).getTime();
+            const wAmt = Math.abs(Number(w.amount));
+            for (const [k, tx] of txMap.entries()) {
+              const txTypeUpper = (tx.type || '').toUpperCase();
+              if (txTypeUpper === 'WITHDRAWAL' || txTypeUpper === 'WITHDRAWAL_REQUEST') {
+                const txAmt = Math.abs(Number(tx.amount));
+                const txTime = new Date(tx.createdAt).getTime();
+                // Check reference match
+                if (tx.referenceId === w.id || (w.traceno && tx.referenceId === w.traceno) || (w.bank_ref_no && tx.referenceId === w.bank_ref_no)) {
+                  existingKey = k;
+                  break;
+                }
+                // Check amount and timestamp match within 2 minutes
+                if (Math.abs(txAmt - wAmt) < 0.01 && Math.abs(txTime - wTime) <= 120000) {
+                  existingKey = k;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (existingKey) {
+            const existing = txMap.get(existingKey);
+            if (existing) {
+              existing.referenceId = w.id;
+              if (mappedStatus === 'Completed') existing.status = 'Completed';
+              else if (mappedStatus === 'Failed') existing.status = 'Failed';
+              if (w.bank_ref_no) existing.utr = w.bank_ref_no;
+            }
+          } else {
+            txMap.set(w.id, {
               id: w.id,
               userId: w.user_id,
               type: 'WITHDRAWAL',
@@ -1463,7 +1501,6 @@ export async function fetchAdminTransactions(): Promise<WalletTransaction[]> {
 
       if (!withRes.error && withRes.data) {
         for (const w of withRes.data) {
-          const ref = w.id;
           const rawStatus = (w.status || '').toUpperCase();
           let mappedStatus: 'Completed' | 'Pending' | 'Failed' = 'Pending';
           if (rawStatus === 'APPROVED' || rawStatus === 'PAID' || rawStatus === 'SUCCESS' || rawStatus === 'PROCESSED' || rawStatus === 'COMPLETED') {
@@ -1473,8 +1510,44 @@ export async function fetchAdminTransactions(): Promise<WalletTransaction[]> {
           }
 
           const prof = profileMap.get(w.user_id) || {};
-          if (!txMap.has(ref)) {
-            txMap.set(ref, {
+
+          let existingKey: string | null = null;
+          if (txMap.has(w.id)) {
+            existingKey = w.id;
+          } else if (w.traceno && txMap.has(w.traceno)) {
+            existingKey = w.traceno;
+          } else if (w.order_id && txMap.has(w.order_id)) {
+            existingKey = w.order_id;
+          } else {
+            const wTime = new Date(w.created_at).getTime();
+            const wAmt = Math.abs(Number(w.amount));
+            for (const [k, tx] of txMap.entries()) {
+              const txTypeUpper = (tx.type || '').toUpperCase();
+              if (tx.userId === w.user_id && (txTypeUpper === 'WITHDRAWAL' || txTypeUpper === 'WITHDRAWAL_REQUEST')) {
+                const txAmt = Math.abs(Number(tx.amount));
+                const txTime = new Date(tx.createdAt).getTime();
+                if (tx.referenceId === w.id || (w.traceno && tx.referenceId === w.traceno) || (w.bank_ref_no && tx.referenceId === w.bank_ref_no)) {
+                  existingKey = k;
+                  break;
+                }
+                if (Math.abs(txAmt - wAmt) < 0.01 && Math.abs(txTime - wTime) <= 120000) {
+                  existingKey = k;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (existingKey) {
+            const existing = txMap.get(existingKey);
+            if (existing) {
+              existing.referenceId = w.id;
+              if (mappedStatus === 'Completed') existing.status = 'Completed';
+              else if (mappedStatus === 'Failed') existing.status = 'Failed';
+              if (w.bank_ref_no) existing.utr = w.bank_ref_no;
+            }
+          } else {
+            txMap.set(w.id, {
               id: w.id,
               userId: w.user_id,
               username: prof.username || 'User',
@@ -2246,6 +2319,20 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
           2: d.level2Members || [],
           3: d.level3Members || [],
         },
+        levelPurchases: {
+          1: {
+            purchaseNumber: Number(d.level1PurchaseNumber !== undefined ? d.level1PurchaseNumber : (d.level1Members || []).reduce((s: number, m: any) => s + (m.devices || 0), 0)),
+            purchaseAmount: Number(d.level1PurchaseAmount !== undefined ? d.level1PurchaseAmount : (d.level1Members || []).reduce((s: number, m: any) => s + (m.totalInvested || 0), 0)),
+          },
+          2: {
+            purchaseNumber: Number(d.level2PurchaseNumber !== undefined ? d.level2PurchaseNumber : (d.level2Members || []).reduce((s: number, m: any) => s + (m.devices || 0), 0)),
+            purchaseAmount: Number(d.level2PurchaseAmount !== undefined ? d.level2PurchaseAmount : (d.level2Members || []).reduce((s: number, m: any) => s + (m.totalInvested || 0), 0)),
+          },
+          3: {
+            purchaseNumber: Number(d.level3PurchaseNumber !== undefined ? d.level3PurchaseNumber : (d.level3Members || []).reduce((s: number, m: any) => s + (m.devices || 0), 0)),
+            purchaseAmount: Number(d.level3PurchaseAmount !== undefined ? d.level3PurchaseAmount : (d.level3Members || []).reduce((s: number, m: any) => s + (m.totalInvested || 0), 0)),
+          },
+        },
         rewardHistory: [],
         settings,
       };
@@ -2425,6 +2512,20 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
             2: l2Items,
             3: l3Items,
           },
+          levelPurchases: {
+            1: {
+              purchaseNumber: l1Items.reduce((s, m) => s + m.devices, 0),
+              purchaseAmount: +l1Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+            },
+            2: {
+              purchaseNumber: l2Items.reduce((s, m) => s + m.devices, 0),
+              purchaseAmount: +l2Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+            },
+            3: {
+              purchaseNumber: l3Items.reduce((s, m) => s + m.devices, 0),
+              purchaseAmount: +l3Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+            },
+          },
           rewardHistory,
           settings,
         };
@@ -2538,6 +2639,20 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
       1: l1Items,
       2: l2Items,
       3: l3Items,
+    },
+    levelPurchases: {
+      1: {
+        purchaseNumber: l1Items.reduce((s, m) => s + m.devices, 0),
+        purchaseAmount: +l1Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+      },
+      2: {
+        purchaseNumber: l2Items.reduce((s, m) => s + m.devices, 0),
+        purchaseAmount: +l2Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+      },
+      3: {
+        purchaseNumber: l3Items.reduce((s, m) => s + m.devices, 0),
+        purchaseAmount: +l3Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+      },
     },
     rewardHistory: myRewards,
     settings,
@@ -3434,62 +3549,68 @@ export interface DeviceHourlyStatus {
 }
 
 /**
- * Calculates discrete hourly earnings strictly per completed full hour cycle (FLOOR(elapsed / 3600)).
- * No partial-hour earnings. No timer reset upon claim. Server-authoritative timeline.
+ * Calculates discrete hourly earnings strictly per completed full hour cycle:
+ * Formula: completed hours × hourly earning rate = current claimable earning
+ * No partial-hour earnings. Earning accumulates automatically based on completed hours.
+ * Server/database purchase activation and claim timestamp authoritative timeline.
  */
 export function calculateDeviceHourlyStatus(device: PurchaseItem, now: number = Date.now()): DeviceHourlyStatus {
-  const durationDays = device.durationDays || 365;
-  const totalPlanHours = device.totalPlanHours || durationDays * 24;
+  const durationDays = Number(device.durationDays || 365);
+  const totalPlanHours = Number(device.totalPlanHours || durationDays * 24);
   const startedMs = new Date(device.startedAt || now).getTime();
   const expiresMs = device.expiresAt ? new Date(device.expiresAt).getTime() : startedMs + totalPlanHours * 3600 * 1000;
 
-  // Daily Earning is authoritative: hourly rate = daily / 24
+  // Authoritative hourly earnings rate:
+  // If hourlyEarnings is explicitly provided and > 0, use it.
+  // Else if earningRate is explicitly provided and > 0, use it.
+  // Else if dailyEarnings is provided, use dailyEarnings / 24.
+  const hourlyEarnings = Number(
+    device.hourlyEarnings ||
+      device.earningRate ||
+      (device.dailyEarnings ? Number(device.dailyEarnings) / 24 : 0)
+  );
+
   const dailyEarnings = Number(
     device.dailyEarnings ||
-      (device.hourlyEarnings ? device.hourlyEarnings * 24 : (device.earningRate ? device.earningRate * 24 : 0))
+      (hourlyEarnings > 0 ? hourlyEarnings * 24 : 0)
   );
-  const hourlyEarnings = device.hourlyEarnings || Number((dailyEarnings > 0 ? dailyEarnings / 24 : 0).toFixed(2));
 
   const isExpired = now >= expiresMs;
-  const isActive = (device.status === 'ACTIVE' || (device.status as string) === 'active') && !isExpired;
+  const isActive = (device.status === 'ACTIVE' || (device.status as string) === 'active') && startedMs < expiresMs;
 
   // Current hourly cycle begins at lastClaimedAt, or startedAt if never claimed
   const lastCycleStartMs = device.lastClaimedAt
     ? new Date(device.lastClaimedAt).getTime()
     : startedMs;
 
-  const msSinceLastCycle = Math.max(0, now - lastCycleStartMs);
+  // Respect the existing plan duration/end date. Do not calculate earnings beyond the existing plan's valid duration.
+  const effectiveEndMs = Math.min(now, expiresMs);
+  const elapsedMs = Math.max(0, effectiveEndMs - lastCycleStartMs);
 
-  // SINGLE COMPLETED HOURLY CYCLE RULE:
-  // ONE COMPLETED HOURLY CYCLE = ONE CLAIMABLE HOURLY EARNING UNIT.
-  // At least 1 full hour (3600 seconds) must elapse from cycle start.
-  const isEligibleCycle = isActive && msSinceLastCycle >= 3600 * 1000 && hourlyEarnings > 0;
-  const claimableAmount = isEligibleCycle ? hourlyEarnings : 0;
+  // FORMULA: completed hours × hourly earning rate = current claimable earning
+  const completedHours = Math.floor(elapsedMs / (3600 * 1000));
+  const isEligibleCycle = isActive && completedHours > 0 && hourlyEarnings > 0;
+  const claimableAmount = isEligibleCycle ? Number((completedHours * hourlyEarnings).toFixed(2)) : 0;
   const totalEarnedAmount = Number((device.totalEarned || device.claimedAmount || 0).toFixed(2));
   
   const claimedHours = hourlyEarnings > 0 ? Math.round((device.claimedAmount || 0) / hourlyEarnings) : 0;
-  const totalCompletedHours = Math.min(totalPlanHours, claimedHours + (isEligibleCycle ? 1 : 0));
-  const remainingHours = Math.max(0, totalPlanHours - claimedHours);
+  const unclaimedHours = isEligibleCycle ? completedHours : 0;
+  const totalCompletedHours = Math.min(totalPlanHours, claimedHours + unclaimedHours);
+  const remainingHours = Math.max(0, totalPlanHours - totalCompletedHours);
 
   // Next Earning Time calculation
   let nextEarningTimestamp: number | undefined = undefined;
   let nextEarningTimeFormatted = 'Completed';
   let formattedSecondsUntilNext = '';
 
-  if (isActive) {
-    if (isEligibleCycle) {
-      nextEarningTimeFormatted = 'Cycle ready to claim';
-      nextEarningTimestamp = lastCycleStartMs + 3600 * 1000;
-      formattedSecondsUntilNext = '0m 0s';
-    } else {
-      nextEarningTimestamp = lastCycleStartMs + 3600 * 1000;
-      const diffMs = Math.max(0, nextEarningTimestamp - now);
-      const diffMinutes = Math.floor(diffMs / 60000);
-      const diffSeconds = Math.floor((diffMs % 60000) / 1000);
-      formattedSecondsUntilNext = `${diffMinutes}m ${diffSeconds}s`;
-      const timeStr = new Date(nextEarningTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      nextEarningTimeFormatted = `${timeStr} (in ${diffMinutes}m ${diffSeconds}s)`;
-    }
+  if (isActive && !isExpired) {
+    nextEarningTimestamp = lastCycleStartMs + (completedHours + 1) * 3600 * 1000;
+    const diffMs = Math.max(0, nextEarningTimestamp - now);
+    const diffMinutes = Math.floor(diffMs / 60000);
+    const diffSeconds = Math.floor((diffMs % 60000) / 1000);
+    formattedSecondsUntilNext = `${diffMinutes}m ${diffSeconds}s`;
+    const timeStr = new Date(nextEarningTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    nextEarningTimeFormatted = `${timeStr} (in ${diffMinutes}m ${diffSeconds}s)`;
   }
 
   const lastClaimTimeFormatted = device.lastClaimedAt
@@ -3508,7 +3629,7 @@ export function calculateDeviceHourlyStatus(device: PurchaseItem, now: number = 
     totalPlanHours,
     totalCompletedHours,
     claimedHours,
-    unclaimedHours: isEligibleCycle ? 1 : 0,
+    unclaimedHours,
     claimableAmount,
     totalEarnedAmount,
     remainingHours,
@@ -3533,75 +3654,11 @@ export async function settleAndCalculateEarnings(userId: string): Promise<{
   totalClaimable: number;
   deviceStatuses: DeviceHourlyStatus[];
 }> {
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const { data, error } = await supabase.rpc('settle_and_calculate_earnings', { p_user_id: userId });
-      if (!error && data) {
-        const claimable = await fetchClaimableEarnings(userId);
-        return {
-          newAccrued: Number(data?.accrued || 0),
-          totalClaimable: claimable.totalClaimable,
-          deviceStatuses: claimable.deviceStatuses,
-        };
-      }
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase settle earnings error:', error.message);
-      }
-    } catch {
-      // Fall through to local simulation
-    }
-  }
-
-  // Local simulation: Calculate discrete completed hours per device
-  const purchases = getLocal<PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
-  const userPurchases = purchases.filter((p) => p.userId === userId);
-  const earnings = getLocal<EarningRecord[]>(STORAGE_KEYS.EARNINGS, []);
-  let newlyAccruedSum = 0;
-  let totalClaimableSum = 0;
-  const now = Date.now();
-  const deviceStatuses: DeviceHourlyStatus[] = [];
-
-  userPurchases.forEach((p) => {
-    const status = calculateDeviceHourlyStatus(p, now);
-    deviceStatuses.push(status);
-    totalClaimableSum += status.claimableAmount;
-
-    // Synchronize discrete claimable records for auditing and batch claiming
-    if (status.unclaimedHours > 0) {
-      const existingClaimables = earnings.filter(
-        (e) => e.userId === userId && e.purchaseId === p.id && e.status === 'CLAIMABLE'
-      );
-      const existingRecordedAmount = existingClaimables.reduce((s, e) => s + e.amount, 0);
-      const diff = Number((status.claimableAmount - existingRecordedAmount).toFixed(2));
-
-      if (diff > 0) {
-        newlyAccruedSum += diff;
-        const isPro = status.planCategory === 'PRO';
-        const earningId = 'earn_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
-        earnings.unshift({
-          id: earningId,
-          userId,
-          purchaseId: p.id,
-          planName: status.planName,
-          planCategory: status.planCategory,
-          amount: diff,
-          earningType: isPro ? 'PRO_DAILY' : 'HOURLY_DEVICE',
-          status: 'CLAIMABLE',
-          earningDate: new Date().toISOString().split('T')[0],
-          createdAt: new Date().toISOString(),
-        });
-      }
-    }
-  });
-
-  if (newlyAccruedSum > 0) {
-    saveLocal(STORAGE_KEYS.EARNINGS, earnings);
-  }
-
+  const claimable = await fetchClaimableEarnings(userId);
   return {
-    newAccrued: Number(newlyAccruedSum.toFixed(2)),
-    totalClaimable: Number(totalClaimableSum.toFixed(2)),
-    deviceStatuses,
+    newAccrued: 0,
+    totalClaimable: claimable.totalClaimable,
+    deviceStatuses: claimable.deviceStatuses,
   };
 }
 
@@ -3636,8 +3693,8 @@ export async function fetchClaimableEarnings(userId: string): Promise<{
     const status = calculateDeviceHourlyStatus(p, now);
     deviceStatuses.push(status);
     if (status.isActive && status.claimableAmount > 0) {
-      total += status.claimableAmount;
-      unclaimedCyclesCount += 1;
+      total = Number((total + status.claimableAmount).toFixed(2));
+      unclaimedCyclesCount += status.unclaimedHours;
     }
   });
 
@@ -3728,11 +3785,11 @@ export async function claimUserEarnings(userId: string): Promise<{
     const status = calculateDeviceHourlyStatus(p, now);
     if (status.isActive && status.claimableAmount > 0) {
       totalClaimAmount = Number((totalClaimAmount + status.claimableAmount).toFixed(2));
-      eligibleCyclesCount += 1;
+      eligibleCyclesCount += status.unclaimedHours;
 
       // Advance claimedAmount and claimedHours
       p.claimedAmount = Number(((p.claimedAmount || 0) + status.claimableAmount).toFixed(2));
-      p.claimedHours = Number((p.claimedHours || 0) + 1);
+      p.claimedHours = Number((p.claimedHours || 0) + status.unclaimedHours);
       p.totalEarned = Number(((p.totalEarned || 0) + status.claimableAmount).toFixed(2));
       p.lastClaimedAt = claimedTimestamp;
       p.lastSettledAt = claimedTimestamp;
@@ -4750,7 +4807,16 @@ export async function fetchAdminWithdrawals(): Promise<WithdrawalItem[]> {
 
         return withdrawalsRes.data.map((w: any) => {
           const prof = profileMap.get(w.user_id) || {};
-          const bank = bankMap.get(w.bank_account_id) || {};
+          let bank = bankMap.get(w.bank_account_id) || {};
+          if (!bank.id && banksRes.data) {
+            bank = banksRes.data.find((b: any) => b.user_id === w.user_id && b.is_default) ||
+                   banksRes.data.find((b: any) => b.user_id === w.user_id) || {};
+          }
+          const actualHolderName = w.account_holder_name || bank.account_holder_name || w.holder_name || bank.holder_name || prof.username || 'Account Holder';
+          const actualAccountNumber = w.account_number || bank.account_number || 'N/A';
+          const actualIfsc = w.ifsc_code || w.ifsc || bank.ifsc || bank.ifsc_code || 'N/A';
+          const actualBankName = w.bank_name || bank.bank_name || 'Bank';
+
           return {
             id: w.id,
             userId: w.user_id,
@@ -4762,10 +4828,12 @@ export async function fetchAdminWithdrawals(): Promise<WithdrawalItem[]> {
             bankDetails: {
               id: bank.id || w.bank_account_id,
               userId: bank.user_id || w.user_id,
-              accountHolderName: bank.account_holder_name || bank.holder_name || prof.username || 'Account Holder',
-              bankName: bank.bank_name || w.bank_name || 'Bank',
-              accountNumber: bank.account_number || w.account_number || 'N/A',
-              ifsc: bank.ifsc || bank.ifsc_code || w.ifsc_code || 'N/A',
+              accountHolderName: actualHolderName,
+              holderName: actualHolderName,
+              bankName: actualBankName,
+              accountNumber: actualAccountNumber,
+              ifsc: actualIfsc,
+              ifscCode: actualIfsc,
               upiId: bank.upi_id || w.upi_id,
               isDefault: bank.is_default,
             },
@@ -6129,12 +6197,14 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
     if (sumRes.ok) {
       const sumJson = await sumRes.json();
       if (sumJson.success) {
-        // Also fetch promotion earnings
-        let promoEarnings = 0;
-        try {
-          const prof = await fetchUserProfile(userId);
-          promoEarnings = Number(prof?.teamEarnings || 0);
-        } catch {}
+        // Live Promotion Total calculated from Team commission + Mission rewards + Referral rewards
+        let promoEarnings = Number(sumJson.promotionEarnings !== undefined ? sumJson.promotionEarnings : 0);
+        if (sumJson.promotionEarnings === undefined) {
+          try {
+            const prof = await fetchUserProfile(userId);
+            promoEarnings = Number(prof?.teamEarnings || 0);
+          } catch {}
+        }
         return {
           remainingHours: sumJson.remainingHours || 0,
           totalAssets: Number(sumJson.totalAssets || 0),
@@ -6289,20 +6359,69 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
 
   const todayEarnings = Number(claimsToday.reduce((sum, t) => sum + Number(t.amount || 0), 0).toFixed(2));
 
-  // 4. Calculate Promotion Earnings from referral/team earnings
-  let promotionEarnings = Number(userProfile?.teamEarnings || 0);
-  if (promotionEarnings === 0) {
-    const referralEarningsSum = earnings
-      .filter((e) => (e.earningType || '').toUpperCase().includes('REFERRAL') || (e.earningType || '').toUpperCase().includes('TEAM'))
-      .reduce((acc, e) => acc + Number(e.amount || 0), 0);
+  // 4. Calculate Promotion Earnings = Team commission + Mission rewards + Referral commission/rewards
+  // A. Team Commission
+  const teamCommTxSum = transactions
+    .filter((t: any) => {
+      const type = String(t.type || '').toUpperCase();
+      const desc = String(t.description || '').toLowerCase();
+      const metaType = String(t.metadata?.type || '').toUpperCase();
+      const metaReward = String(t.metadata?.rewardType || '').toUpperCase();
+      return (
+        type === 'TEAM_BONUS' ||
+        type === 'COMMISSION' ||
+        metaType === 'COMMISSION' ||
+        metaReward === 'TOPUP_COMMISSION' ||
+        desc.includes('team commission') ||
+        desc.includes('tier') ||
+        desc.includes('level') ||
+        desc.includes('referral commission')
+      );
+    })
+    .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  const teamCommission = teamCommTxSum > 0 ? teamCommTxSum : Number(userProfile?.teamEarnings || (userWallet as any)?.team_commission || 0);
 
-    const referralTxSum = transactions
-      .filter((t) => t.type === 'REFERRAL_BONUS' || t.type === 'TEAM_BONUS')
-      .reduce((acc, t) => acc + Number(t.amount || 0), 0);
+  // B. Mission Rewards
+  let missionClaimsList: any[] = [];
+  try {
+    missionClaimsList = getLocal<any[]>('gainpower_mission_claims', []);
+  } catch {}
+  const missionClaimsSum = missionClaimsList
+    .filter((m) => !m.userId || m.userId === userId)
+    .reduce((s, m) => s + Number(m.rewardAmount || m.reward_amount || 0), 0);
+  const missionTxSum = transactions
+    .filter((t: any) => {
+      const type = String(t.type || '').toUpperCase();
+      const desc = String(t.description || '').toLowerCase();
+      const metaReward = String(t.metadata?.rewardType || '').toUpperCase();
+      return type === 'MISSION_REWARD' || metaReward === 'MISSION' || desc.includes('mission completed') || desc.includes('mission reward');
+    })
+    .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  const missionRewards = Math.max(missionClaimsSum, missionTxSum);
 
-    promotionEarnings = Math.max(referralEarningsSum, referralTxSum, Number(userProfile?.teamEarnings || 0));
-  }
-  promotionEarnings = +promotionEarnings.toFixed(2);
+  // C. Referral Commission / Rewards
+  const referralTxSum = transactions
+    .filter((t: any) => {
+      const type = String(t.type || '').toUpperCase();
+      const desc = String(t.description || '').toLowerCase();
+      const txType = String(t.transaction_type || '').toUpperCase();
+      return (
+        type === 'REFERRAL_BONUS' ||
+        type === 'REFERRAL_REWARD' ||
+        type === 'REFERRAL' ||
+        txType.includes('REFERRAL_REGISTRATION') ||
+        txType.includes('REFERRAL_STREAK') ||
+        desc.includes('referral registration') ||
+        desc.includes('referral streak') ||
+        desc.includes('invitation bonus') ||
+        desc.includes('referral reward') ||
+        desc.includes('invite reward')
+      );
+    })
+    .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  const referralRewards = referralTxSum > 0 ? referralTxSum : Number((userProfile as any)?.referralEarnings || 0);
+
+  const promotionEarnings = Number((teamCommission + missionRewards + referralRewards).toFixed(2));
 
   return {
     remainingHours,

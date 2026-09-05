@@ -10,7 +10,7 @@ import {
 } from '../components/FunctionModals';
 import { ClaimGiftCodeModal } from '../components/ClaimGiftCodeModal';
 import { TabType, UserProfile, Wallet, PurchaseItem, UserVipStatus } from '../types';
-import { fetchUserVipStatus } from '../services/api';
+import { fetchUserVipStatus, fetchUserTeamSummary } from '../services/api';
 import {
   ShieldCheck,
   Smartphone,
@@ -76,10 +76,45 @@ export const MePage: React.FC<MePageProps> = ({
   const membershipNumber = userProfile?.membershipNumber || userProfile?.referralCode || '';
   const referralCode = userProfile?.referralCode || membershipNumber;
   const deviceEarnings = userProfile?.deviceEarnings || wallet?.totalEarned || 0;
-  const teamEarnings = userProfile?.teamEarnings || 0;
   const topupBalance = wallet?.topupBalance ?? wallet?.rechargeBalance ?? 0;
   const withdrawBalance = wallet?.withdrawBalance ?? wallet?.earnedBalance ?? wallet?.availableBalance ?? 0;
   const userId = userProfile?.userId || userProfile?.id || '';
+
+  const [teamEarn, setTeamEarn] = useState<number | null>(() => {
+    const initial = Number(userProfile?.teamEarnings || (wallet as any)?.team_commission || 0);
+    return initial > 0 ? initial : null;
+  });
+  const [loadingTeamEarn, setLoadingTeamEarn] = useState<boolean>(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    const targetUserId = userId || userProfile?.userId || userProfile?.id;
+    if (!targetUserId) {
+      setTeamEarn(0);
+      setLoadingTeamEarn(false);
+      return;
+    }
+
+    setLoadingTeamEarn(true);
+    fetchUserTeamSummary(targetUserId)
+      .then((summary) => {
+        if (!isMounted) return;
+        const comm = Number(summary?.totalCommission ?? 0);
+        setTeamEarn(comm);
+        setLoadingTeamEarn(false);
+      })
+      .catch((err) => {
+        console.warn('Failed to load team earn in MePage:', err);
+        if (!isMounted) return;
+        const fallback = Number((wallet as any)?.team_commission ?? userProfile?.teamEarnings ?? 0);
+        setTeamEarn(fallback);
+        setLoadingTeamEarn(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [userId, userProfile?.userId, userProfile?.id, (wallet as any)?.team_commission, userProfile?.teamEarnings]);
 
   useEffect(() => {
     let isMounted = true;
@@ -261,7 +296,7 @@ export const MePage: React.FC<MePageProps> = ({
           {/* Team Earnings */}
           <div className="flex flex-col items-center border-l border-white/20">
             <span className="text-white font-extrabold text-[15px] tracking-tight">
-              {teamEarnings}₹
+              {loadingTeamEarn && teamEarn === null ? '...' : `₹${(teamEarn ?? 0).toFixed(2)}`}
             </span>
             <span className="text-white/75 text-[10px] font-medium mt-0.5 whitespace-nowrap">
               Team Earn

@@ -57,7 +57,7 @@ export const CustomerSupportModal: React.FC<CustomerSupportModalProps> = ({
             <div className="space-y-3 mb-5">
               <button
                 onClick={() => {
-                  window.open('https://telegram.org', '_blank');
+                  window.open('https://t.me/+RURBpjk1s3tkNTll', '_blank');
                 }}
                 className="w-full p-3.5 rounded-2xl border border-gray-100 bg-gray-50/80 hover:bg-orange-50/50 hover:border-orange-200 transition-all flex items-center justify-between group active:scale-98"
               >
@@ -81,7 +81,7 @@ export const CustomerSupportModal: React.FC<CustomerSupportModalProps> = ({
 
               <button
                 onClick={() => {
-                  window.open('https://whatsapp.com', '_blank');
+                  window.open('https://t.me/Gainpowercustomerservice9', '_blank');
                 }}
                 className="w-full p-3.5 rounded-2xl border border-gray-100 bg-gray-50/80 hover:bg-orange-50/50 hover:border-orange-200 transition-all flex items-center justify-between group active:scale-98"
               >
@@ -91,7 +91,7 @@ export const CustomerSupportModal: React.FC<CustomerSupportModalProps> = ({
                   </div>
                   <div className="text-left">
                     <p className="text-sm font-bold text-gray-800">
-                      WhatsApp 24/7 Agent
+                      Help & Support 24/7 Agent
                     </p>
                     <p className="text-xs text-gray-500">
                       Instant response & resolution

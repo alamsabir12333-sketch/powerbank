@@ -811,6 +811,11 @@ export interface TeamMemberItem {
   tier: 1 | 2 | 3;
 }
 
+export interface LevelPurchaseStats {
+  purchaseNumber: number;
+  purchaseAmount: number;
+}
+
 export interface UserTeamSummary {
   referralCode: string;
   referralLink: string;
@@ -825,6 +830,11 @@ export interface UserTeamSummary {
     1: TeamMemberItem[];
     2: TeamMemberItem[];
     3: TeamMemberItem[];
+  };
+  levelPurchases?: {
+    1: LevelPurchaseStats;
+    2: LevelPurchaseStats;
+    3: LevelPurchaseStats;
   };
   rewardHistory: ReferralRewardLog[];
   settings: ReferralSettings;
