@@ -73,8 +73,22 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
   const handleSaveBanner = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingBanner) return;
+    if (!editingBanner.imageUrl) {
+      onShowToast('Please upload a banner image.');
+      return;
+    }
     try {
-      await saveAdminBanner(editingBanner, adminId);
+      await saveAdminBanner(
+        {
+          ...editingBanner,
+          title: editingBanner.title || 'Promotional Banner',
+          subtitle: '',
+          ctaText: '',
+          badge: '',
+          linkUrl: (editingBanner.linkUrl || '').trim(),
+        },
+        adminId
+      );
       onShowToast('Banner saved successfully.');
       setEditingBanner(null);
       loadData();
@@ -141,11 +155,10 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
               <button
                 onClick={() =>
                   setEditingBanner({
-                    title: 'New High-Yield Hardware Campaign',
-                    subtitle: 'Earn continuous hourly dividends',
-                    ctaText: 'Explore >',
-                    badge: 'HOT',
-                    artworkType: 'commission',
+                    imageUrl: '',
+                    linkUrl: '',
+                    priority: banners.length + 1,
+                    isActive: true,
                   })
                 }
                 className="px-3 py-1.5 bg-[#FF6000] text-white text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer"
@@ -210,33 +223,59 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
           {banners.map((b) => (
             <div
               key={b.id}
-              className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 flex flex-col justify-between"
+              className="bg-[#161b22] border border-gray-800 rounded-2xl p-4 flex flex-col justify-between shadow-sm"
             >
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-orange-950/60 text-[#FF6000] border border-orange-800/40 uppercase">
-                    {b.badge || 'PROMO'}
+                {/* Banner Image Preview */}
+                <div className="w-full h-36 rounded-xl overflow-hidden bg-black/50 border border-gray-800 mb-3 relative flex items-center justify-center">
+                  {b.imageUrl ? (
+                    <img
+                      src={b.imageUrl}
+                      alt="Banner"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="text-gray-500 text-xs">
+                      No banner image uploaded
+                    </div>
+                  )}
+                  <span
+                    className={`absolute top-2 right-2 text-[10px] font-bold px-2 py-0.5 rounded shadow-sm ${
+                      b.isActive !== false
+                        ? 'bg-emerald-950/85 text-emerald-400 border border-emerald-800/60'
+                        : 'bg-gray-800/85 text-gray-400 border border-gray-700'
+                    }`}
+                  >
+                    {b.isActive !== false ? 'ACTIVE' : 'INACTIVE'}
                   </span>
-                  <span className="text-[10px] text-gray-500 font-mono">ID: {b.id}</span>
                 </div>
-                <h3 className="font-bold text-white text-base mb-1">{b.title}</h3>
-                <p className="text-xs text-gray-400 mb-3">{b.subtitle || 'Sharing platform promotional highlight'}</p>
-                <div className="text-xs text-gray-300 font-medium bg-[#0d1117] p-2.5 rounded-xl border border-gray-800">
-                  CTA Label: <span className="text-[#FF6000] font-bold">{b.ctaText || 'Go Now >'}</span>
+
+                {/* Banner Destination Link */}
+                <div className="text-xs text-gray-300 font-medium bg-[#0d1117] p-2.5 rounded-xl border border-gray-800 flex items-center justify-between gap-2">
+                  <span className="text-gray-400 shrink-0">Destination Link:</span>
+                  <span className="text-[#FF6000] font-mono text-[11px] truncate max-w-[220px]">
+                    {b.linkUrl || b.targetTab || 'None (non-clickable)'}
+                  </span>
+                </div>
+
+                <div className="mt-2 text-[11px] text-gray-500 flex items-center justify-between px-1">
+                  <span>Priority: #{b.priority ?? 1}</span>
+                  <span className="font-mono text-[10px]">ID: {b.id.slice(0, 8)}...</span>
                 </div>
               </div>
 
               <div className="flex items-center gap-2 mt-4 pt-3 border-t border-gray-800">
                 <button
                   onClick={() => setEditingBanner({ ...b })}
-                  className="flex-1 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold flex items-center justify-center gap-1"
+                  className="flex-1 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer"
                 >
                   <Edit2 className="w-3.5 h-3.5" />
                   <span>Edit</span>
                 </button>
                 <button
                   onClick={() => handleDeleteBanner(b.id)}
-                  className="p-1.5 rounded-lg bg-red-950/40 border border-red-800 hover:bg-red-900 text-red-400"
+                  className="p-1.5 rounded-lg bg-red-950/40 border border-red-800 hover:bg-red-900 text-red-400 cursor-pointer"
+                  title="Delete Banner"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -286,58 +325,20 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#161b22] border border-gray-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
             <div className="flex items-center justify-between pb-3 border-b border-gray-800 mb-4">
-              <h3 className="text-base font-bold text-white">Edit Banner</h3>
+              <h3 className="text-base font-bold text-white">
+                {editingBanner.id ? 'Edit Promotional Banner' : 'Upload Promotional Banner'}
+              </h3>
               <button onClick={() => setEditingBanner(null)} className="text-gray-400 hover:text-white">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveBanner} className="space-y-3.5 text-xs">
+            <form onSubmit={handleSaveBanner} className="space-y-4 text-xs">
+              {/* 1. Banner Image */}
               <div>
-                <label className="block text-gray-300 font-semibold mb-1">Banner Title</label>
-                <input
-                  type="text"
-                  value={editingBanner.title || ''}
-                  onChange={(e) => setEditingBanner({ ...editingBanner, title: e.target.value })}
-                  required
-                  className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-gray-300 font-semibold mb-1">Subtitle</label>
-                <input
-                  type="text"
-                  value={editingBanner.subtitle || ''}
-                  onChange={(e) => setEditingBanner({ ...editingBanner, subtitle: e.target.value })}
-                  className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-gray-300 font-semibold mb-1">CTA Text</label>
-                  <input
-                    type="text"
-                    value={editingBanner.ctaText || 'Go Now >'}
-                    onChange={(e) => setEditingBanner({ ...editingBanner, ctaText: e.target.value })}
-                    className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-gray-300 font-semibold mb-1">Badge</label>
-                  <input
-                    type="text"
-                    value={editingBanner.badge || 'HOT'}
-                    onChange={(e) => setEditingBanner({ ...editingBanner, badge: e.target.value })}
-                    className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-gray-300 font-semibold mb-1">Banner Image</label>
+                <label className="block text-gray-300 font-semibold mb-1">
+                  Banner Image <span className="text-red-400">*</span>
+                </label>
                 <div className="space-y-3">
                   <input
                     ref={bannerFileInputRef}
@@ -375,7 +376,7 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
                             type="button"
                             onClick={() => bannerFileInputRef.current?.click()}
                             disabled={uploadingBannerImg}
-                            className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-xs text-white rounded-lg transition-colors flex items-center gap-1"
+                            className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-xs text-white rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
                           >
                             <Upload className="w-3.5 h-3.5" />
                             Change
@@ -383,7 +384,7 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
                           <button
                             type="button"
                             onClick={() => setEditingBanner({ ...editingBanner, imageUrl: '' })}
-                            className="px-3 py-1 bg-red-900/40 hover:bg-red-900/60 text-xs text-red-300 rounded-lg transition-colors flex items-center gap-1"
+                            className="px-3 py-1 bg-red-900/40 hover:bg-red-900/60 text-xs text-red-300 rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                             Remove
@@ -396,18 +397,18 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
                       type="button"
                       onClick={() => bannerFileInputRef.current?.click()}
                       disabled={uploadingBannerImg}
-                      className="w-full border-2 border-dashed border-gray-700 hover:border-emerald-500 rounded-xl p-6 flex flex-col items-center justify-center gap-2 transition-all bg-gray-900/30 hover:bg-gray-900/60 text-gray-400 hover:text-emerald-400"
+                      className="w-full border-2 border-dashed border-gray-700 hover:border-[#FF6000] rounded-xl p-6 flex flex-col items-center justify-center gap-2 transition-all bg-gray-900/30 hover:bg-gray-900/60 text-gray-400 hover:text-[#FF6000] cursor-pointer"
                     >
                       {uploadingBannerImg ? (
                         <>
-                          <RefreshCw className="w-8 h-8 animate-spin text-emerald-400" />
-                          <span className="text-xs font-semibold text-emerald-400">Uploading banner to storage...</span>
+                          <RefreshCw className="w-8 h-8 animate-spin text-[#FF6000]" />
+                          <span className="text-xs font-semibold text-[#FF6000]">Uploading banner to storage...</span>
                         </>
                       ) : (
                         <>
                           <Upload className="w-8 h-8" />
                           <span className="text-sm font-semibold text-gray-200">Click to Upload Banner Image</span>
-                          <span className="text-xs text-gray-400">Supports PNG, JPG, WebP (Optimized for banners)</span>
+                          <span className="text-xs text-gray-400">Supports PNG, JPG, WebP</span>
                         </>
                       )}
                     </button>
@@ -415,18 +416,31 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-gray-300 font-semibold mb-1">Target Link / Action</label>
-                  <input
-                    type="text"
-                    placeholder="/purchase or https://..."
-                    value={editingBanner.linkUrl || editingBanner.targetTab || ''}
-                    onChange={(e) => setEditingBanner({ ...editingBanner, linkUrl: e.target.value, targetTab: e.target.value })}
-                    className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
-                  />
-                </div>
+              {/* 2. Banner Link / Destination URL */}
+              <div>
+                <label className="block text-gray-300 font-semibold mb-1">
+                  Banner Link / Destination URL
+                </label>
+                <input
+                  type="text"
+                  placeholder="/purchase or https://..."
+                  value={editingBanner.linkUrl ?? editingBanner.targetTab ?? ''}
+                  onChange={(e) =>
+                    setEditingBanner({
+                      ...editingBanner,
+                      linkUrl: e.target.value,
+                      targetTab: e.target.value,
+                    })
+                  }
+                  className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none focus:border-[#FF6000]"
+                />
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Internal route (e.g. <span className="text-gray-200">/purchase</span>) or external URL (e.g. <span className="text-gray-200">https://...</span>). Leave blank if non-clickable.
+                </p>
+              </div>
 
+              {/* 3. Priority and Active Status */}
+              <div className="grid grid-cols-2 gap-3 pt-1">
                 <div>
                   <label className="block text-gray-300 font-semibold mb-1">Sort Priority</label>
                   <input
@@ -436,32 +450,34 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
                     className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
                   />
                 </div>
-              </div>
 
-              <div className="flex items-center gap-2 pt-1">
-                <input
-                  type="checkbox"
-                  id="bannerIsActive"
-                  checked={editingBanner.isActive !== false}
-                  onChange={(e) => setEditingBanner({ ...editingBanner, isActive: e.target.checked })}
-                  className="w-4 h-4 accent-[#FF6000]"
-                />
-                <label htmlFor="bannerIsActive" className="text-gray-300 font-medium cursor-pointer">
-                  Active (Visible in Home Carousel)
-                </label>
+                <div className="flex flex-col justify-end pb-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="bannerIsActive"
+                      checked={editingBanner.isActive !== false}
+                      onChange={(e) => setEditingBanner({ ...editingBanner, isActive: e.target.checked })}
+                      className="w-4 h-4 accent-[#FF6000] cursor-pointer"
+                    />
+                    <label htmlFor="bannerIsActive" className="text-gray-300 font-medium cursor-pointer">
+                      Active (Visible)
+                    </label>
+                  </div>
+                </div>
               </div>
 
               <div className="flex gap-2 pt-3">
                 <button
                   type="button"
                   onClick={() => setEditingBanner(null)}
-                  className="flex-1 py-2.5 bg-gray-800 text-gray-300 rounded-xl font-semibold"
+                  className="flex-1 py-2.5 bg-gray-800 text-gray-300 rounded-xl font-semibold cursor-pointer hover:bg-gray-700"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-[#FF6000] text-white rounded-xl font-bold"
+                  className="flex-1 py-2.5 bg-[#FF6000] text-white rounded-xl font-bold cursor-pointer hover:bg-[#e05500]"
                 >
                   Save Banner
                 </button>

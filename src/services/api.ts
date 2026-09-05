@@ -6491,16 +6491,16 @@ export async function saveAdminBanner(
   const bannerId = isNew ? crypto.randomUUID() : banner.id!;
   const item: import('../types').BannerItem = {
     id: bannerId,
-    title: banner.title || 'Platform Promotion',
-    subtitle: banner.subtitle || 'Sharing Economy',
-    ctaText: banner.ctaText || 'Go Now >',
-    badge: banner.badge || 'HOT',
+    title: banner.title || 'Promotional Banner',
+    subtitle: banner.subtitle || '',
+    ctaText: banner.ctaText || '',
+    badge: banner.badge || '',
     artworkType: banner.artworkType || 'commission',
     imageUrl: banner.imageUrl || '',
-    linkUrl: banner.linkUrl || '/purchase',
+    linkUrl: banner.linkUrl !== undefined ? banner.linkUrl : '',
     priority: Number(banner.priority || 1),
     isActive: banner.isActive !== false,
-    targetTab: banner.targetTab || banner.linkUrl || '/purchase',
+    targetTab: banner.targetTab || banner.linkUrl || '',
   };
 
   try {

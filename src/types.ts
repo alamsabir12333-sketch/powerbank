@@ -144,9 +144,9 @@ export interface WalletTransaction {
 
 export interface BannerItem {
   id: string;
-  title: string;
+  title?: string;
   subtitle?: string;
-  ctaText: string;
+  ctaText?: string;
   badge?: string;
   bgGradient?: string;
   artworkType?: 'commission' | 'bonus' | 'powerbank';

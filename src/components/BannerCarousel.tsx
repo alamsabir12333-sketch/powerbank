@@ -47,14 +47,22 @@ export const BannerCarousel: React.FC<BannerCarouselProps> = ({
   };
 
   const currentBanner = banners[currentIndex];
+  if (!currentBanner) return null;
+
+  const bannerLink = (currentBanner.linkUrl || currentBanner.targetTab || '').trim();
+  const hasLink = Boolean(bannerLink);
 
   return (
     <div className="w-full px-4 pt-1.5 pb-2">
       <div
-        className="relative w-full h-[152px] rounded-[18px] overflow-hidden select-none cursor-pointer shadow-lg"
+        className={`relative w-full h-[152px] rounded-[18px] overflow-hidden select-none shadow-lg ${
+          hasLink ? 'cursor-pointer active:opacity-95' : 'cursor-default'
+        }`}
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
-        onClick={() => onBannerClick?.(currentBanner)}
+        onClick={() => {
+          if (hasLink) onBannerClick?.(currentBanner);
+        }}
       >
         <AnimatePresence mode="wait">
           <motion.div
@@ -63,16 +71,16 @@ export const BannerCarousel: React.FC<BannerCarouselProps> = ({
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0.6, scale: 0.98 }}
             transition={{ duration: 0.4 }}
-            className="w-full h-full relative p-4 flex items-center justify-between overflow-hidden bg-gradient-to-br from-[#FF8C00] to-[#FF4500]"
+            className="w-full h-full relative overflow-hidden bg-gradient-to-br from-[#FF8C00] to-[#FF4500]"
           >
             {currentBanner.imageUrl ? (
               <img
                 src={currentBanner.imageUrl}
-                alt={currentBanner.title}
-                className="absolute inset-0 w-full h-full object-cover z-0"
+                alt=""
+                className="w-full h-full object-cover select-none pointer-events-none"
               />
             ) : (
-              <>
+              <div className="w-full h-full relative p-4 flex items-center justify-between overflow-hidden">
                 {/* Background glowing circles and floating coins */}
                 <div className="absolute -top-12 -left-12 w-36 h-36 rounded-full bg-white/15 blur-md pointer-events-none" />
                 <div className="absolute -bottom-10 right-10 w-32 h-32 rounded-full bg-[#FF4500]/40 blur-lg pointer-events-none" />
@@ -111,42 +119,38 @@ export const BannerCarousel: React.FC<BannerCarouselProps> = ({
                     <span className="text-[10px] font-bold text-white/90">₹</span>
                   </div>
                 </div>
-              </>
-            )}
 
-            {/* Right Promotional Content matching Screenshot 1 */}
-            <div className="relative z-10 w-[55%] flex flex-col items-end text-right pl-2 pr-1 ml-auto">
-              <h2 className="text-[18px] font-extrabold text-white leading-tight drop-shadow-md">
-                {currentBanner.title}
-              </h2>
-
-              <div className="mt-2.5">
-                <div className="inline-block bg-white/25 hover:bg-white/35 px-3 py-1 rounded-full text-[11px] font-bold text-white shadow-xs border border-white/30 backdrop-blur-xs active:scale-95 transition-all">
-                  <span>{currentBanner.ctaText || 'Go Now >'}</span>
+                {/* Right Promotional Content fallback */}
+                <div className="relative z-10 w-[55%] flex flex-col items-end text-right pl-2 pr-1 ml-auto">
+                  <h2 className="text-[18px] font-extrabold text-white leading-tight drop-shadow-md">
+                    {currentBanner.title || 'Platform Promotion'}
+                  </h2>
                 </div>
               </div>
-            </div>
+            )}
           </motion.div>
         </AnimatePresence>
 
         {/* Carousel indicator dots */}
-        <div className="absolute bottom-2.5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 z-20">
-          {banners.map((_, idx) => (
-            <button
-              key={idx}
-              onClick={(e) => {
-                e.stopPropagation();
-                setCurrentIndex(idx);
-              }}
-              className={`h-1.5 rounded-full transition-all duration-300 ${
-                idx === currentIndex
-                  ? 'w-4 bg-[#FF6000]'
-                  : 'w-1.5 bg-gray-600/80 hover:bg-gray-400'
-              }`}
-              aria-label={`Go to slide ${idx + 1}`}
-            />
-          ))}
-        </div>
+        {banners.length > 1 && (
+          <div className="absolute bottom-2.5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 z-20 pointer-events-auto">
+            {banners.map((_, idx) => (
+              <button
+                key={idx}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCurrentIndex(idx);
+                }}
+                className={`h-1.5 rounded-full transition-all duration-300 cursor-pointer ${
+                  idx === currentIndex
+                    ? 'w-4 bg-[#FF6000]'
+                    : 'w-1.5 bg-white/60 hover:bg-white'
+                }`}
+                aria-label={`Go to slide ${idx + 1}`}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

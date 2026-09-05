@@ -9066,8 +9066,8 @@ app.get('/api/banners', async (req, res) => {
 app.post('/api/admin/banners/save', async (req, res) => {
   try {
     const { banner, adminId } = req.body;
-    if (!banner || !banner.title) {
-      return res.status(400).json({ success: false, error: 'Banner title is required.' });
+    if (!banner) {
+      return res.status(400).json({ success: false, error: 'Banner data is required.' });
     }
 
     const rawId = banner.id;
@@ -9087,13 +9087,13 @@ app.post('/api/admin/banners/save', async (req, res) => {
     const bannerId = (!rawId || isNew) ? (rawId && !rawId.startsWith('new_') ? rawId : crypto.randomUUID()) : rawId;
 
     const record = {
-      title: banner.title,
+      title: banner.title || 'Promotional Banner',
       subtitle: banner.subtitle || '',
-      cta_text: banner.ctaText || banner.cta_text || 'Explore >',
-      badge: banner.badge || 'HOT',
+      cta_text: banner.ctaText || banner.cta_text || '',
+      badge: banner.badge || '',
       image_url: banner.imageUrl || banner.image_url || '',
-      link_url: banner.linkUrl || banner.link_url || '',
-      target_tab: banner.targetTab || banner.target_tab || 'INVEST',
+      link_url: banner.linkUrl !== undefined ? banner.linkUrl : (banner.link_url || ''),
+      target_tab: banner.targetTab || banner.linkUrl || '',
       priority: Number(banner.priority || 1),
       sort_order: Number(banner.priority || 1),
       is_active: banner.isActive !== false && banner.active !== false,

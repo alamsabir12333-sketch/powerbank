@@ -265,21 +265,59 @@ export const HomePage: React.FC<HomePageProps> = ({
   };
 
   const handleBannerClick = (banner: BannerItem) => {
-    if (banner.linkUrl) {
-      if (banner.linkUrl.startsWith('/')) {
-        const tab = banner.linkUrl.replace('/', '') as TabType;
-        onNavigateTab(tab);
-        return;
-      } else if (banner.linkUrl.startsWith('http')) {
-        window.open(banner.linkUrl, '_blank');
-        return;
-      }
+    const rawLink = (banner.linkUrl || banner.targetTab || '').trim();
+    if (!rawLink) {
+      // If a banner has no link, it should simply be non-clickable
+      return;
     }
-    if (banner.artworkType === 'commission') {
-      onNavigateTab('team');
-    } else {
-      onNavigateTab('purchase');
+
+    // External URL: http://, https://, or //
+    if (/^(https?:)?\/\//i.test(rawLink)) {
+      window.open(rawLink, '_blank', 'noopener,noreferrer');
+      return;
     }
+
+    // Normalized internal link (e.g. '/purchase' -> 'purchase')
+    const cleanPath = rawLink.startsWith('/') ? rawLink.slice(1) : rawLink;
+    const [route] = cleanPath.split(/[?#]/);
+    const normalized = route.toLowerCase();
+
+    const tabMap: Record<string, TabType> = {
+      purchase: 'purchase',
+      products: 'purchase',
+      plans: 'purchase',
+      invest: 'purchase',
+      team: 'team',
+      referral: 'team',
+      referrals: 'team',
+      invite: 'team',
+      fortune: 'fortune',
+      devices: 'fortune',
+      mydevice: 'fortune',
+      me: 'me',
+      profile: 'me',
+      wallet: 'me',
+      home: 'home',
+      notifications: 'notifications',
+    };
+
+    if (tabMap[normalized]) {
+      onNavigateTab(tabMap[normalized]);
+      return;
+    }
+
+    if (normalized === 'recharge') {
+      if (onOpenRecharge) onOpenRecharge();
+      return;
+    }
+
+    // Internal path fallback navigation
+    if (rawLink.startsWith('/')) {
+      window.location.href = rawLink;
+      return;
+    }
+
+    window.location.href = rawLink;
   };
 
   // Undrawn claimable yield across active hardware devices strictly calculated on completed hourly cycles
