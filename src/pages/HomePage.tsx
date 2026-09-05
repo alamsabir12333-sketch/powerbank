@@ -265,20 +265,21 @@ export const HomePage: React.FC<HomePageProps> = ({
   };
 
   const handleBannerClick = (banner: BannerItem) => {
-    const rawLink = (banner.linkUrl || banner.targetTab || '').trim();
-    if (!rawLink) {
-      // If a banner has no link, it should simply be non-clickable
+    const rawLink = banner.linkUrl !== undefined && banner.linkUrl !== null ? banner.linkUrl : banner.targetTab;
+    const cleanLink = typeof rawLink === 'string' ? rawLink.trim() : '';
+    if (!cleanLink || cleanLink === '#' || cleanLink.toUpperCase() === 'INVEST') {
+      // Banner with no valid link: completely non-clickable, no navigation, no route change
       return;
     }
 
     // External URL: http://, https://, or //
-    if (/^(https?:)?\/\//i.test(rawLink)) {
-      window.open(rawLink, '_blank', 'noopener,noreferrer');
+    if (/^(https?:)?\/\//i.test(cleanLink)) {
+      window.open(cleanLink, '_blank', 'noopener,noreferrer');
       return;
     }
 
     // Normalized internal link (e.g. '/purchase' -> 'purchase')
-    const cleanPath = rawLink.startsWith('/') ? rawLink.slice(1) : rawLink;
+    const cleanPath = cleanLink.startsWith('/') ? cleanLink.slice(1) : cleanLink;
     const [route] = cleanPath.split(/[?#]/);
     const normalized = route.toLowerCase();
 

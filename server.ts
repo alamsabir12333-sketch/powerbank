@@ -9041,20 +9041,23 @@ app.get('/api/banners', async (req, res) => {
 
     if (error) throw new Error(error.message);
 
-    const mapped = (data || []).map((b: any) => ({
-      id: b.id,
-      title: b.title,
-      subtitle: b.subtitle || '',
-      ctaText: b.cta_text || 'Explore >',
-      badge: b.badge || 'HOT',
-      artworkType: b.artwork_type || 'solar',
-      imageUrl: b.image_url || '',
-      linkUrl: b.link_url || '',
-      targetTab: b.target_tab || 'INVEST',
-      priority: Number(b.priority ?? b.sort_order ?? 1),
-      isActive: b.is_active !== false && b.active !== false,
-      createdAt: b.created_at,
-    }));
+    const mapped = (data || []).map((b: any) => {
+      const cleanLink = typeof b.link_url === 'string' ? b.link_url.trim() : '';
+      return {
+        id: b.id,
+        title: b.title,
+        subtitle: b.subtitle || '',
+        ctaText: b.cta_text || '',
+        badge: b.badge || '',
+        artworkType: b.artwork_type || 'solar',
+        imageUrl: b.image_url || '',
+        linkUrl: cleanLink,
+        targetTab: cleanLink,
+        priority: Number(b.priority ?? b.sort_order ?? 1),
+        isActive: b.is_active !== false && b.active !== false,
+        createdAt: b.created_at,
+      };
+    });
 
     return res.json({ success: true, data: mapped });
   } catch (err: any) {
@@ -9085,6 +9088,9 @@ app.post('/api/admin/banners/save', async (req, res) => {
     }
 
     const bannerId = (!rawId || isNew) ? (rawId && !rawId.startsWith('new_') ? rawId : crypto.randomUUID()) : rawId;
+    const cleanLink = typeof banner.linkUrl === 'string'
+      ? banner.linkUrl.trim()
+      : (typeof banner.link_url === 'string' ? banner.link_url.trim() : '');
 
     const record = {
       title: banner.title || 'Promotional Banner',
@@ -9092,8 +9098,8 @@ app.post('/api/admin/banners/save', async (req, res) => {
       cta_text: banner.ctaText || banner.cta_text || '',
       badge: banner.badge || '',
       image_url: banner.imageUrl || banner.image_url || '',
-      link_url: banner.linkUrl !== undefined ? banner.linkUrl : (banner.link_url || ''),
-      target_tab: banner.targetTab || banner.linkUrl || '',
+      link_url: cleanLink,
+      target_tab: cleanLink,
       priority: Number(banner.priority || 1),
       sort_order: Number(banner.priority || 1),
       is_active: banner.isActive !== false && banner.active !== false,

@@ -6456,19 +6456,22 @@ export async function fetchAdminBanners(): Promise<import('../types').BannerItem
         .order('created_at', { ascending: false });
 
       if (!error && data && data.length > 0) {
-        return data.map((b) => ({
-          id: b.id,
-          title: b.title || 'Official Hardware Promotion',
-          subtitle: b.subtitle || 'Continuous Hourly Yields',
-          ctaText: b.cta_text || 'Go Now >',
-          badge: b.priority === 0 ? 'Official' : undefined,
-          artworkType: 'commission',
-          imageUrl: b.image_url || undefined,
-          linkUrl: b.link_url || b.target_tab || undefined,
-          priority: Number(b.priority || b.sort_order || 0),
-          isActive: b.is_active !== undefined ? b.is_active : (b.active !== undefined ? b.active : true),
-          targetTab: b.target_tab || b.link_url || undefined,
-        }));
+        return data.map((b) => {
+          const cleanLink = typeof b.link_url === 'string' ? b.link_url.trim() : '';
+          return {
+            id: b.id,
+            title: b.title || 'Promotional Banner',
+            subtitle: b.subtitle || '',
+            ctaText: b.cta_text || '',
+            badge: undefined,
+            artworkType: 'commission',
+            imageUrl: b.image_url || undefined,
+            linkUrl: cleanLink,
+            priority: Number(b.priority || b.sort_order || 0),
+            isActive: b.is_active !== undefined ? b.is_active : (b.active !== undefined ? b.active : true),
+            targetTab: cleanLink,
+          };
+        });
       }
     } catch (e) {
       console.warn('Error fetching admin banners from Supabase:', e);
@@ -6489,6 +6492,7 @@ export async function saveAdminBanner(
 ): Promise<import('../types').BannerItem> {
   const isNew = !banner.id || banner.id.startsWith('new_') || banner.id.startsWith('ban_');
   const bannerId = isNew ? crypto.randomUUID() : banner.id!;
+  const cleanLink = typeof banner.linkUrl === 'string' ? banner.linkUrl.trim() : '';
   const item: import('../types').BannerItem = {
     id: bannerId,
     title: banner.title || 'Promotional Banner',
@@ -6497,10 +6501,10 @@ export async function saveAdminBanner(
     badge: banner.badge || '',
     artworkType: banner.artworkType || 'commission',
     imageUrl: banner.imageUrl || '',
-    linkUrl: banner.linkUrl !== undefined ? banner.linkUrl : '',
+    linkUrl: cleanLink,
     priority: Number(banner.priority || 1),
     isActive: banner.isActive !== false,
-    targetTab: banner.targetTab || banner.linkUrl || '',
+    targetTab: cleanLink,
   };
 
   try {

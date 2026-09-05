@@ -49,8 +49,10 @@ export const BannerCarousel: React.FC<BannerCarouselProps> = ({
   const currentBanner = banners[currentIndex];
   if (!currentBanner) return null;
 
-  const bannerLink = (currentBanner.linkUrl || currentBanner.targetTab || '').trim();
-  const hasLink = Boolean(bannerLink);
+  // Banner Link must be a valid, non-empty string and not whitespace or fallback
+  const rawLink = currentBanner.linkUrl !== undefined && currentBanner.linkUrl !== null ? currentBanner.linkUrl : currentBanner.targetTab;
+  const bannerLink = typeof rawLink === 'string' ? rawLink.trim() : '';
+  const hasLink = Boolean(bannerLink && bannerLink !== '#' && bannerLink.toUpperCase() !== 'INVEST');
 
   return (
     <div className="w-full px-4 pt-1.5 pb-2">
@@ -60,8 +62,13 @@ export const BannerCarousel: React.FC<BannerCarouselProps> = ({
         }`}
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
-        onClick={() => {
-          if (hasLink) onBannerClick?.(currentBanner);
+        onClick={(e) => {
+          if (!hasLink) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+          onBannerClick?.(currentBanner);
         }}
       >
         <AnimatePresence mode="wait">

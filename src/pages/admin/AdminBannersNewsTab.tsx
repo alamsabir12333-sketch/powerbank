@@ -86,6 +86,7 @@ export const AdminBannersNewsTab: React.FC<AdminBannersNewsTabProps> = ({
           ctaText: '',
           badge: '',
           linkUrl: (editingBanner.linkUrl || '').trim(),
+          targetTab: (editingBanner.linkUrl || '').trim(),
         },
         adminId
       );
