@@ -139,6 +139,7 @@ export interface WalletTransaction {
   userMobile?: string;
   username?: string;
   bankDetails?: string;
+  usdtAmount?: number;
   createdAt: string;
 }
 
@@ -563,6 +564,15 @@ export interface SystemSettings {
   isDailyCheckInEnabled?: boolean;
   dailyCheckInAmount?: number;
   dailyCheckInDay7Bonus?: number;
+  checkInRewards?: {
+    day1: number;
+    day2: number;
+    day3: number;
+    day4: number;
+    day5: number;
+    day6: number;
+    day7: number;
+  };
 }
 
 export interface DailyCheckInHistoryItem {
@@ -584,6 +594,15 @@ export interface DailyCheckInStatus {
   isDailyCheckInEnabled: boolean;
   totalClaimed: number;
   history?: DailyCheckInHistoryItem[];
+  checkInRewards?: {
+    day1: number;
+    day2: number;
+    day3: number;
+    day4: number;
+    day5: number;
+    day6: number;
+    day7: number;
+  };
 }
 
 export interface DepositComplaint {

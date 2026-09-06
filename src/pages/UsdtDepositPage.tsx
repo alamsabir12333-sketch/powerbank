@@ -300,9 +300,13 @@ export default function UsdtDepositPage({
               <span className="text-[11px] font-bold text-orange-600 uppercase tracking-wider block">
                 Official Conversion Rate
               </span>
-              <span className="text-base font-black text-gray-900">
-                1 USDT = ₹{rate.toFixed(2)} INR
-              </span>
+              {settingsLoading ? (
+                <div className="h-6 w-32 bg-orange-200/60 rounded animate-pulse mt-0.5" />
+              ) : (
+                <span className="text-base font-black text-gray-900">
+                  1 USDT = ₹{rate.toFixed(2)} INR
+                </span>
+              )}
             </div>
             <div className="text-right">
               <span className="text-[11px] font-medium text-gray-500 block">Recharge Wallet</span>
@@ -424,9 +428,13 @@ export default function UsdtDepositPage({
               </span>
             </div>
             <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-xl space-y-2.5">
-              <p className="font-mono text-xs font-bold text-gray-800 break-all select-all">
-                {activeWalletAddress || 'No address configured by admin.'}
-              </p>
+              {settingsLoading ? (
+                <div className="h-4 w-3/4 bg-gray-200 rounded animate-pulse" />
+              ) : (
+                <p className="font-mono text-xs font-bold text-gray-800 break-all select-all">
+                  {activeWalletAddress || 'No address configured by admin.'}
+                </p>
+              )}
               <button
                 type="button"
                 onClick={() => copyToClipboard(activeWalletAddress, 'address')}
@@ -588,10 +596,16 @@ export default function UsdtDepositPage({
 
           {historyLoading ? (
             <div className="space-y-3">
-              {[1, 2].map((i) => (
-                <div key={i} className="p-3 bg-gray-50 rounded-xl animate-pulse flex justify-between">
-                  <div className="h-4 w-24 bg-gray-200 rounded" />
-                  <div className="h-4 w-16 bg-gray-200 rounded" />
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="p-3.5 bg-gray-50/80 rounded-xl animate-pulse space-y-2 border border-gray-100">
+                  <div className="flex justify-between items-center">
+                    <div className="h-4 w-24 bg-gray-200 rounded" />
+                    <div className="h-5 w-20 bg-gray-200 rounded-full" />
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <div className="h-3 w-36 bg-gray-200 rounded" />
+                    <div className="h-3 w-16 bg-gray-200 rounded" />
+                  </div>
                 </div>
               ))}
             </div>

@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { TabType, WalletTransaction, TransactionType, TransactionStatus, Wallet, UserProfile } from '../types';
 import { fetchWalletTransactions } from '../services/api';
+import { normalizeWalletTransactions } from '../utils/transactionNormalizer';
 
 interface TransactionPageProps {
   onNavigateTab: (tab: TabType) => void;
@@ -63,18 +64,11 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
     setLoading(true);
     try {
       const data = await fetchWalletTransactions(userId);
-      const deduped: WalletTransaction[] = [];
-      const seenIds = new Set<string>();
-      for (const t of data) {
-        const ref = t.referenceId;
-        if (seenIds.has(t.id) || (ref && seenIds.has(ref))) {
-          continue;
-        }
-        seenIds.add(t.id);
-        if (ref) seenIds.add(ref);
-        deduped.push(t);
-      }
-      setTransactions(deduped);
+      const normalized = normalizeWalletTransactions({
+        userId,
+        walletTransactions: data,
+      });
+      setTransactions(normalized);
     } catch (err: any) {
       console.error('Error fetching transactions:', err);
       onShowToast?.(err.message || 'Failed to load transaction history');
@@ -326,12 +320,20 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
       return 'Hourly Yield Settlement';
     }
 
-    // 8. Recharges
-    if (typeUpper === 'RECHARGE') {
-      const isManual = descLower.includes('manual') || descLower.includes('usdt') || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('manual'));
+    // 8. Recharges & USDT Deposits
+    if (typeUpper === 'RECHARGE' || typeUpper === 'USDT_DEPOSIT') {
+      const isUsdt = descLower.includes('usdt') || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('usdt'));
+      if (isUsdt) {
+        const s = (tx.status || '').toLowerCase();
+        if (s === 'completed' || s === 'approved' || s === 'paid' || s === 'success') return 'USDT Deposit Approved';
+        if (s === 'failed' || s === 'rejected') return 'USDT Deposit Rejected';
+        return 'USDT Deposit (Pending Verification)';
+      }
+      const isManual = descLower.includes('manual') || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('manual'));
       if (isManual) {
-        if (tx.status === 'Completed') return 'Recharge Approved';
-        if (tx.status === 'Failed') return 'Recharge Rejected';
+        const s = (tx.status || '').toLowerCase();
+        if (s === 'completed' || s === 'approved') return 'Recharge Approved';
+        if (s === 'failed' || s === 'rejected') return 'Recharge Rejected';
         return 'Recharge Request (Pending Approval)';
       }
       return 'Recharge (Online Payment)';
@@ -433,21 +435,33 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
         <div className="grid grid-cols-3 gap-2 text-center bg-white/10 backdrop-blur-xs p-3 rounded-2xl border border-white/20">
           <div>
             <span className="text-[11px] text-white/80 font-medium block">Topup Wallet</span>
-            <span className="text-base font-black text-white block mt-0.5">
-              ₹{(wallet?.topupBalance ?? wallet?.rechargeBalance ?? 0).toFixed(2)}
-            </span>
+            {loading && !wallet ? (
+              <div className="h-5 w-16 bg-white/30 rounded animate-pulse mx-auto mt-1" />
+            ) : (
+              <span className="text-base font-black text-white block mt-0.5">
+                ₹{(wallet?.topupBalance ?? wallet?.rechargeBalance ?? 0).toFixed(2)}
+              </span>
+            )}
           </div>
           <div className="border-x border-white/20 px-1">
             <span className="text-[11px] text-white/80 font-medium block">Withdraw Wallet</span>
-            <span className="text-base font-black text-white block mt-0.5">
-              ₹{(wallet?.withdrawBalance ?? wallet?.earnedBalance ?? wallet?.availableBalance ?? 0).toFixed(2)}
-            </span>
+            {loading && !wallet ? (
+              <div className="h-5 w-16 bg-white/30 rounded animate-pulse mx-auto mt-1" />
+            ) : (
+              <span className="text-base font-black text-white block mt-0.5">
+                ₹{(wallet?.withdrawBalance ?? wallet?.earnedBalance ?? wallet?.availableBalance ?? 0).toFixed(2)}
+              </span>
+            )}
           </div>
           <div>
             <span className="text-[11px] text-white/80 font-medium block">Withdrawn</span>
-            <span className="text-base font-black text-white block mt-0.5">
-              ₹{(wallet?.totalWithdrawn || 0).toFixed(2)}
-            </span>
+            {loading && !wallet ? (
+              <div className="h-5 w-16 bg-white/30 rounded animate-pulse mx-auto mt-1" />
+            ) : (
+              <span className="text-base font-black text-white block mt-0.5">
+                ₹{(wallet?.totalWithdrawn || 0).toFixed(2)}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -497,9 +511,25 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
         {/* 3. Transaction Items List */}
         <div className="space-y-2.5 pt-1">
           {loading ? (
-            <div className="p-12 text-center bg-white rounded-2xl border border-gray-100 space-y-3 shadow-xs">
-              <RefreshCw className="w-7 h-7 text-[#FF6200] animate-spin mx-auto" />
-              <p className="text-xs text-gray-500 font-medium">Loading transactions from secure ledger...</p>
+            <div className="space-y-2.5">
+              {[1, 2, 3, 4, 5].map((i) => (
+                <div
+                  key={i}
+                  className="bg-white rounded-2xl p-3.5 shadow-2xs border border-gray-100 flex items-center justify-between gap-3 animate-pulse"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-2xl bg-gray-200 shrink-0" />
+                    <div className="space-y-2">
+                      <div className="h-3.5 w-32 bg-gray-200 rounded" />
+                      <div className="h-2.5 w-44 bg-gray-100 rounded" />
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 space-y-1.5 flex flex-col items-end">
+                    <div className="h-4 w-16 bg-gray-200 rounded" />
+                    <div className="h-3.5 w-14 bg-gray-100 rounded-full" />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : filteredTransactions.length === 0 ? (
             <div className="p-10 text-center bg-white rounded-2xl border border-gray-100 space-y-3 shadow-xs">
@@ -569,6 +599,15 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
                           </>
                         )}
                       </div>
+                      {tx.usdtAmount !== undefined && tx.usdtAmount > 0 && (
+                        <div className="text-[10px] font-bold text-amber-600 mt-1 flex items-center gap-1">
+                          <span className="bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200/60">
+                            {tx.usdtAmount} USDT
+                          </span>
+                          <span className="text-gray-400">•</span>
+                          <span className="text-gray-500">{tx.paymentMethod || 'TRC20'}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -696,6 +735,13 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
                   <div className="flex justify-between items-center p-2 bg-gray-50 rounded-xl">
                     <span className="text-gray-500">Payment Method</span>
                     <span className="font-semibold text-gray-900">{selectedTx.paymentMethod}</span>
+                  </div>
+                )}
+
+                {selectedTx.usdtAmount !== undefined && selectedTx.usdtAmount > 0 && (
+                  <div className="flex justify-between items-center p-2 bg-amber-50/70 border border-amber-200/50 rounded-xl">
+                    <span className="text-amber-800 font-medium">USDT Sent</span>
+                    <span className="font-bold text-amber-700 font-mono">{selectedTx.usdtAmount} USDT</span>
                   </div>
                 )}
 

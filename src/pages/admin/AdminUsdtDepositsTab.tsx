@@ -135,8 +135,17 @@ export default function AdminUsdtDepositsTab({ onShowToast }: AdminUsdtDepositsT
   };
 
   const filteredDeposits = deposits.filter((item) => {
-    if (filterStatus !== 'ALL' && item.status.toUpperCase() !== filterStatus) {
-      return false;
+    const s = (item.status || '').toUpperCase();
+    if (filterStatus !== 'ALL') {
+      if (filterStatus === 'PENDING') {
+        if (!['PENDING', 'PENDING_VERIFICATION'].includes(s)) return false;
+      } else if (filterStatus === 'APPROVED') {
+        if (!['APPROVED', 'PAID', 'SUCCESS'].includes(s)) return false;
+      } else if (filterStatus === 'REJECTED') {
+        if (!['REJECTED', 'FAILED'].includes(s)) return false;
+      } else if (s !== filterStatus) {
+        return false;
+      }
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -150,7 +159,7 @@ export default function AdminUsdtDepositsTab({ onShowToast }: AdminUsdtDepositsT
     return true;
   });
 
-  const pendingCount = deposits.filter((d) => d.status.toUpperCase() === 'PENDING').length;
+  const pendingCount = deposits.filter((d) => ['PENDING', 'PENDING_VERIFICATION'].includes(d.status.toUpperCase())).length;
   const approvedCount = deposits.filter((d) => ['APPROVED', 'PAID', 'SUCCESS'].includes(d.status.toUpperCase())).length;
   const totalApprovedInr = deposits
     .filter((d) => ['APPROVED', 'PAID', 'SUCCESS'].includes(d.status.toUpperCase()))
@@ -265,7 +274,7 @@ export default function AdminUsdtDepositsTab({ onShowToast }: AdminUsdtDepositsT
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filteredDeposits.map((item) => {
-                  const isPending = item.status.toUpperCase() === 'PENDING';
+                  const isPending = ['PENDING', 'PENDING_VERIFICATION'].includes(item.status.toUpperCase());
                   const isApproved = ['APPROVED', 'PAID', 'SUCCESS'].includes(item.status.toUpperCase());
                   const isRejected = ['REJECTED', 'FAILED'].includes(item.status.toUpperCase());
 
@@ -451,6 +460,10 @@ export default function AdminUsdtDepositsTab({ onShowToast }: AdminUsdtDepositsT
                   src={selectedProofUrl}
                   alt="USDT Proof"
                   className="max-h-[60vh] object-contain rounded-lg border border-gray-200"
+                  onError={(e) => {
+                    // If image fails, hide broken icon and show message
+                    (e.target as HTMLElement).style.display = 'none';
+                  }}
                 />
               ) : (
                 <p className="text-xs text-gray-400">Unable to load screenshot</p>
@@ -460,16 +473,29 @@ export default function AdminUsdtDepositsTab({ onShowToast }: AdminUsdtDepositsT
               <div className="text-[11px] font-mono text-gray-500 truncate max-w-[250px]">
                 TX: {selectedDepositForProof.txHash || 'None'}
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedDepositForProof(null);
-                  setSelectedProofUrl(null);
-                }}
-                className="px-4 py-1.5 bg-gray-800 text-white rounded-xl text-xs font-bold hover:bg-gray-900 cursor-pointer"
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                {selectedProofUrl && (
+                  <a
+                    href={selectedProofUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-3 py-1.5 bg-orange-50 hover:bg-orange-100 text-[#FF5500] border border-orange-200 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Open Original</span>
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedDepositForProof(null);
+                    setSelectedProofUrl(null);
+                  }}
+                  className="px-4 py-1.5 bg-gray-800 text-white rounded-xl text-xs font-bold hover:bg-gray-900 cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>

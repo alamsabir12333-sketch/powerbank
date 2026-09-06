@@ -278,7 +278,8 @@ export const FortunePage: React.FC<FortunePageProps> = ({
                   const isChecked = dayNum <= completedDaysCount;
                   const isTargetToday = !hasCheckedInToday && dayNum === nextTargetDay;
                   const isDay7 = dayNum === 7;
-                  const amount = isDay7 ? day7Bonus : dailyReward;
+                  const dayKey = `day${dayNum}` as keyof NonNullable<typeof checkInStatus.checkInRewards>;
+                  const amount = Number(checkInStatus?.checkInRewards?.[dayKey] ?? (isDay7 ? day7Bonus : dailyReward));
 
                   return (
                     <div

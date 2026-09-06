@@ -1,3 +1,4 @@
+import { normalizeDepositTransactions, normalizeWalletTransactions } from "../utils/transactionNormalizer";
 import { apiUrl, API_BASE_URL } from './apiClient';
 import { supabase, isSupabaseConfigured, isTableMissingError, supabaseUrl, supabaseAnonKey } from '../lib/supabase';
 import {
@@ -1017,7 +1018,10 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
     if (res.ok) {
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
-        return json.data;
+        return normalizeWalletTransactions({
+          userId,
+          walletTransactions: json.data,
+        });
       }
     }
   } catch (apiErr) {
@@ -1070,321 +1074,17 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
           .order('claimed_at', { ascending: false }),
       ]);
 
-      const txMap = new Map<string, WalletTransaction>();
-
-      // A. Process explicit wallet_transactions from DB
-      if (!txRes.error && txRes.data) {
-        for (const t of txRes.data) {
-          const key = t.reference_id || t.id;
-          let mappedType = t.type;
-          const descLower = (t.description || '').toLowerCase();
-          const refLower = (t.reference_id || '').toLowerCase();
-
-          if (refLower.startsWith('checkin') || descLower.includes('check-in') || descLower.includes('daily checkin')) {
-            mappedType = 'DAILY_CHECKIN';
-          } else if (refLower.startsWith('gift') || descLower.includes('gift code')) {
-            mappedType = 'GIFT_CODE_REWARD';
-          } else if (refLower.startsWith('signup') || descLower.includes('signup bonus') || descLower.includes('welcome signup')) {
-            mappedType = 'SIGNUP_BONUS';
-          } else if (refLower.startsWith('tx_msn_') || descLower.includes('mission completed')) {
-            mappedType = 'MISSION_BONUS';
-          } else if (refLower.startsWith('topup-ref-l') || refLower.startsWith('topup-t') || descLower.includes('team commission') || descLower.includes('referral commission')) {
-            mappedType = 'REFERRAL_BONUS';
-          } else if (refLower.startsWith('clm-') || descLower.includes('hourly yield') || descLower.includes('device claim') || descLower.includes('hourly device')) {
-            mappedType = 'HOURLY_EARNING';
-          }
-
-          txMap.set(key, {
-            id: t.id,
-            userId: t.user_id,
-            type: mappedType,
-            amount: Number(t.amount),
-            balanceBefore: Number(t.balance_before || 0),
-            balanceAfter: Number(t.balance_after || 0),
-            status: t.status || 'Completed',
-            referenceId: t.reference_id || t.id,
-            description: t.description,
-            paymentMethod: t.payment_method,
-            utr: t.utr,
-            orderId: t.order_id,
-            planName: t.plan_name,
-            createdAt: t.created_at,
-          });
-        }
-      }
-
-      // B. Process wallet_ledger
-      if (!ledgerRes.error && ledgerRes.data) {
-        for (const l of ledgerRes.data) {
-          const key = l.reference_id || l.id;
-          const txTypeUpper = (l.transaction_type || '').toUpperCase();
-          const descLower = (l.description || '').toLowerCase();
-          let mappedType: TransactionType = 'ADMIN_ADJUSTMENT';
-
-          if (txTypeUpper.includes('CHECKIN') || descLower.includes('check-in')) {
-            mappedType = 'DAILY_CHECKIN';
-          } else if (txTypeUpper.includes('GIFT') || descLower.includes('gift code')) {
-            mappedType = 'GIFT_CODE_REWARD';
-          } else if (txTypeUpper.includes('SIGNUP') || descLower.includes('signup bonus')) {
-            mappedType = 'SIGNUP_BONUS';
-          } else if (txTypeUpper.includes('MISSION') || descLower.includes('mission')) {
-            mappedType = 'MISSION_BONUS';
-          } else if (txTypeUpper.includes('REFERRAL') || descLower.includes('referral') || descLower.includes('commission')) {
-            mappedType = 'REFERRAL_BONUS';
-          } else if (txTypeUpper.includes('HOURLY') || txTypeUpper.includes('EARNING') || descLower.includes('hourly') || descLower.includes('device claim')) {
-            mappedType = 'HOURLY_EARNING';
-          } else if (txTypeUpper.includes('DEPOSIT') || txTypeUpper.includes('RECHARGE')) {
-            mappedType = 'RECHARGE';
-          } else if (txTypeUpper.includes('WITHDRAWAL_REVERSAL')) {
-            mappedType = 'WITHDRAWAL_REVERSAL';
-          } else if (txTypeUpper.includes('WITHDRAWAL')) {
-            mappedType = 'WITHDRAWAL';
-          }
-
-          if (txMap.has(key)) {
-            const existing = txMap.get(key)!;
-            if (existing.type === 'ADMIN_ADJUSTMENT' || existing.type === 'EARNING') {
-              existing.type = mappedType;
-            }
-            if (l.description && (!existing.description || existing.description.includes('ADMIN_ADJUSTMENT'))) {
-              existing.description = l.description;
-            }
-          } else {
-            txMap.set(key, {
-              id: l.id,
-              userId: l.user_id,
-              type: mappedType,
-              amount: l.direction === 'DEBIT' ? -Math.abs(Number(l.amount)) : Number(l.amount),
-              balanceBefore: Number(l.balance_before || 0),
-              balanceAfter: Number(l.balance_after || 0),
-              status: 'Completed',
-              referenceId: l.reference_id || l.id,
-              description: l.description,
-              createdAt: l.created_at,
-            });
-          }
-        }
-      }
-
-      // C. Process deposit_transactions (Gateway Deposits)
-      if (!depRes.error && depRes.data) {
-        for (const d of depRes.data) {
-          const ref = d.traceno || d.order_id || d.id;
-          const rawStatus = (d.status || '').toUpperCase();
-          let mappedStatus: 'Completed' | 'Pending' | 'Failed' = 'Pending';
-          if (rawStatus === 'SUCCESS' || rawStatus === 'PAID' || rawStatus === 'COMPLETED') {
-            mappedStatus = 'Completed';
-          } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED' || rawStatus === 'FAILED_GATEWAY_CREATION') {
-            mappedStatus = 'Failed';
-          }
-
-          if (txMap.has(ref)) {
-            const existing = txMap.get(ref)!;
-            if (mappedStatus === 'Completed') {
-              existing.status = 'Completed';
-            } else if (mappedStatus === 'Failed') {
-              existing.status = 'Failed';
-            }
-            if (d.utr) existing.utr = d.utr;
-          } else {
-            txMap.set(ref, {
-              id: d.id,
-              userId: d.user_id,
-              type: 'RECHARGE',
-              amount: Number(d.amount),
-              balanceBefore: 0,
-              balanceAfter: mappedStatus === 'Completed' ? Number(d.amount) : 0,
-              status: mappedStatus,
-              referenceId: d.traceno,
-              description: `Topup Recharge Order #${d.traceno}`,
-              paymentMethod: d.channel || 'UniVePay UPI Gateway',
-              utr: d.utr || d.gateway_serial_no,
-              createdAt: d.created_at,
-            });
-          }
-        }
-      }
-
-      // D. Process manual payments
-      if (!payRes.error && payRes.data) {
-        for (const p of payRes.data) {
-          const ref = p.order_id || p.id;
-          const rawStatus = (p.status || '').toUpperCase();
-          let mappedStatus: 'Completed' | 'Pending' | 'Failed' = 'Pending';
-          if (rawStatus === 'PAID' || rawStatus === 'APPROVED' || rawStatus === 'SUCCESS') {
-            mappedStatus = 'Completed';
-          } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED') {
-            mappedStatus = 'Failed';
-          }
-
-          if (!txMap.has(ref) && !txMap.has(p.id)) {
-            const isUsdt = (p.payment_type || '').toUpperCase().includes('USDT') || (p.payment_method || '').toUpperCase().includes('USDT');
-            txMap.set(ref, {
-              id: p.id,
-              userId: p.user_id,
-              type: 'RECHARGE',
-              amount: Number(p.amount),
-              balanceBefore: 0,
-              balanceAfter: mappedStatus === 'Completed' ? Number(p.amount) : 0,
-              status: mappedStatus,
-              referenceId: p.order_id || p.id,
-              description: isUsdt ? `USDT Deposit (${p.payment_type || 'TRC20'})` : `Manual Recharge (${p.payment_type || 'UPI'})`,
-              paymentMethod: p.payment_type || 'Manual UPI',
-              utr: p.utr,
-              createdAt: p.created_at,
-            });
-          }
-        }
-      }
-
-      // E. Process withdrawals
-      if (!withRes.error && withRes.data) {
-        for (const w of withRes.data) {
-          const rawStatus = (w.status || '').toUpperCase();
-          let mappedStatus: 'Completed' | 'Pending' | 'Failed' = 'Pending';
-          if (rawStatus === 'APPROVED' || rawStatus === 'PAID' || rawStatus === 'SUCCESS' || rawStatus === 'PROCESSED' || rawStatus === 'COMPLETED') {
-            mappedStatus = 'Completed';
-          } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED') {
-            mappedStatus = 'Failed';
-          }
-
-          // Check if a transaction for this withdrawal already exists in txMap
-          let existingKey: string | null = null;
-          if (txMap.has(w.id)) {
-            existingKey = w.id;
-          } else if (w.traceno && txMap.has(w.traceno)) {
-            existingKey = w.traceno;
-          } else if (w.order_id && txMap.has(w.order_id)) {
-            existingKey = w.order_id;
-          } else {
-            // Search existing txMap entries for matching withdrawal request
-            const wTime = new Date(w.created_at).getTime();
-            const wAmt = Math.abs(Number(w.amount));
-            for (const [k, tx] of txMap.entries()) {
-              const txTypeUpper = (tx.type || '').toUpperCase();
-              if (txTypeUpper === 'WITHDRAWAL' || txTypeUpper === 'WITHDRAWAL_REQUEST') {
-                const txAmt = Math.abs(Number(tx.amount));
-                const txTime = new Date(tx.createdAt).getTime();
-                // Check reference match
-                if (tx.referenceId === w.id || (w.traceno && tx.referenceId === w.traceno) || (w.bank_ref_no && tx.referenceId === w.bank_ref_no)) {
-                  existingKey = k;
-                  break;
-                }
-                // Check amount and timestamp match within 2 minutes
-                if (Math.abs(txAmt - wAmt) < 0.01 && Math.abs(txTime - wTime) <= 120000) {
-                  existingKey = k;
-                  break;
-                }
-              }
-            }
-          }
-
-          if (existingKey) {
-            const existing = txMap.get(existingKey);
-            if (existing) {
-              existing.referenceId = w.id;
-              if (mappedStatus === 'Completed') existing.status = 'Completed';
-              else if (mappedStatus === 'Failed') existing.status = 'Failed';
-              if (w.bank_ref_no) existing.utr = w.bank_ref_no;
-            }
-          } else {
-            txMap.set(w.id, {
-              id: w.id,
-              userId: w.user_id,
-              type: 'WITHDRAWAL',
-              amount: -Math.abs(Number(w.amount)),
-              balanceBefore: 0,
-              balanceAfter: 0,
-              status: mappedStatus,
-              referenceId: w.id,
-              description: `Withdrawal Request to ${w.bank_name || 'Bank'} ${w.account_number ? `(A/C: ${w.account_number})` : ''}`,
-              paymentMethod: 'Bank Transfer',
-              utr: w.bank_ref_no,
-              createdAt: w.created_at,
-            });
-          }
-        }
-      }
-
-      // F. Process hardware purchases
-      if (!purRes.error && purRes.data) {
-        for (const p of purRes.data) {
-          const ref = p.id;
-          if (!txMap.has(ref)) {
-            const isPro = (p.plan_category || '').toUpperCase() === 'PRO';
-            txMap.set(ref, {
-              id: p.id,
-              userId: p.user_id,
-              type: isPro ? 'PRO_PLAN_PURCHASE' : 'PLAN_PURCHASE',
-              amount: -Math.abs(Number(p.amount)),
-              balanceBefore: 0,
-              balanceAfter: 0,
-              status: 'Completed',
-              referenceId: p.id,
-              planName: p.plan_name || 'Hardware Plan',
-              description: `Hardware Activation: ${p.plan_name || 'Cabinet'} (₹${p.amount})`,
-              createdAt: p.created_at,
-            });
-          }
-        }
-      }
-
-      // G. Process claimed earnings / yield claims
-      if (!earnRes.error && earnRes.data) {
-        for (const e of earnRes.data) {
-          const ref = e.claim_batch_id || e.id;
-          if (e.status === 'CLAIMED' && !txMap.has(ref) && !txMap.has(e.id)) {
-            txMap.set(ref, {
-              id: e.id,
-              userId: e.user_id,
-              type: e.earning_type === 'REFERRAL' ? 'REFERRAL_BONUS' : 'EARNING_CLAIM',
-              amount: Number(e.amount),
-              balanceBefore: 0,
-              balanceAfter: 0,
-              status: 'Completed',
-              referenceId: ref,
-              description: e.plan_name ? `Yield Claim: ${e.plan_name}` : 'Hardware Yield Settlement',
-              planName: e.plan_name,
-              createdAt: e.claimed_at || e.created_at,
-            });
-          }
-        }
-      }
-
-      // H. Process gift code claims
-      if (!claimRes.error && claimRes.data) {
-        for (const c of claimRes.data) {
-          const code = c.code || c.gift_code || '';
-          const ref = 'GIFT-' + code;
-          if (txMap.has(ref)) {
-            const existing = txMap.get(ref)!;
-            existing.type = 'GIFT_CODE_REWARD';
-            if (!existing.description || existing.description.includes('ADMIN_ADJUSTMENT')) {
-              existing.description = `Gift Code Bonus — ${code}`;
-            }
-          } else if (!txMap.has(c.id)) {
-            txMap.set(ref, {
-              id: c.id,
-              userId: c.user_id,
-              type: 'GIFT_CODE_REWARD',
-              amount: Number(c.amount),
-              balanceBefore: 0,
-              balanceAfter: 0,
-              status: 'Completed',
-              referenceId: ref,
-              description: `Gift Code Bonus — ${code || 'Official Gift Code'}`,
-              createdAt: c.claimed_at || c.created_at,
-            });
-          }
-        }
-      }
-
-      const list = Array.from(txMap.values()).sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      );
-
-      // ALWAYS return only real database records (returns [] if user has no transactions)
-      return list;
+      return normalizeWalletTransactions({
+        userId,
+        depositTransactions: depRes.data || [],
+        payments: payRes.data || [],
+        walletTransactions: txRes.data || [],
+        walletLedger: ledgerRes.data || [],
+        withdrawals: withRes.data || [],
+        purchases: purRes.data || [],
+        earnings: earnRes.data || [],
+        giftClaims: claimRes.data || [],
+      });
     } catch (e) {
       console.warn('Error fetching Supabase transactions for user:', e);
       return [];
@@ -3135,7 +2835,7 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
     }
   }
 
-  // Local Atomic Simulation - TOPUP WALLET STRICT DEDUCTION
+  // Local Atomic Simulation - COMBINED WALLET BALANCE
   const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
     availableBalance: 0,
     topupBalance: 0,
@@ -3144,26 +2844,32 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
     earnedBalance: 0,
   } as Wallet);
 
-  const curTopup = wallet.topupBalance !== undefined ? wallet.topupBalance : (wallet.rechargeBalance || 0);
+  const curTopup = Number(wallet.topupBalance !== undefined ? wallet.topupBalance : (wallet.rechargeBalance || 0));
+  const curWithdraw = Number(wallet.withdrawBalance !== undefined ? wallet.withdrawBalance : (wallet.earnedBalance || 0));
+  const totalUsable = Number((curTopup + curWithdraw).toFixed(2));
 
-  if (curTopup < planPrice) {
-    throw new Error(`Insufficient Topup Wallet balance. Plan purchase requires Topup Wallet balance. (Available Topup: ₹${curTopup.toFixed(2)}, Required: ₹${planPrice.toFixed(2)})`);
+  if (totalUsable < planPrice) {
+    throw new Error(`Insufficient combined wallet balance. Required: ₹${planPrice.toFixed(2)}, Available: ₹${totalUsable.toFixed(2)} (Recharge: ₹${curTopup.toFixed(2)} + Withdraw: ₹${curWithdraw.toFixed(2)})`);
   }
 
-  const balanceBefore = curTopup;
-  wallet.topupBalance = +(curTopup - planPrice).toFixed(2);
-  wallet.rechargeBalance = wallet.topupBalance;
-  const curWithdraw = wallet.withdrawBalance !== undefined ? wallet.withdrawBalance : (wallet.earnedBalance || 0);
-  wallet.withdrawBalance = curWithdraw;
-  wallet.earnedBalance = curWithdraw;
-  wallet.availableBalance = curWithdraw;
+  const deductTopup = Number(Math.min(curTopup, planPrice).toFixed(2));
+  const deductWithdraw = Number((planPrice - deductTopup).toFixed(2));
 
-  const balanceAfterDeduction = wallet.topupBalance;
+  wallet.topupBalance = +(curTopup - deductTopup).toFixed(2);
+  wallet.rechargeBalance = wallet.topupBalance;
+  wallet.withdrawBalance = +(curWithdraw - deductWithdraw).toFixed(2);
+  wallet.earnedBalance = wallet.withdrawBalance;
+  wallet.availableBalance = +(wallet.topupBalance + wallet.withdrawBalance).toFixed(2);
 
   const purchaseId = 'pur_' + Date.now();
   const durationDays = plan.durationDays || plan.duration || 365;
   const totalPlanHours = durationDays * 24;
   const instantBonus = plan.instantBonus || 0;
+  if (instantBonus > 0) {
+    wallet.withdrawBalance = +(wallet.withdrawBalance + instantBonus).toFixed(2);
+    wallet.earnedBalance = wallet.withdrawBalance;
+    wallet.availableBalance = +(wallet.topupBalance + wallet.withdrawBalance).toFixed(2);
+  }
   const dailyEarning = Number(plan.dailyEarnings || (plan.hourlyEarnings ? plan.hourlyEarnings * 24 : 0));
   const hourlyRate = Number((dailyEarning > 0 ? dailyEarning / 24 : (plan.hourlyEarnings || 0)).toFixed(2));
   const nowMs = Date.now();
@@ -3199,22 +2905,40 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
 
   const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
 
-  // 1. Record Plan Purchase Transaction
-  const tx: WalletTransaction = {
-    id: 'tx_pur_' + Date.now(),
-    userId,
-    type: 'PLAN_PURCHASE',
-    amount: -planPrice,
-    balanceBefore,
-    balanceAfter: balanceAfterDeduction,
-    balanceType: 'TOPUP_WALLET',
-    referenceId: purchaseId,
-    description: `Purchase: ${plan.name} (${newPurchase.planCategory})`,
-    createdAt: new Date().toISOString(),
-  };
-  txs.unshift(tx);
+  // 1. Record Plan Purchase Transaction(s) for Combined Wallet Deduction
+  if (deductTopup > 0) {
+    const topupTx: WalletTransaction = {
+      id: 'tx_pur_topup_' + Date.now(),
+      userId,
+      type: 'PLAN_PURCHASE',
+      amount: -deductTopup,
+      balanceBefore: curTopup,
+      balanceAfter: +(curTopup - deductTopup).toFixed(2),
+      balanceType: 'TOPUP_WALLET',
+      referenceId: purchaseId,
+      description: `Purchase: ${plan.name} (${newPurchase.planCategory}) - Topup Wallet`,
+      createdAt: new Date().toISOString(),
+    };
+    txs.unshift(topupTx);
+  }
 
-  let finalBalance = balanceAfterDeduction;
+  if (deductWithdraw > 0) {
+    const withdrawTx: WalletTransaction = {
+      id: 'tx_pur_with_' + Date.now(),
+      userId,
+      type: 'PLAN_PURCHASE',
+      amount: -deductWithdraw,
+      balanceBefore: curWithdraw,
+      balanceAfter: +(curWithdraw - deductWithdraw).toFixed(2),
+      balanceType: 'WITHDRAW_WALLET',
+      referenceId: purchaseId,
+      description: `Purchase: ${plan.name} (${newPurchase.planCategory}) - Withdraw Wallet`,
+      createdAt: new Date(Date.now() + 10).toISOString(),
+    };
+    txs.unshift(withdrawTx);
+  }
+
+  let finalBalance = wallet.availableBalance;
 
   // 2. If PRO plan has Instant Bonus cashback, credit into Withdraw Wallet!
   if (instantBonus > 0) {
@@ -5952,19 +5676,41 @@ export async function fetchAdminAllTransactions(filters?: {
 }
 
 /**
- * Dynamic System Settings API
+ * Dynamic System Settings API - Authoritative Single Source of Truth
  */
 export async function fetchSystemSettings(): Promise<import('../types').SystemSettings> {
+  // 1. Fetch from server API endpoint (reads directly from database with service role)
+  try {
+    const res = await fetch(apiUrl('/api/system-settings'), {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        const liveSettings = { ...defaultSystemSettings, ...json.data };
+        saveLocal(ADMIN_STORAGE_KEYS.SYSTEM_SETTINGS, liveSettings);
+        return liveSettings;
+      }
+    }
+  } catch (err) {
+    console.warn('[SETTINGS] Error fetching /api/system-settings:', err);
+  }
+
+  // 2. Direct Supabase read
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase.from('admin_settings').select('value').eq('id', 'system').single();
+      const { data, error } = await supabase.from('admin_settings').select('value').eq('id', 'system').maybeSingle();
       if (!error && data?.value) {
-        return { ...defaultSystemSettings, ...data.value };
+        const liveSettings = { ...defaultSystemSettings, ...data.value };
+        saveLocal(ADMIN_STORAGE_KEYS.SYSTEM_SETTINGS, liveSettings);
+        return liveSettings;
       }
     } catch (e) {
-      console.warn('Error fetching system settings:', e);
+      console.warn('Error fetching system settings from Supabase:', e);
     }
   }
+
   return getLocal<import('../types').SystemSettings>(ADMIN_STORAGE_KEYS.SYSTEM_SETTINGS, defaultSystemSettings);
 }
 
@@ -5975,12 +5721,33 @@ export async function updateSystemSettings(
   const current = await fetchSystemSettings();
   const merged = { ...current, ...settings };
 
-  if (isSupabaseConfigured && supabase) {
-    await supabase.from('admin_settings').upsert({
-      id: 'system',
-      value: merged,
-      updated_at: new Date().toISOString(),
+  // 1. Persist authoritatively via Express backend
+  try {
+    const res = await fetch(apiUrl('/api/admin/system-settings'), {
+      method: 'POST',
+      headers: getAdminAuthHeaders(),
+      body: JSON.stringify({ settings: merged, adminId }),
     });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        saveLocal(ADMIN_STORAGE_KEYS.SYSTEM_SETTINGS, json.data);
+        return json.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[SETTINGS] Failed to save via /api/admin/system-settings:', err);
+  }
+
+  // 2. Direct Supabase upsert fallback
+  if (isSupabaseConfigured && supabase) {
+    try {
+      await supabase.from('admin_settings').upsert({
+        id: 'system',
+        value: merged,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (_e) {}
   }
 
   saveLocal(ADMIN_STORAGE_KEYS.SYSTEM_SETTINGS, merged);
@@ -6580,10 +6347,10 @@ export async function fetchWebsitePopup(): Promise<import('../types').WebsitePop
     link1Url: 'https://t.me/gainpower',
     link2Text: 'WhatsApp Group',
     link2Url: 'https://chat.whatsapp.com',
-    link3Text: 'Revenue Guide',
-    link3Url: '/purchase',
-    link4Text: 'Customer Care',
-    link4Url: 'https://t.me/gainpower_service',
+    link3Text: '',
+    link3Url: '',
+    link4Text: '',
+    link4Url: '',
     isActive: true,
   };
 
@@ -7729,154 +7496,44 @@ export async function fetchDepositTransactions(userId?: string): Promise<import(
           throw new Error(depRes.error?.message || walRes.error?.message || 'Database query failed');
         }
 
-        const map = new Map<string, import('../types').DepositTransaction>();
-
-        // 1. Process deposit_transactions (Gateway Deposits)
-        if (depRes.data) {
-          for (const d of depRes.data) {
-            const key = d.traceno || d.merchant_order_id || d.id;
-            map.set(key, {
-              id: d.id,
-              userId: d.user_id,
-              username: 'User',
-              traceno: d.traceno || d.merchant_order_id || d.id,
-              amount: Number(d.amount),
-              currency: d.currency || 'INR',
-              payCode: d.pay_code || '101',
-              status: (d.status || 'PENDING').toUpperCase() as any,
-              gatewayStatus: d.gateway_status,
-              payUrl: d.pay_url,
-              gatewayOrderId: d.gateway_order_id,
-              gatewaySerialNo: d.gateway_serial_no,
-              paymentMethod: d.payment_method || d.channel || 'UniVePay UPI Gateway',
-              channel: d.channel || 'UNIVEPAY',
-              utr: d.utr || d.gateway_serial_no,
-              proofUrl: d.proof_url,
-              rejectionReason: d.rejection_reason,
-              adminNote: d.admin_note,
-              createdAt: d.created_at,
-              updatedAt: d.updated_at,
-              creditedAt: d.credited_at,
-            });
-          }
-        }
-
-        // 2. Process wallet_transactions (Recharge entries)
-        if (walRes.data) {
-          for (const w of walRes.data) {
-            const key = w.reference_id || w.order_id || w.id;
-            const rawStatus = (w.status || '').toUpperCase();
-            let statusMapped: any = 'PENDING';
-            if (rawStatus === 'COMPLETED' || rawStatus === 'SUCCESS' || rawStatus === 'PAID') {
-              statusMapped = 'PAID';
-            } else if (rawStatus === 'FAILED' || rawStatus === 'REJECTED') {
-              statusMapped = 'FAILED';
-            } else {
-              statusMapped = 'PENDING';
-            }
-
-            if (map.has(key)) {
-              const existing = map.get(key)!;
-              if (statusMapped === 'PAID') existing.status = 'PAID';
-              if (w.utr && !existing.utr) existing.utr = w.utr;
-            } else {
-              map.set(key, {
-                id: w.id,
-                userId: w.user_id,
-                username: 'User',
-                traceno: w.reference_id || w.id,
-                amount: Number(w.amount),
-                currency: 'INR',
-                payCode: '101',
-                status: statusMapped,
-                paymentMethod: w.payment_method || 'UPI Recharge',
-                channel: 'WALLET',
-                utr: w.utr,
-                createdAt: w.created_at,
-                updatedAt: w.created_at,
-              });
-            }
-          }
-        }
-
-        // 3. Process payments (Manual / UPI deposits)
-        if (payRes.data) {
-          for (const p of payRes.data) {
-            const key = p.order_id || p.id;
-            const rawStatus = (p.status || '').toUpperCase();
-            let statusMapped: any = 'PENDING';
-            if (rawStatus === 'PAID' || rawStatus === 'APPROVED' || rawStatus === 'SUCCESS') {
-              statusMapped = 'PAID';
-            } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED') {
-              statusMapped = 'FAILED';
-            }
-
-            if (map.has(key)) {
-              const existing = map.get(key)!;
-              if (statusMapped === 'PAID') existing.status = 'PAID';
-            } else {
-              map.set(key, {
-                id: p.id,
-                userId: p.user_id,
-                username: 'User',
-                traceno: p.order_id || p.id,
-                amount: Number(p.amount),
-                currency: 'INR',
-                payCode: '101',
-                status: statusMapped,
-                paymentMethod: p.method || 'Manual UPI',
-                channel: 'PAYMENT',
-                utr: p.utr,
-                createdAt: p.created_at,
-                updatedAt: p.created_at,
-              });
-            }
-          }
-        }
-
-        const sorted = Array.from(map.values()).sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-        return sorted;
+        return normalizeDepositTransactions({
+          userId,
+          depositTransactions: depRes.data || [],
+          payments: payRes.data || [],
+          walletTransactions: walRes.data || [],
+        });
       }
 
-      // Admin or general fetch: query deposit_transactions directly without joining profiles
-      const { data, error } = await supabase
-        .from('deposit_transactions')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(200);
+      // Admin or general fetch: query deposit_transactions, payments, and wallet_transactions
+      const [depRes, walRes, payRes] = await Promise.all([
+        supabase
+          .from('deposit_transactions')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(200),
+        supabase
+          .from('wallet_transactions')
+          .select('*')
+          .eq('type', 'RECHARGE')
+          .order('created_at', { ascending: false })
+          .limit(200),
+        supabase
+          .from('payments')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(200),
+      ]);
 
-      if (error) {
-        console.error('[fetchDepositTransactions] query error:', error);
-        throw error;
+      if (depRes.error && walRes.error && payRes.error) {
+        console.error('[fetchDepositTransactions] query error:', depRes.error || walRes.error || payRes.error);
+        throw depRes.error || walRes.error || payRes.error;
       }
 
-      if (data) {
-        return data.map((d: any) => ({
-          id: d.id,
-          userId: d.user_id,
-          username: 'User',
-          traceno: d.traceno || d.merchant_order_id || d.id,
-          amount: Number(d.amount),
-          currency: d.currency || 'INR',
-          payCode: d.pay_code || '101',
-          status: (d.status || 'PENDING').toUpperCase() as any,
-          gatewayStatus: d.gateway_status,
-          payUrl: d.pay_url,
-          gatewayOrderId: d.gateway_order_id,
-          gatewaySerialNo: d.gateway_serial_no,
-          paymentMethod: d.payment_method || d.channel || 'UniVePay UPI Gateway',
-          channel: d.channel || 'UNIVEPAY',
-          utr: d.utr || d.gateway_serial_no,
-          proofUrl: d.proof_url,
-          rejectionReason: d.rejection_reason,
-          adminNote: d.admin_note,
-          createdAt: d.created_at,
-          updatedAt: d.updated_at,
-          creditedAt: d.credited_at,
-        }));
-      }
+      return normalizeDepositTransactions({
+        depositTransactions: depRes.data || [],
+        payments: payRes.data || [],
+        walletTransactions: walRes.data || [],
+      });
     } catch (e: any) {
       console.warn('Error fetching deposit transactions:', e);
       throw e;
@@ -9114,6 +8771,7 @@ export async function fetchDailyCheckInStatus(userId: string): Promise<import('.
             dailyReward: json.dailyReward !== undefined ? json.dailyReward : baseReward,
             isDailyCheckInEnabled: json.isDailyCheckInEnabled !== undefined ? json.isDailyCheckInEnabled : isEnabled,
             totalClaimed: json.totalClaimed || 0,
+            checkInRewards: json.checkInRewards || sysSettings.checkInRewards,
             history: json.history || [],
           };
           saveLocal(storageKey, {
@@ -10711,7 +10369,10 @@ export async function uploadSiteAsset(file: File, prefix = 'branding'): Promise<
 
 export async function fetchRechargeSettings(): Promise<RechargeSettings> {
   try {
-    const res = await fetch(apiUrl('/api/recharge-settings'));
+    const res = await fetch(apiUrl('/api/recharge-settings'), {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
+    });
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const json = await res.json();
@@ -10793,7 +10454,10 @@ export async function saveRechargeSettings(config: Partial<RechargeSettings>, ad
 
 export async function fetchUsdtSettings(): Promise<UsdtSettings> {
   try {
-    const res = await fetch(apiUrl('/api/usdt-settings'));
+    const res = await fetch(apiUrl('/api/usdt-settings'), {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
+    });
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const json = await res.json();

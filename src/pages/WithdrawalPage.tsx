@@ -48,11 +48,13 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [selectedBankId, setSelectedBankId] = useState<string>('');
   const [showBankPicker, setShowBankPicker] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [minWithdrawal, setMinWithdrawal] = useState<number>(300);
+  const [maxWithdrawal, setMaxWithdrawal] = useState<number>(100000);
   const [withdrawalFeePercent, setWithdrawalFeePercent] = useState<number>(10);
+  const [isWithdrawalEnabled, setIsWithdrawalEnabled] = useState<boolean>(true);
 
   const withdrawableBalance = wallet?.withdrawBalance ?? wallet?.earnedBalance ?? wallet?.availableBalance ?? 0;
   const topupBalance = wallet?.topupBalance ?? wallet?.rechargeBalance ?? 0;
@@ -70,11 +72,17 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
         const defaultCard = banks.find((b) => b.isDefault) || banks[0];
         setSelectedBankId(defaultCard.id);
       }
-      if (settings?.minWithdrawal) {
+      if (typeof settings?.minWithdrawal === 'number') {
         setMinWithdrawal(settings.minWithdrawal);
+      }
+      if (typeof settings?.maxWithdrawal === 'number') {
+        setMaxWithdrawal(settings.maxWithdrawal);
       }
       if (typeof settings?.withdrawalFeePercent === 'number') {
         setWithdrawalFeePercent(settings.withdrawalFeePercent);
+      }
+      if (typeof settings?.isWithdrawalEnabled === 'boolean') {
+        setIsWithdrawalEnabled(settings.isWithdrawalEnabled);
       }
     } catch (err: any) {
       console.error('Failed to load withdrawal details:', err);
@@ -113,6 +121,11 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (!isWithdrawalEnabled) {
+      setError('Withdrawals are temporarily disabled by the administrator.');
+      return;
+    }
+
     if (!activeBank) {
       if (onOpenBindCard) {
         onOpenBindCard();
@@ -128,7 +141,12 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
     }
 
     if (amount < minWithdrawal) {
-      setError(`Minimum withdrawal amount is ₹${minWithdrawal}.`);
+      setError(`Minimum withdrawal amount is ₹${minWithdrawal.toLocaleString('en-IN')}.`);
+      return;
+    }
+
+    if (maxWithdrawal > 0 && amount > maxWithdrawal) {
+      setError(`Maximum withdrawal amount is ₹${maxWithdrawal.toLocaleString('en-IN')}.`);
       return;
     }
 
@@ -212,7 +230,12 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
               ₹{amount.toLocaleString('en-IN')}
             </div>
             <p className="text-xs sm:text-sm text-gray-500 font-medium">
-              Withdraw Wallet balance: <span className="font-bold text-gray-800">₹{withdrawableBalance.toFixed(2)}</span>
+              Withdraw Wallet balance:{' '}
+              {loading && !wallet ? (
+                <span className="inline-block w-16 h-3.5 bg-gray-200 rounded animate-pulse align-middle ml-1" />
+              ) : (
+                <span className="font-bold text-gray-800">₹{withdrawableBalance.toFixed(2)}</span>
+              )}
             </p>
             {topupBalance > 0 && (
               <p className="text-[11px] text-gray-400 font-medium">
@@ -246,45 +269,58 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
               )}
             </div>
 
-            <div
-              onClick={() => {
-                if (!activeBank) {
-                  if (onOpenBindCard) onOpenBindCard();
-                  else onNavigateTab('bank_card');
-                } else if (bankAccounts.length > 1) {
-                  setShowBankPicker(!showBankPicker);
-                } else {
-                  onNavigateTab('bank_card');
-                }
-              }}
-              className="p-4 rounded-2xl border border-gray-200 hover:border-gray-300 bg-[#FAFAFA] flex items-center justify-between cursor-pointer transition-all shadow-xs"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-xl bg-orange-100 text-[#FF6000] flex items-center justify-center font-bold">
-                  <Building2 className="w-5 h-5" />
+            {loading ? (
+              <div className="p-4 rounded-2xl border border-gray-100 bg-[#FAFAFA] flex items-center justify-between animate-pulse">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-gray-200" />
+                  <div className="space-y-2">
+                    <div className="h-4 w-32 bg-gray-200 rounded" />
+                    <div className="h-3 w-44 bg-gray-100 rounded" />
+                  </div>
                 </div>
-
-                <div>
-                  <span className="text-sm font-bold text-gray-900 flex items-center gap-1">
-                    {activeBank
-                      ? `${activeBank.bankName} - ${activeBank.accountHolderName || activeBank.holderName}`
-                      : 'Add Bank Card'}
-                    <span className="text-gray-400 font-normal">›</span>
-                  </span>
-                  <span className="text-xs font-mono text-gray-500 block mt-0.5">
-                    {activeBank
-                      ? `A/C: •••• ${activeBank.accountNumber.slice(-4)} (${activeBank.ifsc || activeBank.ifscCode})`
-                      : 'Link bank account to withdraw'}
-                  </span>
-                </div>
+                <div className="w-6 h-6 bg-gray-200 rounded-full" />
               </div>
+            ) : (
+              <div
+                onClick={() => {
+                  if (!activeBank) {
+                    if (onOpenBindCard) onOpenBindCard();
+                    else onNavigateTab('bank_card');
+                  } else if (bankAccounts.length > 1) {
+                    setShowBankPicker(!showBankPicker);
+                  } else {
+                    onNavigateTab('bank_card');
+                  }
+                }}
+                className="p-4 rounded-2xl border border-gray-200 hover:border-gray-300 bg-[#FAFAFA] flex items-center justify-between cursor-pointer transition-all shadow-xs"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-orange-100 text-[#FF6000] flex items-center justify-center font-bold">
+                    <Building2 className="w-5 h-5" />
+                  </div>
 
-              {activeBank ? (
-                <ShieldCheck className="w-5 h-5 text-[#FF6000] shrink-0" />
-              ) : (
-                <span className="text-xs font-bold text-[#FF6000] hover:underline">Link</span>
-              )}
-            </div>
+                  <div>
+                    <span className="text-sm font-bold text-gray-900 flex items-center gap-1">
+                      {activeBank
+                        ? `${activeBank.bankName} - ${activeBank.accountHolderName || activeBank.holderName}`
+                        : 'Add Bank Card'}
+                      <span className="text-gray-400 font-normal">›</span>
+                    </span>
+                    <span className="text-xs font-mono text-gray-500 block mt-0.5">
+                      {activeBank
+                        ? `A/C: •••• ${activeBank.accountNumber.slice(-4)} (${activeBank.ifsc || activeBank.ifscCode})`
+                        : 'Link bank account to withdraw'}
+                    </span>
+                  </div>
+                </div>
+
+                {activeBank ? (
+                  <ShieldCheck className="w-5 h-5 text-[#FF6000] shrink-0" />
+                ) : (
+                  <span className="text-xs font-bold text-[#FF6000] hover:underline">Link</span>
+                )}
+              </div>
+            )}
 
             {/* Dropdown for selecting alternative bank accounts */}
             {showBankPicker && bankAccounts.length > 1 && (
@@ -466,6 +502,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
             <p>2. Review and transfer takes 24–48 hours on standard business banking days.</p>
             <p>3. Ensure bank account details and IFSC are accurate to avoid payout delays.</p>
             <p>4. Standard processing fee of {withdrawalFeePercent}% applies on all withdrawals.</p>
+            <p>5. Single withdrawal limits: Minimum ₹{minWithdrawal.toLocaleString('en-IN')}, Maximum ₹{maxWithdrawal.toLocaleString('en-IN')}.</p>
           </div>
         </div>
       </div>

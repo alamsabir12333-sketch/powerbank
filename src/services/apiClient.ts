@@ -13,6 +13,14 @@ export const CLOUD_RUN_BACKEND_URL = 'https://power-bank-3ib3vyvgja-as.a.run.app
  * Throws if an invalid origin (such as Hostinger or relative /api) is configured.
  */
 export function getApiBaseUrl(): string {
+  // In AI Studio dev/preview container or local testing, route directly to the active server origin
+  if (typeof window !== 'undefined' && window.location) {
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1' || host.includes('ais-dev') || host.includes('ais-pre')) {
+      return window.location.origin;
+    }
+  }
+
   // Read VITE_API_BASE_URL injected at build time
   const envVal = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL
     ? String(import.meta.env.VITE_API_BASE_URL).trim()

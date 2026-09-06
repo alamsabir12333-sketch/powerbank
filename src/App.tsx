@@ -635,7 +635,7 @@ function AppContent() {
             />
           )}
 
-          {activeTab === 'usdt_deposit' && (
+          {(activeTab === 'usdt_deposit' || activeTab === 'recharge_usdt') && (
             <UsdtDepositPage
               userId={activeUserId}
               wallet={wallet}
@@ -729,6 +729,7 @@ function AppContent() {
           activeTab !== 'withdrawal' &&
           activeTab !== 'recharge' &&
           activeTab !== 'usdt_deposit' &&
+          activeTab !== 'recharge_usdt' &&
           activeTab !== 'bank_card' &&
           activeTab !== 'add_bank_card' &&
           activeTab !== 'vip_levels' &&

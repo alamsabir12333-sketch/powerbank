@@ -62,6 +62,7 @@ export default function TopUpPage({
   const [currentAuthUserId, setCurrentAuthUserId] = useState<string>(propUserId || '');
   
   // Dynamic Settings
+  const [settingsLoading, setSettingsLoading] = useState<boolean>(true);
   const [rechargeSettings, setRechargeSettings] = useState<RechargeSettings>({
     presetAmounts: DEFAULT_PRESET_AMOUNTS,
     minRecharge: 100,
@@ -104,6 +105,8 @@ export default function TopUpPage({
         if (uSet) setUsdtSettings(uSet);
       } catch (err) {
         console.warn('[TopUpPage] Failed to fetch settings:', err);
+      } finally {
+        setSettingsLoading(false);
       }
     }
     loadDynamicSettings();
@@ -315,9 +318,25 @@ export default function TopUpPage({
   const handleTopUp = async () => {
     setErrorMsg(null);
     const numAmount = parseInt(amount, 10);
+    const minRecharge = rechargeSettings?.minRecharge || 100;
+    const maxRecharge = rechargeSettings?.maxRecharge || 50000;
 
-    if (isNaN(numAmount) || numAmount < 100) {
-      const msg = 'Minimum recharge amount is ₹100';
+    if (rechargeSettings?.isEnabled === false) {
+      const msg = 'Online recharge is currently disabled by the administrator.';
+      setErrorMsg(msg);
+      if (onShowToast) onShowToast(msg);
+      return;
+    }
+
+    if (isNaN(numAmount) || numAmount < minRecharge) {
+      const msg = `Minimum recharge amount is ₹${minRecharge}`;
+      setErrorMsg(msg);
+      if (onShowToast) onShowToast(msg);
+      return;
+    }
+
+    if (maxRecharge > 0 && numAmount > maxRecharge) {
+      const msg = `Maximum recharge amount is ₹${maxRecharge.toLocaleString('en-IN')}`;
       setErrorMsg(msg);
       if (onShowToast) onShowToast(msg);
       return;
@@ -564,39 +583,55 @@ export default function TopUpPage({
             ₹{currentDisplayAmount}
           </h2>
           <p className="text-gray-400 text-sm mt-1">
-            Recharge Wallet Balance: ₹{balance.toFixed(2)}
+            Recharge Wallet Balance:{' '}
+            {settingsLoading && !propWallet ? (
+              <span className="inline-block w-16 h-3 bg-gray-200 rounded animate-pulse align-middle ml-1" />
+            ) : (
+              `₹${balance.toFixed(2)}`
+            )}
           </p>
 
           {/* Preset Buttons */}
-          <div className="grid grid-cols-3 gap-3 w-full mt-6">
-            {(rechargeSettings.presetAmounts && rechargeSettings.presetAmounts.length > 0
-              ? rechargeSettings.presetAmounts
-              : DEFAULT_PRESET_AMOUNTS
-            ).map((amt) => {
-              const isSelected = amount === String(amt);
-              const isRecommended = [1500, 3500, 5000].includes(amt);
+          {settingsLoading ? (
+            <div className="grid grid-cols-3 gap-3 w-full mt-6">
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => (
+                <div
+                  key={i}
+                  className="h-12 rounded-xl bg-gray-100 animate-pulse"
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 gap-3 w-full mt-6">
+              {(rechargeSettings.presetAmounts && rechargeSettings.presetAmounts.length > 0
+                ? rechargeSettings.presetAmounts
+                : DEFAULT_PRESET_AMOUNTS
+              ).map((amt) => {
+                const isSelected = amount === String(amt);
+                const isRecommended = [1500, 3500, 5000].includes(amt);
 
-              return (
-                <button
-                  key={amt}
-                  type="button"
-                  onClick={() => setAmount(String(amt))}
-                  className={`py-3 rounded-xl font-bold relative border transition-all cursor-pointer ${
-                    isSelected
-                      ? 'border-[#FF5500] text-[#FF5500] bg-[#FFF5F0] shadow-sm'
-                      : 'border-gray-100 text-gray-800 bg-gray-50/60 hover:bg-gray-100'
-                  }`}
-                >
-                  ₹{amt}
-                  {isRecommended && (
-                    <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-[#FF5500] text-white text-[9px] px-1.5 py-0.2 rounded-full whitespace-nowrap flex items-center gap-0.5 font-semibold">
-                      <Sparkles className="w-2.5 h-2.5" /> Recommended
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+                return (
+                  <button
+                    key={amt}
+                    type="button"
+                    onClick={() => setAmount(String(amt))}
+                    className={`py-3 rounded-xl font-bold relative border transition-all cursor-pointer ${
+                      isSelected
+                        ? 'border-[#FF5500] text-[#FF5500] bg-[#FFF5F0] shadow-sm'
+                        : 'border-gray-100 text-gray-800 bg-gray-50/60 hover:bg-gray-100'
+                    }`}
+                  >
+                    ₹{amt}
+                    {isRecommended && (
+                      <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-[#FF5500] text-white text-[9px] px-1.5 py-0.2 rounded-full whitespace-nowrap flex items-center gap-0.5 font-semibold">
+                        <Sparkles className="w-2.5 h-2.5" /> Recommended
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Custom Amount Input Field */}
           <div className="w-full mt-6">
@@ -651,7 +686,7 @@ export default function TopUpPage({
               type="button"
               onClick={() => {
                 if (onNavigateTab) {
-                  onNavigateTab('recharge_usdt');
+                  onNavigateTab('usdt_deposit');
                 }
               }}
               className="w-full mt-3 bg-gradient-to-r from-amber-500 via-orange-500 to-[#FF5500] hover:from-amber-600 hover:to-[#E04B00] text-white font-bold py-3.5 rounded-2xl shadow-md shadow-orange-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer text-sm"

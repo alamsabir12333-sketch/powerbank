@@ -85,7 +85,10 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
     loadData();
   }, [userId]);
 
-  const topupBalance = wallet?.topupBalance ?? wallet?.rechargeBalance ?? wallet?.availableBalance ?? 0;
+  const rechargeBalance = wallet?.rechargeBalance ?? wallet?.topupBalance ?? 0;
+  const withdrawBalance = wallet?.withdrawBalance ?? wallet?.earnedBalance ?? 0;
+  const totalUsableBalance = Number((rechargeBalance + withdrawBalance).toFixed(2));
+  const topupBalance = rechargeBalance;
 
   // Strict 3 categories matching requirement: VIP PLAN, PRO PLAN, EVENT PLAN
   const categories = useMemo(() => {
@@ -148,11 +151,11 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
       }
     }
 
-    if (topupBalance < price) {
+    if (totalUsableBalance < price) {
       setInsufficientBalanceModal({
         isOpen: true,
         required: price,
-        available: topupBalance,
+        available: totalUsableBalance,
       });
       return;
     }
@@ -193,12 +196,12 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
       <div className="w-full bg-[#FF6000] px-4 pt-4 pb-3 flex items-center justify-between shadow-xs">
         <h1 className="text-lg font-bold text-white tracking-wide">Purchase Hall</h1>
         <div className="flex items-center gap-2">
-          <div className="bg-white/20 backdrop-blur-xs px-3 py-1 rounded-full text-white text-xs font-bold flex items-center gap-1.5 border border-white/20">
-            <span>Topup: ₹{topupBalance.toFixed(2)}</span>
+          <div className="bg-white/20 backdrop-blur-xs px-3 py-1 rounded-full text-white text-xs font-bold flex items-center gap-1.5 border border-white/20" title={`Topup: ₹${rechargeBalance.toFixed(2)} + Withdraw: ₹${withdrawBalance.toFixed(2)}`}>
+            <span>Usable: ₹{totalUsableBalance.toFixed(2)}</span>
           </div>
           <button
             onClick={onOpenRecharge}
-            className="px-2.5 py-1 rounded-full bg-white text-[#FF6000] text-xs font-black shadow-xs hover:bg-orange-50 active:scale-95 transition-all"
+            className="px-2.5 py-1 rounded-full bg-white text-[#FF6000] text-xs font-black shadow-xs hover:bg-orange-50 active:scale-95 transition-all cursor-pointer"
           >
             + Topup
           </button>
@@ -590,8 +593,12 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                   <span className="font-bold text-gray-800">{selectedProduct.durationDays || selectedProduct.duration || 365} Days</span>
                 </div>
                 <div className="flex justify-between border-t border-orange-200/60 pt-1.5 font-bold">
-                  <span className="text-gray-700">Payment Wallet:</span>
-                  <span className="text-[#FF6000]">Topup Wallet</span>
+                  <span className="text-gray-700">Payment Source:</span>
+                  <span className="text-[#FF6000]">Combined Wallet</span>
+                </div>
+                <div className="flex justify-between text-[11px] text-gray-500 pt-0.5">
+                  <span>Available Balance:</span>
+                  <span>Topup: ₹{rechargeBalance.toFixed(2)} + Withdraw: ₹{withdrawBalance.toFixed(2)}</span>
                 </div>
               </div>
 
@@ -599,7 +606,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsConfirmOpen(false)}
-                  className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-700 font-bold text-xs hover:bg-gray-200 transition-colors"
+                  className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-700 font-bold text-xs hover:bg-gray-200 transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -607,7 +614,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                   type="button"
                   onClick={handleConfirmPurchase}
                   disabled={purchasing}
-                  className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6000] to-[#FF8A00] text-white font-bold text-xs shadow-md shadow-orange-500/25 hover:from-[#E65100] hover:to-[#E67E00] active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-[#FF6000] to-[#FF8A00] text-white font-bold text-xs shadow-md shadow-orange-500/25 hover:from-[#E65100] hover:to-[#E67E00] active:scale-95 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
                 >
                   {purchasing ? (
                     <span>Deploying Unit...</span>
@@ -624,7 +631,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
         )}
       </AnimatePresence>
 
-      {/* Insufficient Topup Balance Modal */}
+      {/* Insufficient Combined Balance Modal */}
       <AnimatePresence>
         {insufficientBalanceModal.isOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -646,17 +653,17 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
               </div>
               <div className="space-y-1">
                 <h3 className="text-base font-bold text-gray-900">
-                  Insufficient Topup Wallet Balance
+                  Insufficient Usable Balance
                 </h3>
                 <p className="text-xs text-gray-600 leading-relaxed">
-                  Plans must be purchased using your <strong className="text-gray-900">Topup Wallet</strong>. Available balance: <span className="font-bold text-[#FF6000]">₹{insufficientBalanceModal.available.toFixed(2)}</span>. Required: <span className="font-bold text-gray-900">₹{insufficientBalanceModal.required.toFixed(2)}</span>.
+                  Plans are purchased using your combined balance (<strong className="text-gray-900">Topup + Withdraw</strong>). Total usable: <span className="font-bold text-[#FF6000]">₹{insufficientBalanceModal.available.toFixed(2)}</span>. Required: <span className="font-bold text-gray-900">₹{insufficientBalanceModal.required.toFixed(2)}</span>. Please recharge ₹{Math.max(0, insufficientBalanceModal.required - insufficientBalanceModal.available).toFixed(2)} to activate this plan.
                 </p>
               </div>
               <div className="flex items-center gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setInsufficientBalanceModal({ isOpen: false, required: 0, available: 0 })}
-                  className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-700 font-bold text-xs hover:bg-gray-200 transition-colors"
+                  className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-700 font-bold text-xs hover:bg-gray-200 transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -666,9 +673,9 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                     setInsufficientBalanceModal({ isOpen: false, required: 0, available: 0 });
                     onOpenRecharge();
                   }}
-                  className="flex-1 py-2.5 rounded-xl bg-[#FF6000] text-white font-bold text-xs shadow-md shadow-orange-500/25 hover:bg-[#E65100] active:scale-95 transition-all"
+                  className="flex-1 py-2.5 rounded-xl bg-[#FF6000] text-white font-bold text-xs shadow-md shadow-orange-500/25 hover:bg-[#E65100] active:scale-95 transition-all cursor-pointer"
                 >
-                  Recharge Topup Wallet
+                  Recharge Wallet
                 </button>
               </div>
             </motion.div>

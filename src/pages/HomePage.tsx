@@ -147,11 +147,8 @@ export const HomePage: React.FC<HomePageProps> = ({
     try {
       const config = await fetchWebsitePopup();
       if (config && config.isActive) {
-        const dismissedSession = sessionStorage.getItem('gp_popup_dismissed');
-        if (!dismissedSession) {
-          setWebsitePopupConfig(config);
-          setIsWebsitePopupOpen(true);
-        }
+        setWebsitePopupConfig(config);
+        setIsWebsitePopupOpen(true);
       }
     } catch (e) {
       console.warn('Error loading website popup:', e);
@@ -493,14 +490,13 @@ export const HomePage: React.FC<HomePageProps> = ({
         </div>
       )}
 
-      {/* Website Popup Modal (4 Links + Image, only after loading) */}
+      {/* Website Popup Modal (2 Links + Image, shown upon opening website) */}
       {!showSkeleton && (
         <WebsitePopupModal
           isOpen={isWebsitePopupOpen}
           config={websitePopupConfig}
           onClose={() => {
             setIsWebsitePopupOpen(false);
-            sessionStorage.setItem('gp_popup_dismissed', 'true');
           }}
           onNavigateTab={onNavigateTab}
         />

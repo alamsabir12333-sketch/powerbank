@@ -42,7 +42,9 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [minWithdrawal, setMinWithdrawal] = useState<number>(300);
+  const [maxWithdrawal, setMaxWithdrawal] = useState<number>(100000);
   const [withdrawalFeePercent, setWithdrawalFeePercent] = useState<number>(10);
+  const [isWithdrawalEnabled, setIsWithdrawalEnabled] = useState<boolean>(true);
 
   useEffect(() => {
     if (isOpen) {
@@ -61,8 +63,14 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             setMinWithdrawal(sys.minWithdrawal);
             setAmount(String(sys.minWithdrawal));
           }
+          if (typeof sys.maxWithdrawal === 'number' && sys.maxWithdrawal > 0) {
+            setMaxWithdrawal(sys.maxWithdrawal);
+          }
           if (typeof sys.withdrawalFeePercent === 'number') {
             setWithdrawalFeePercent(sys.withdrawalFeePercent);
+          }
+          if (typeof sys.isWithdrawalEnabled === 'boolean') {
+            setIsWithdrawalEnabled(sys.isWithdrawalEnabled);
           }
         }
       }).catch(() => {});
@@ -81,8 +89,16 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isWithdrawalEnabled) {
+      setError('Withdrawals are temporarily disabled by the administrator.');
+      return;
+    }
     if (numAmount < minWithdrawal) {
-      setError(`Minimum withdrawal amount is ₹${minWithdrawal}.`);
+      setError(`Minimum withdrawal amount is ₹${minWithdrawal.toLocaleString('en-IN')}.`);
+      return;
+    }
+    if (maxWithdrawal > 0 && numAmount > maxWithdrawal) {
+      setError(`Maximum single withdrawal amount is ₹${maxWithdrawal.toLocaleString('en-IN')}.`);
       return;
     }
     if (numAmount > withdrawableEarnings) {

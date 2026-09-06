@@ -741,8 +741,14 @@ DECLARE
     v_wallet public.wallets%ROWTYPE;
     v_purchase_id UUID;
     v_tx_id UUID;
-    v_balance_before NUMERIC;
-    v_balance_after NUMERIC;
+    v_cur_recharge NUMERIC := 0.00;
+    v_cur_withdraw NUMERIC := 0.00;
+    v_total_usable NUMERIC := 0.00;
+    v_deduct_recharge NUMERIC := 0.00;
+    v_deduct_withdraw NUMERIC := 0.00;
+    v_new_recharge NUMERIC := 0.00;
+    v_new_withdraw NUMERIC := 0.00;
+    v_new_available NUMERIC := 0.00;
     v_user_purchases_count INT;
     v_profile public.profiles%ROWTYPE;
     v_referrer_profile public.profiles%ROWTYPE;
@@ -754,51 +760,90 @@ BEGIN
         RETURN jsonb_build_object('success', false, 'error', 'Plan not found or currently inactive.');
     END IF;
 
-    -- 2. Check User Purchase Limits
+    -- 2. Fetch User Profile & Check VIP Rules
+    SELECT * INTO v_profile FROM public.profiles WHERE user_id = p_user_id;
+    IF upper(coalesce(v_plan.category, 'VIP')) = 'PRO' AND coalesce(v_profile.vip_level, 0) < 1 THEN
+        RETURN jsonb_build_object('success', false, 'error', 'PRO plans require VIP Level 1 or higher. Current level: VIP ' || coalesce(v_profile.vip_level, 0));
+    END IF;
+    IF upper(coalesce(v_plan.category, 'VIP')) = 'EVENT' AND coalesce(v_profile.vip_level, 0) < 2 THEN
+        RETURN jsonb_build_object('success', false, 'error', 'EVENT plans require VIP Level 2 or higher. Current level: VIP ' || coalesce(v_profile.vip_level, 0));
+    END IF;
+
+    -- 3. Check User Purchase Limits based on exact plan ID
     IF v_plan.limit_per_user IS NOT NULL AND v_plan.limit_per_user > 0 THEN
-        SELECT COUNT(*) INTO v_user_purchases_count FROM public.purchases WHERE user_id = p_user_id AND plan_id = p_plan_id AND status = 'ACTIVE';
+        SELECT COUNT(*) INTO v_user_purchases_count FROM public.purchases 
+        WHERE user_id = p_user_id AND plan_id = p_plan_id AND status NOT IN ('CANCELLED', 'FAILED', 'REJECTED');
         IF v_user_purchases_count >= v_plan.limit_per_user THEN
-            RETURN jsonb_build_object('success', false, 'error', 'You have reached the maximum active purchase limit (' || v_plan.limit_per_user || ') for this plan.');
+            RETURN jsonb_build_object('success', false, 'error', 'You have reached the maximum purchase limit (' || v_plan.limit_per_user || ') for this plan.');
         END IF;
     END IF;
 
-    -- 3. Lock & Fetch User Wallet
+    -- 4. Lock & Fetch User Wallet
     SELECT * INTO v_wallet FROM public.wallets WHERE user_id = p_user_id FOR UPDATE;
     IF NOT FOUND THEN
         RETURN jsonb_build_object('success', false, 'error', 'Target user wallet not found.');
     END IF;
 
-    -- 4. Balance Verification (Recharge Balance / Available Balance)
-    IF v_wallet.available_balance < v_plan.price THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Insufficient balance. Please recharge ₹' || (v_plan.price - v_wallet.available_balance) || ' to activate this device.');
+    -- 5. Combined Balance Verification (Recharge + Withdraw = Total Usable)
+    v_cur_recharge := coalesce(v_wallet.recharge_balance, v_wallet.topup_balance, 0.00);
+    v_cur_withdraw := coalesce(v_wallet.withdraw_balance, v_wallet.earned_balance, 0.00);
+    v_total_usable := v_cur_recharge + v_cur_withdraw;
+
+    IF v_total_usable < v_plan.price THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Insufficient combined wallet balance. Required: ₹' || v_plan.price || ', Available: ₹' || v_total_usable || ' (Recharge: ₹' || v_cur_recharge || ' + Withdraw: ₹' || v_cur_withdraw || ').');
     END IF;
 
-    v_balance_before := v_wallet.available_balance;
-    v_balance_after := v_balance_before - v_plan.price;
+    -- 6. Atomic Combined Deduction (Recharge first, then remainder from Withdraw)
+    v_deduct_recharge := LEAST(v_cur_recharge, v_plan.price);
+    v_deduct_withdraw := v_plan.price - v_deduct_recharge;
+    v_new_recharge := v_cur_recharge - v_deduct_recharge;
+    v_new_withdraw := v_cur_withdraw - v_deduct_withdraw;
+    v_new_available := v_new_recharge + v_new_withdraw;
 
-    -- 5. Deduct Wallet Balance
     UPDATE public.wallets 
-    SET available_balance = v_balance_after,
+    SET recharge_balance = v_new_recharge,
+        topup_balance = v_new_recharge,
+        withdraw_balance = v_new_withdraw,
+        earned_balance = v_new_withdraw,
+        available_balance = v_new_available,
         updated_at = now()
     WHERE user_id = p_user_id;
 
-    -- 6. Insert Wallet Transaction
+    -- 7. Insert Wallet Transactions & Ledger for each deducted wallet
     v_tx_id := uuid_generate_v4();
-    INSERT INTO public.wallet_transactions (
-        id, user_id, type, amount, balance_before, balance_after, reference_id, description
-    ) VALUES (
-        v_tx_id, p_user_id, 'PLAN_PURCHASE', -v_plan.price, v_balance_before, v_balance_after,
-        p_plan_id::text, 'Purchased Hardware Plan: ' || v_plan.name
-    );
+    IF v_deduct_recharge > 0 THEN
+        INSERT INTO public.wallet_transactions (
+            id, user_id, type, amount, balance_before, balance_after, wallet_type, reference_id, description
+        ) VALUES (
+            v_tx_id, p_user_id, 'PLAN_PURCHASE', v_deduct_recharge, v_cur_recharge, v_new_recharge,
+            'TOPUP', p_plan_id::text, 'Purchased Plan: ' || v_plan.name || ' (Topup: -₹' || v_deduct_recharge || ')'
+        );
 
-    -- 7. Insert Immutable Ledger Log
-    INSERT INTO public.wallet_ledger (
-        user_id, wallet_type, transaction_type, amount, direction, reference_type, reference_id,
-        balance_before, balance_after, description
-    ) VALUES (
-        p_user_id, 'RECHARGE', 'PLAN_PURCHASE', v_plan.price, 'DEBIT', 'PLAN_ORDER', p_plan_id::text,
-        v_balance_before, v_balance_after, 'Leased device: ' || v_plan.name
-    );
+        INSERT INTO public.wallet_ledger (
+            user_id, wallet_type, transaction_type, amount, direction, reference_type, reference_id,
+            balance_before, balance_after, description
+        ) VALUES (
+            p_user_id, 'RECHARGE', 'PLAN_PURCHASE', v_deduct_recharge, 'DEBIT', 'PLAN_ORDER', p_plan_id::text,
+            v_cur_recharge, v_new_recharge, 'Plan purchase topup deduction: ' || v_plan.name
+        );
+    END IF;
+
+    IF v_deduct_withdraw > 0 THEN
+        INSERT INTO public.wallet_transactions (
+            id, user_id, type, amount, balance_before, balance_after, wallet_type, reference_id, description
+        ) VALUES (
+            uuid_generate_v4(), p_user_id, 'PLAN_PURCHASE', v_deduct_withdraw, v_cur_withdraw, v_new_withdraw,
+            'WITHDRAW', p_plan_id::text, 'Purchased Plan: ' || v_plan.name || ' (Withdraw: -₹' || v_deduct_withdraw || ')'
+        );
+
+        INSERT INTO public.wallet_ledger (
+            user_id, wallet_type, transaction_type, amount, direction, reference_type, reference_id,
+            balance_before, balance_after, description
+        ) VALUES (
+            p_user_id, 'WITHDRAW', 'PLAN_PURCHASE', v_deduct_withdraw, 'DEBIT', 'PLAN_ORDER', p_plan_id::text,
+            v_cur_withdraw, v_new_withdraw, 'Plan purchase withdraw deduction: ' || v_plan.name
+        );
+    END IF;
 
     -- 8. Create Active Purchase Record
     v_purchase_id := uuid_generate_v4();

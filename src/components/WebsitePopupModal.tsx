@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, ExternalLink, ChevronRight, Globe, Send, MessageCircle, Sparkles } from 'lucide-react';
+import { X, ChevronRight, Send, MessageCircle } from 'lucide-react';
 import { WebsitePopupConfig, TabType } from '../types';
 
 interface WebsitePopupModalProps {
@@ -31,8 +31,6 @@ export const WebsitePopupModal: React.FC<WebsitePopupModalProps> = ({
   const links = [
     { text: config.link1Text, url: config.link1Url, icon: <Send className="w-3.5 h-3.5 text-[#FF6000]" /> },
     { text: config.link2Text, url: config.link2Url, icon: <MessageCircle className="w-3.5 h-3.5 text-emerald-400" /> },
-    { text: config.link3Text, url: config.link3Url, icon: <Sparkles className="w-3.5 h-3.5 text-amber-400" /> },
-    { text: config.link4Text, url: config.link4Url, icon: <Globe className="w-3.5 h-3.5 text-cyan-400" /> },
   ].filter((l) => Boolean(l.text && l.url));
 
   return (

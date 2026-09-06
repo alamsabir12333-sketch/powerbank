@@ -23,6 +23,7 @@ import {
   Globe,
   Coins,
   Link as LinkIcon,
+  Trash2,
 } from 'lucide-react';
 import {
   fetchSystemSettings,
@@ -91,6 +92,8 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
   const [saving, setSaving] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [uploadingFavicon, setUploadingFavicon] = useState(false);
+  const [uploadingPopupImg, setUploadingPopupImg] = useState(false);
+  const popupFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const loadData = async () => {
     setLoading(true);
@@ -103,7 +106,22 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
         fetchRechargeSettings(),
         fetchUsdtSettings(),
       ]);
-      setSettings(sys);
+      if (sys) {
+        if (!sys.checkInRewards) {
+          const defaultDaily = typeof sys.dailyCheckInAmount === 'number' ? sys.dailyCheckInAmount : 5;
+          const defaultDay7 = typeof sys.dailyCheckInDay7Bonus === 'number' ? sys.dailyCheckInDay7Bonus : 100;
+          sys.checkInRewards = {
+            day1: defaultDaily,
+            day2: defaultDaily,
+            day3: defaultDaily,
+            day4: defaultDaily,
+            day5: defaultDaily,
+            day6: defaultDaily,
+            day7: defaultDay7,
+          };
+        }
+        setSettings(sys);
+      }
       setPaymentSettings(pay);
       setPopupConfig(popup);
       if (site) setSiteSettings(site);
@@ -155,6 +173,22 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
     }
   };
 
+  const handlePopupImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingPopupImg(true);
+    try {
+      const url = await uploadSiteAsset(file, 'popup');
+      setPopupConfig((prev) => (prev ? { ...prev, imageUrl: url } : prev));
+      onShowToast('Popup image uploaded successfully! Click "Save All Settings" to apply.');
+    } catch (err: any) {
+      onShowToast(err.message || 'Failed to upload popup image.');
+    } finally {
+      setUploadingPopupImg(false);
+      e.target.value = '';
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -180,7 +214,15 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
         promises.push(updateSystemSettings(settings, adminId));
       }
       if (popupConfig) {
-        promises.push(saveWebsitePopup(popupConfig, adminId));
+        // Enforce max 2 buttons: clear links 3 and 4
+        const cleanPopupConfig: WebsitePopupConfig = {
+          ...popupConfig,
+          link3Text: '',
+          link3Url: '',
+          link4Text: '',
+          link4Url: '',
+        };
+        promises.push(saveWebsitePopup(cleanPopupConfig, adminId));
       }
 
       await Promise.all(promises);
@@ -196,9 +238,34 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
 
   if (loading || !settings) {
     return (
-      <div className="py-20 text-center text-gray-500 bg-[#161b22] rounded-2xl border border-gray-800">
-        <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-[#FF6000]" />
-        <span>Loading system settings...</span>
+      <div className="space-y-6 animate-pulse">
+        {/* Header Skeleton */}
+        <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 flex justify-between items-center">
+          <div className="space-y-2">
+            <div className="h-5 w-64 bg-gray-800 rounded" />
+            <div className="h-3 w-80 bg-gray-850 rounded" />
+          </div>
+          <div className="h-9 w-28 bg-gray-800 rounded-xl" />
+        </div>
+
+        {/* Section Skeletons */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 space-y-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-gray-800" />
+                <div className="space-y-1.5">
+                  <div className="h-4 w-32 bg-gray-800 rounded" />
+                  <div className="h-2.5 w-48 bg-gray-850 rounded" />
+                </div>
+              </div>
+              <div className="space-y-3 pt-2">
+                <div className="h-10 bg-gray-800/80 rounded-xl" />
+                <div className="h-10 bg-gray-800/80 rounded-xl" />
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -567,7 +634,125 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
           </div>
         </div>
 
-        {/* Section 6: Website Popup Notice Configuration */}
+        {/* Section 6: Daily Check-in & Consecutive Claim Rewards (Days 1–7) */}
+        <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-gray-800">
+            <h3 className="font-bold text-sm text-white flex items-center gap-2">
+              <CalendarCheck className="w-4 h-4 text-emerald-400" />
+              Daily Check-in & Consecutive Claim Rewards
+            </h3>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <span className="text-xs font-bold text-gray-300">Daily Check-in Enabled:</span>
+              <input
+                type="checkbox"
+                checked={settings.isDailyCheckInEnabled !== false}
+                onChange={(e) => setSettings({ ...settings, isDailyCheckInEnabled: e.target.checked })}
+                className="w-4 h-4 accent-emerald-500 cursor-pointer"
+              />
+            </label>
+          </div>
+
+          <p className="text-xs text-gray-400">
+            Configure dynamic cash rewards credited directly to user's Topup Wallet upon daily check-in. Days 1 through 6 are standard streak rewards, while Day 7 represents the Consecutive Streak Mega Reward.
+          </p>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+            {[1, 2, 3, 4, 5, 6].map((dayNum) => {
+              const dayKey = `day${dayNum}` as keyof NonNullable<typeof settings.checkInRewards>;
+              const currentVal = settings.checkInRewards?.[dayKey] !== undefined
+                ? settings.checkInRewards[dayKey]
+                : (settings.dailyCheckInAmount || 5);
+
+              return (
+                <div key={dayNum} className="bg-[#0d1117] border border-gray-700/80 rounded-xl p-3 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-gray-300">Day {dayNum}</span>
+                    <span className="text-[10px] text-gray-500 font-mono">Streak</span>
+                  </div>
+                  <div className="relative">
+                    <span className="absolute left-2.5 top-2 text-xs text-emerald-400 font-bold">₹</span>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="0"
+                      value={currentVal}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        const updatedRewards = {
+                          ...(settings.checkInRewards || {
+                            day1: 5,
+                            day2: 5,
+                            day3: 5,
+                            day4: 5,
+                            day5: 5,
+                            day6: 5,
+                            day7: 100,
+                          }),
+                          [dayKey]: val,
+                        };
+                        setSettings({
+                          ...settings,
+                          checkInRewards: updatedRewards,
+                          dailyCheckInAmount: dayNum === 1 ? val : settings.dailyCheckInAmount,
+                        });
+                      }}
+                      className="w-full bg-[#161b22] border border-gray-700 focus:border-emerald-500 rounded-lg py-1.5 pl-6 pr-2 text-xs text-white font-mono outline-none"
+                    />
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Day 7 - Highlighted Mega Reward */}
+            <div className="bg-gradient-to-b from-amber-500/10 to-orange-500/10 border-2 border-amber-500/60 rounded-xl p-3 space-y-1.5 relative">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black text-amber-300 flex items-center gap-1">
+                  <Flame className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+                  Day 7
+                </span>
+                <span className="text-[9px] bg-amber-400 text-gray-950 font-black px-1.5 py-0.2 rounded-full uppercase tracking-tight">
+                  Mega
+                </span>
+              </div>
+              <div className="relative">
+                <span className="absolute left-2.5 top-2 text-xs text-amber-300 font-bold">₹</span>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={
+                    settings.checkInRewards?.day7 !== undefined
+                      ? settings.checkInRewards.day7
+                      : (settings.dailyCheckInDay7Bonus || 100)
+                  }
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    const updatedRewards = {
+                      ...(settings.checkInRewards || {
+                        day1: 5,
+                        day2: 5,
+                        day3: 5,
+                        day4: 5,
+                        day5: 5,
+                        day6: 5,
+                        day7: 100,
+                      }),
+                      day7: val,
+                    };
+                    setSettings({
+                      ...settings,
+                      checkInRewards: updatedRewards,
+                      dailyCheckInDay7Bonus: val,
+                    });
+                  }}
+                  className="w-full bg-[#161b22] border border-amber-500/80 focus:border-amber-400 rounded-lg py-1.5 pl-6 pr-2 text-xs text-amber-200 font-mono font-bold outline-none"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Section 7: Website Popup Notice Configuration */}
         {popupConfig && (
           <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-gray-800">
@@ -587,120 +772,161 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
             </div>
 
             <div className="space-y-3 text-xs">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-gray-300 font-semibold mb-1">Popup Title</label>
-                  <input
-                    type="text"
-                    value={popupConfig.title}
-                    onChange={(e) => setPopupConfig({ ...popupConfig, title: e.target.value })}
-                    className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
-                    placeholder="Official Notice"
-                  />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-gray-300 font-semibold mb-1">Popup Title</label>
+                    <input
+                      type="text"
+                      value={popupConfig.title}
+                      onChange={(e) => setPopupConfig({ ...popupConfig, title: e.target.value })}
+                      className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
+                      placeholder="Official Notice"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-gray-300 font-semibold mb-1">Popup Description / Message</label>
+                    <textarea
+                      rows={4}
+                      value={popupConfig.description}
+                      onChange={(e) => setPopupConfig({ ...popupConfig, description: e.target.value })}
+                      className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
+                      placeholder="Enter detailed notice message..."
+                    />
+                  </div>
                 </div>
+
+                {/* Direct Image Upload for Popup */}
                 <div>
-                  <label className="block text-gray-300 font-semibold mb-1">Poster / Banner Image URL</label>
+                  <label className="block text-gray-300 font-semibold mb-1">
+                    Poster / Banner Image (Direct Upload)
+                  </label>
                   <input
-                    type="text"
-                    value={popupConfig.imageUrl || ''}
-                    onChange={(e) => setPopupConfig({ ...popupConfig, imageUrl: e.target.value })}
-                    className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
-                    placeholder="https://example.com/popup-banner.png"
+                    ref={popupFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handlePopupImageUpload}
+                    className="hidden"
                   />
+
+                  {popupConfig.imageUrl ? (
+                    <div className="space-y-2">
+                      <div className="relative rounded-xl overflow-hidden border border-gray-700 bg-black/50 h-32 flex items-center justify-center">
+                        <img
+                          src={popupConfig.imageUrl}
+                          alt="Popup Preview"
+                          className="w-full h-full object-contain"
+                        />
+                        <span className="absolute bottom-2 right-2 text-[10px] bg-black/85 text-emerald-400 font-bold px-2 py-0.5 rounded border border-emerald-800 flex items-center gap-1">
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          Uploaded
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => popupFileInputRef.current?.click()}
+                          disabled={uploadingPopupImg}
+                          className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs text-white rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        >
+                          {uploadingPopupImg ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-[#FF6000]" />
+                          ) : (
+                            <Upload className="w-3.5 h-3.5" />
+                          )}
+                          <span>{uploadingPopupImg ? 'Uploading...' : 'Change Image'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPopupConfig({ ...popupConfig, imageUrl: '' })}
+                          className="px-3 py-1.5 bg-red-900/40 hover:bg-red-900/60 text-xs text-red-300 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Remove</span>
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        value={popupConfig.imageUrl || ''}
+                        onChange={(e) => setPopupConfig({ ...popupConfig, imageUrl: e.target.value })}
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2 text-white outline-none text-[11px]"
+                        placeholder="Image URL"
+                      />
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        onClick={() => popupFileInputRef.current?.click()}
+                        disabled={uploadingPopupImg}
+                        className="w-full border-2 border-dashed border-gray-700 hover:border-[#FF6000] rounded-xl p-5 flex flex-col items-center justify-center gap-2 transition-all bg-gray-900/30 hover:bg-gray-900/60 text-gray-400 hover:text-[#FF6000] cursor-pointer"
+                      >
+                        {uploadingPopupImg ? (
+                          <>
+                            <Loader2 className="w-7 h-7 animate-spin text-[#FF6000]" />
+                            <span className="text-xs font-semibold text-[#FF6000]">Uploading popup image to storage...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-7 h-7 text-gray-400" />
+                            <span className="text-xs font-semibold text-gray-200">Click to Upload Popup Image</span>
+                            <span className="text-[10px] text-gray-400">Supports PNG, JPG, WebP</span>
+                          </>
+                        )}
+                      </button>
+                      <input
+                        type="text"
+                        value={popupConfig.imageUrl || ''}
+                        onChange={(e) => setPopupConfig({ ...popupConfig, imageUrl: e.target.value })}
+                        className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2 text-white outline-none text-[11px]"
+                        placeholder="Or paste direct image URL (https://...)"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div>
-                <label className="block text-gray-300 font-semibold mb-1">Popup Description / Message</label>
-                <textarea
-                  rows={2}
-                  value={popupConfig.description}
-                  onChange={(e) => setPopupConfig({ ...popupConfig, description: e.target.value })}
-                  className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
-                  placeholder="Enter detailed notice message..."
-                />
-              </div>
-
-              {/* 4 Custom Action Links */}
-              <div className="pt-2 border-t border-gray-800 space-y-2">
-                <div className="text-xs font-bold text-gray-400">4 Custom Action Links (Max 4 buttons)</div>
+              {/* 2 Custom Action Links */}
+              <div className="pt-3 border-t border-gray-800 space-y-2">
+                <div className="text-xs font-bold text-gray-300">Custom Action Links (2 Buttons)</div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <label className="text-[11px] text-gray-400">Button 1</label>
+                  <div className="space-y-1 bg-[#0d1117] p-2.5 rounded-xl border border-gray-800">
+                    <label className="text-[11px] text-orange-400 font-semibold">Button 1</label>
                     <div className="flex gap-2">
                       <input
                         type="text"
-                        placeholder="Button Text"
+                        placeholder="Button Text (e.g. Telegram Channel)"
                         value={popupConfig.link1Text || ''}
                         onChange={(e) => setPopupConfig({ ...popupConfig, link1Text: e.target.value })}
-                        className="w-1/2 bg-[#0d1117] border border-gray-700 rounded-xl p-2 text-white outline-none text-xs"
+                        className="w-1/2 bg-[#161b22] border border-gray-700 rounded-lg p-2 text-white outline-none text-xs"
                       />
                       <input
                         type="text"
-                        placeholder="URL / Path"
+                        placeholder="URL / Path (e.g. https://t.me/...)"
                         value={popupConfig.link1Url || ''}
                         onChange={(e) => setPopupConfig({ ...popupConfig, link1Url: e.target.value })}
-                        className="w-1/2 bg-[#0d1117] border border-gray-700 rounded-xl p-2 text-white outline-none text-xs"
+                        className="w-1/2 bg-[#161b22] border border-gray-700 rounded-lg p-2 text-white outline-none text-xs"
                       />
                     </div>
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-[11px] text-gray-400">Button 2</label>
+                  <div className="space-y-1 bg-[#0d1117] p-2.5 rounded-xl border border-gray-800">
+                    <label className="text-[11px] text-emerald-400 font-semibold">Button 2</label>
                     <div className="flex gap-2">
                       <input
                         type="text"
-                        placeholder="Button Text"
+                        placeholder="Button Text (e.g. WhatsApp Group)"
                         value={popupConfig.link2Text || ''}
                         onChange={(e) => setPopupConfig({ ...popupConfig, link2Text: e.target.value })}
-                        className="w-1/2 bg-[#0d1117] border border-gray-700 rounded-xl p-2 text-white outline-none text-xs"
+                        className="w-1/2 bg-[#161b22] border border-gray-700 rounded-lg p-2 text-white outline-none text-xs"
                       />
                       <input
                         type="text"
-                        placeholder="URL / Path"
+                        placeholder="URL / Path (e.g. https://... or /team)"
                         value={popupConfig.link2Url || ''}
                         onChange={(e) => setPopupConfig({ ...popupConfig, link2Url: e.target.value })}
-                        className="w-1/2 bg-[#0d1117] border border-gray-700 rounded-xl p-2 text-white outline-none text-xs"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[11px] text-gray-400">Button 3</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        placeholder="Button Text"
-                        value={popupConfig.link3Text || ''}
-                        onChange={(e) => setPopupConfig({ ...popupConfig, link3Text: e.target.value })}
-                        className="w-1/2 bg-[#0d1117] border border-gray-700 rounded-xl p-2 text-white outline-none text-xs"
-                      />
-                      <input
-                        type="text"
-                        placeholder="URL / Path"
-                        value={popupConfig.link3Url || ''}
-                        onChange={(e) => setPopupConfig({ ...popupConfig, link3Url: e.target.value })}
-                        className="w-1/2 bg-[#0d1117] border border-gray-700 rounded-xl p-2 text-white outline-none text-xs"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[11px] text-gray-400">Button 4</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        placeholder="Button Text"
-                        value={popupConfig.link4Text || ''}
-                        onChange={(e) => setPopupConfig({ ...popupConfig, link4Text: e.target.value })}
-                        className="w-1/2 bg-[#0d1117] border border-gray-700 rounded-xl p-2 text-white outline-none text-xs"
-                      />
-                      <input
-                        type="text"
-                        placeholder="URL / Path"
-                        value={popupConfig.link4Url || ''}
-                        onChange={(e) => setPopupConfig({ ...popupConfig, link4Url: e.target.value })}
-                        className="w-1/2 bg-[#0d1117] border border-gray-700 rounded-xl p-2 text-white outline-none text-xs"
+                        className="w-1/2 bg-[#161b22] border border-gray-700 rounded-lg p-2 text-white outline-none text-xs"
                       />
                     </div>
                   </div>
