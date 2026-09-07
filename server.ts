@@ -4640,25 +4640,6 @@ app.get('/api/user/earnings-summary', async (req, res) => {
       }
     });
 
-    // Authoritative claimed device earnings (only earnings claimed from My Device)
-    const claimedDeviceTxSum = allTxs
-      .filter((t: any) => {
-        const type = String(t.type || '').toUpperCase();
-        const ref = String(t.reference_id || '');
-        const desc = String(t.description || '');
-        return (
-          type === 'EARNING_CLAIM' ||
-          ref.startsWith('CLM-') ||
-          desc.includes('Device Hourly Yield Claim') ||
-          desc.includes('hourly device earnings') ||
-          (type === 'EARNING' && ref.startsWith('CLM-'))
-        );
-      })
-      .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
-
-    const purchasesClaimedSum = purchases.reduce((sum: number, p: any) => sum + (Number(p.claimed_amount) || 0), 0);
-    const claimedDeviceEarnings = Number(Math.max(claimedDeviceTxSum, purchasesClaimedSum).toFixed(2));
-
     return res.json({
       success: true,
       totalAssets,
@@ -4667,7 +4648,6 @@ app.get('/api/user/earnings-summary', async (req, res) => {
       todayEarnings: Number(todayEarnings.toFixed(2)),
       totalClaimable: Number(totalClaimable.toFixed(2)),
       totalEarned,
-      claimedDeviceEarnings,
       remainingHours: maxRemainingHours,
       activeDevicesCount: activePurchases.length,
       promotionEarnings,
@@ -4678,78 +4658,6 @@ app.get('/api/user/earnings-summary', async (req, res) => {
   } catch (err: any) {
     console.error('Earnings summary error:', err);
     return res.status(500).json({ success: false, error: err.message || 'Failed to fetch earnings summary.' });
-  }
-});
-
-// Authoritative Claimed Device Earnings (Claim records / wallet transactions / purchases)
-app.get('/api/user/claimed-device-earnings', async (req, res) => {
-  const userId = String(req.query.userId || req.headers['x-user-id'] || '').trim();
-  if (!userId) {
-    return res.status(400).json({ success: false, error: 'User ID required' });
-  }
-
-  if (!supabase) {
-    return res.json({ success: true, claimedDeviceEarnings: 0 });
-  }
-
-  try {
-    const profile = await findUserProfile(userId);
-    const candidateUserIds = Array.from(
-      new Set([userId, profile?.id, profile?.user_id].filter(id => isValidUUID(id)))
-    );
-
-    if (candidateUserIds.length === 0) {
-      return res.json({ success: true, claimedDeviceEarnings: 0 });
-    }
-
-    const [cbRes, wtRes, purRes] = await Promise.all([
-      supabase
-        .from('claim_batches')
-        .select('amount')
-        .in('user_id', candidateUserIds),
-      supabase
-        .from('wallet_transactions')
-        .select('amount, type, reference_id, description')
-        .in('user_id', candidateUserIds),
-      supabase
-        .from('purchases')
-        .select('claimed_amount')
-        .in('user_id', candidateUserIds),
-    ]);
-
-    const claimBatchesSum = (cbRes.data || []).reduce((sum: number, c: any) => sum + (Number(c.amount) || 0), 0);
-
-    const walletTxClaimSum = (wtRes.data || [])
-      .filter((t: any) => {
-        const type = String(t.type || '').toUpperCase();
-        const ref = String(t.reference_id || '');
-        const desc = String(t.description || '');
-        return (
-          type === 'EARNING_CLAIM' ||
-          ref.startsWith('CLM-') ||
-          desc.includes('Device Hourly Yield Claim') ||
-          desc.includes('hourly device earnings') ||
-          (type === 'EARNING' && ref.startsWith('CLM-'))
-        );
-      })
-      .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
-
-    const purchasesClaimedSum = (purRes.data || []).reduce((sum: number, p: any) => sum + (Number(p.claimed_amount) || 0), 0);
-
-    const totalClaimed = Number(Math.max(claimBatchesSum, walletTxClaimSum, purchasesClaimedSum).toFixed(2));
-
-    return res.json({
-      success: true,
-      claimedDeviceEarnings: totalClaimed,
-      details: {
-        claimBatchesSum: Number(claimBatchesSum.toFixed(2)),
-        walletTxClaimSum: Number(walletTxClaimSum.toFixed(2)),
-        purchasesClaimedSum: Number(purchasesClaimedSum.toFixed(2)),
-      },
-    });
-  } catch (err: any) {
-    console.error('Error fetching claimed device earnings:', err);
-    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

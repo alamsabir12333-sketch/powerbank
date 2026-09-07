@@ -10,7 +10,7 @@ import {
 } from '../components/FunctionModals';
 import { ClaimGiftCodeModal } from '../components/ClaimGiftCodeModal';
 import { TabType, UserProfile, Wallet, PurchaseItem, UserVipStatus } from '../types';
-import { fetchUserVipStatus, fetchUserTeamSummary, fetchClaimedDeviceEarnings } from '../services/api';
+import { fetchUserVipStatus, fetchUserTeamSummary } from '../services/api';
 import {
   ShieldCheck,
   Smartphone,
@@ -75,58 +75,10 @@ export const MePage: React.FC<MePageProps> = ({
   const mobile = userProfile?.mobile || userProfile?.whatsappNo || '';
   const membershipNumber = userProfile?.membershipNumber || userProfile?.referralCode || '';
   const referralCode = userProfile?.referralCode || membershipNumber;
+  const deviceEarnings = userProfile?.deviceEarnings || wallet?.totalEarned || 0;
   const topupBalance = wallet?.topupBalance ?? wallet?.rechargeBalance ?? 0;
   const withdrawBalance = wallet?.withdrawBalance ?? wallet?.earnedBalance ?? wallet?.availableBalance ?? 0;
   const userId = userProfile?.userId || userProfile?.id || '';
-
-  const [deviceEarn, setDeviceEarn] = useState<number>(() => {
-    // Initial best estimate from props purchases claimedAmount sum if available
-    const initialFromPurchases = purchases?.reduce((sum, p) => sum + (Number(p.claimedAmount) || 0), 0) || 0;
-    return initialFromPurchases;
-  });
-  const [loadingDeviceEarn, setLoadingDeviceEarn] = useState<boolean>(true);
-
-  useEffect(() => {
-    let isMounted = true;
-    const targetUserId = userId || userProfile?.userId || userProfile?.id;
-    if (!targetUserId) {
-      setDeviceEarn(0);
-      setLoadingDeviceEarn(false);
-      return;
-    }
-
-    const loadClaimedEarnings = () => {
-      setLoadingDeviceEarn(true);
-      fetchClaimedDeviceEarnings(targetUserId)
-        .then((claimedAmt) => {
-          if (!isMounted) return;
-          setDeviceEarn(Number(claimedAmt.toFixed(2)));
-          setLoadingDeviceEarn(false);
-        })
-        .catch((err) => {
-          console.warn('Failed to load claimed device earnings in MePage:', err);
-          if (!isMounted) return;
-          const fallback = purchases?.reduce((sum, p) => sum + (Number(p.claimedAmount) || 0), 0) || 0;
-          setDeviceEarn(fallback);
-          setLoadingDeviceEarn(false);
-        });
-    };
-
-    loadClaimedEarnings();
-
-    const handleClaimEvent = () => {
-      loadClaimedEarnings();
-    };
-
-    window.addEventListener('device_earnings_claimed', handleClaimEvent);
-    window.addEventListener('storage', handleClaimEvent);
-
-    return () => {
-      isMounted = false;
-      window.removeEventListener('device_earnings_claimed', handleClaimEvent);
-      window.removeEventListener('storage', handleClaimEvent);
-    };
-  }, [userId, userProfile?.userId, userProfile?.id, purchases, wallet?.withdrawBalance, wallet?.availableBalance]);
 
   const [teamEarn, setTeamEarn] = useState<number | null>(() => {
     const initial = Number(userProfile?.teamEarnings || (wallet as any)?.team_commission || 0);
@@ -334,7 +286,7 @@ export const MePage: React.FC<MePageProps> = ({
           {/* Device Earnings */}
           <div className="flex flex-col items-center border-l border-white/20">
             <span className="text-white font-extrabold text-[15px] tracking-tight">
-              {deviceEarn.toFixed(2)}₹
+              {deviceEarnings.toFixed(2)}₹
             </span>
             <span className="text-white/75 text-[10px] font-medium mt-0.5 whitespace-nowrap">
               Device Earn

@@ -146,9 +146,6 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
       if (onClaimSuccess) {
         onClaimSuccess();
       }
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('device_earnings_claimed', { detail: { amount: res.amount } }));
-      }
       await loadEarnings();
     } catch (err: any) {
       console.error('Claim error:', err);
