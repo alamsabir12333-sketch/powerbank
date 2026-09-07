@@ -1220,6 +1220,12 @@ app.post('/functions/v1/create-payin-order', handleCreatePayment);
 // ==============================================================================
 async function processReferralCommissionsServer(supabaseClient: any, userId: string, depositAmount: number, traceno: string) {
   try {
+    // FINAL BUSINESS RULE: L1/L2/L3 referral commission MUST be paid ONLY when the referred user's TOPUP/RECHARGE is successfully completed.
+    // PLAN PURCHASE MUST NEVER GENERATE L1/L2/L3 REFERRAL COMMISSION.
+    if (!traceno || String(traceno).startsWith('PUR-')) {
+      return;
+    }
+
     let tiers = [
       { tier: 1, percentage: 10 },
       { tier: 2, percentage: 5 },
@@ -1334,11 +1340,9 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
       const commission = +(depositAmount * (tierConfig.percentage / 100)).toFixed(2);
       if (commission <= 0) continue;
 
-      const isPurchase = String(traceno).startsWith('PUR-');
-      const refId = isPurchase ? `PLAN-REF-L${target.tierNum}-${traceno}` : `TOPUP-REF-L${target.tierNum}-${traceno}`;
-      const commDesc = isPurchase
-        ? `Tier ${target.tierNum} Referral Commission (${tierConfig.percentage}%) from Plan Purchase`
-        : `Tier ${target.tierNum} Referral Commission (${tierConfig.percentage}%) from Topup #${traceno}`;
+      if (String(traceno).startsWith('PUR-')) continue;
+      const refId = `TOPUP-REF-L${target.tierNum}-${traceno}`;
+      const commDesc = `Tier ${target.tierNum} Referral Commission (${tierConfig.percentage}%) from Topup #${traceno}`;
 
       // Idempotency: check both wallet_ledger and wallet_transactions
       const { data: existingLedger } = await supabaseClient
@@ -4043,16 +4047,13 @@ app.post('/api/plans/purchase', async (req, res) => {
     const depCheck = await checkAndUpdateDepositVip(userId);
     const finalVip = Math.max(newVipLevel, depCheck.newVip || 0);
 
-    // Distribute multi-tier referral commissions (L1, L2, L3) for plan purchase
+    // FINAL BUSINESS RULE: PLAN PURCHASE MUST NEVER GENERATE L1/L2/L3 REFERRAL COMMISSION.
+    // L1/L2/L3 referral commission MUST be paid ONLY when the referred user's TOPUP/RECHARGE is successfully completed.
     if (supabase) {
-      await processReferralCommissionsServer(supabase, userId, planPrice, 'PUR-' + purchaseId).catch((cErr) =>
-        console.warn('[PLAN PURCHASE] Referral commission error:', cErr)
-      );
       try {
         await supabase
           .from('referrals')
           .update({
-            qualifying_recharge_done: true,
             status: 'ACTIVE',
             updated_at: nowIso,
           })
@@ -8196,19 +8197,11 @@ app.post('/api/referrals/process-commissions', async (req, res) => {
     let targetTraceno = traceno || `MANUAL-${Date.now()}`;
     let targetPlanName = planName;
 
-    if (purchaseId) {
-      const { data: purchase } = await supabase
-        .from('purchases')
-        .select('*')
-        .eq('id', purchaseId)
-        .maybeSingle();
-
-      if (purchase) {
-        targetUserId = purchase.user_id;
-        targetAmount = Number(purchase.amount || 0);
-        targetTraceno = purchase.id;
-        targetPlanName = purchase.plan_name;
-      }
+    if (purchaseId || String(targetTraceno).startsWith('PUR-')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Plan purchases do not generate referral commissions. Commissions are earned on Topup/Recharge only.'
+      });
     }
 
     if (!targetUserId || targetAmount <= 0) {

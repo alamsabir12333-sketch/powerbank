@@ -1,0 +1,567 @@
+{
+  "section1": {
+    "httpStatus": 200,
+    "response": {
+      "status": "ok",
+      "timestamp": "2026-09-06T09:42:07.616Z",
+      "uptime": 293.887143167,
+      "port": 3000,
+      "mode": "production",
+      "paymentGateway": "UNIVEPAY",
+      "merchantConfigured": true,
+      "supabaseConnected": true
+    },
+    "port": "8080",
+    "supabaseConnected": true,
+    "mode": "production",
+    "paymentGateway": "UNIVEPAY"
+  },
+  "section2": {
+    "sampleProfile": [
+      "id",
+      "user_id",
+      "username",
+      "whatsapp_no",
+      "email",
+      "avatar_url",
+      "membership_number",
+      "referral_code",
+      "referred_by",
+      "role",
+      "status",
+      "created_at",
+      "updated_at",
+      "vip_level",
+      "is_premium",
+      "premium_expires_at",
+      "name",
+      "full_name",
+      "phone",
+      "phone_number",
+      "mobile",
+      "total_recharge",
+      "total_withdraw",
+      "is_active"
+    ],
+    "sampleWallet": [
+      "id",
+      "user_id",
+      "available_balance",
+      "pending_balance",
+      "total_earned",
+      "total_withdrawn",
+      "created_at",
+      "updated_at",
+      "recharge_balance",
+      "withdraw_balance",
+      "total_recharge",
+      "total_withdraw",
+      "team_commission",
+      "frozen_balance",
+      "earning_balance",
+      "earned_balance",
+      "balance"
+    ],
+    "sampleSecurity": [
+      "id",
+      "user_id",
+      "withdrawal_password_hash",
+      "created_at",
+      "updated_at"
+    ],
+    "referralsCount": 3
+  },
+  "section3": {
+    "regRewardSetting": null,
+    "streakDaysSetting": 3,
+    "streakRewardSetting": 20,
+    "recentRefsSample": [
+      {
+        "id": "709aa70d-850a-4938-a64a-7b850b4df416",
+        "referrer_id": "6cd4605a-550f-4c45-bc41-e8d42a9e91b4",
+        "referee_id": "eec7ac54-30a5-46f6-917c-5f520dd8bbf3",
+        "level": 1,
+        "bonus_amount": 0,
+        "status": "ACTIVE",
+        "created_at": "2026-09-06T09:36:35.594+00:00",
+        "qualifying_recharge_done": false,
+        "commission_earned": 0,
+        "updated_at": "2026-09-06T09:36:35.594+00:00",
+        "user_id": null,
+        "referred_user_id": null,
+        "commission_amount": 0,
+        "purchase_amount": 0,
+        "rate": 0,
+        "plan_name": null,
+        "is_active": true,
+        "activated_at": null
+      },
+      {
+        "id": "f4c9b19b-3ebf-4c34-8e63-089bd068dc5f",
+        "referrer_id": "6cd4605a-550f-4c45-bc41-e8d42a9e91b4",
+        "referee_id": "91eac5d4-e597-427d-9e7f-4ddb4b10ab58",
+        "level": 1,
+        "bonus_amount": 0,
+        "status": "ACTIVE",
+        "created_at": "2026-09-06T09:36:30.895+00:00",
+        "qualifying_recharge_done": false,
+        "commission_earned": 0,
+        "updated_at": "2026-09-06T09:36:30.895+00:00",
+        "user_id": null,
+        "referred_user_id": null,
+        "commission_amount": 0,
+        "purchase_amount": 0,
+        "rate": 0,
+        "plan_name": null,
+        "is_active": true,
+        "activated_at": null
+      },
+      {
+        "id": "32bd2736-7093-42f8-9757-d0e528816e5d",
+        "referrer_id": "6cd4605a-550f-4c45-bc41-e8d42a9e91b4",
+        "referee_id": "991a987c-a8c3-447e-af19-b1114a0ccd6e",
+        "level": 1,
+        "bonus_amount": 0,
+        "status": "ACTIVE",
+        "created_at": "2026-09-06T09:36:23.097+00:00",
+        "qualifying_recharge_done": false,
+        "commission_earned": 0,
+        "updated_at": "2026-09-06T09:36:23.097+00:00",
+        "user_id": null,
+        "referred_user_id": null,
+        "commission_amount": 0,
+        "purchase_amount": 0,
+        "rate": 0,
+        "plan_name": null,
+        "is_active": true,
+        "activated_at": null
+      },
+      {
+        "id": "d6330faa-3af6-4730-acd4-13d403f6c2ed",
+        "referrer_id": "d169e2a9-2cf9-47bc-be08-405d6bdaa949",
+        "referee_id": "6cd4605a-550f-4c45-bc41-e8d42a9e91b4",
+        "level": 1,
+        "bonus_amount": 0,
+        "status": "ACTIVE",
+        "created_at": "2026-09-06T09:36:21.062+00:00",
+        "qualifying_recharge_done": false,
+        "commission_earned": 0,
+        "updated_at": "2026-09-06T09:36:21.062+00:00",
+        "user_id": null,
+        "referred_user_id": null,
+        "commission_amount": 0,
+        "purchase_amount": 0,
+        "rate": 0,
+        "plan_name": null,
+        "is_active": true,
+        "activated_at": null
+      },
+      {
+        "id": "9887246e-f430-4dec-a96f-e876306dfd49",
+        "referrer_id": "d169e2a9-2cf9-47bc-be08-405d6bdaa949",
+        "referee_id": "ecf01365-80ea-4d24-a0f6-7809bd25aeb7",
+        "level": 1,
+        "bonus_amount": 0,
+        "status": "ACTIVE",
+        "created_at": "2026-09-06T09:36:16.615+00:00",
+        "qualifying_recharge_done": false,
+        "commission_earned": 0,
+        "updated_at": "2026-09-06T09:36:16.615+00:00",
+        "user_id": null,
+        "referred_user_id": null,
+        "commission_amount": 0,
+        "purchase_amount": 0,
+        "rate": 0,
+        "plan_name": null,
+        "is_active": true,
+        "activated_at": null
+      }
+    ]
+  },
+  "section4": {
+    "walletCountChecked": 20,
+    "consistentCount": 20,
+    "sampleInconsistent": [],
+    "txCount": 20,
+    "ledgerCount": 20,
+    "sampleTx": [
+      {
+        "id": "2642014a-a3ac-4250-882e-b7e4d6942763",
+        "user_id": "6b16324f-891c-4fc6-927a-f4965300f548",
+        "type": "EARNING",
+        "amount": 1.04,
+        "balance_before": 280,
+        "balance_after": 281.04,
+        "reference_id": "CLM-RLEZIW",
+        "description": "Device Hourly Yield Claim (CLM-RLEZIW) • 1 cycle(s)",
+        "created_at": "2026-09-06T09:40:07.945+00:00",
+        "wallet_type": "WITHDRAW",
+        "status": "COMPLETED",
+        "balance_type": "RECHARGE_WALLET",
+        "reference_type": null,
+        "metadata": {}
+      },
+      {
+        "id": "56585ce3-3298-40b4-85d7-59ceb528103a",
+        "user_id": "eec7ac54-30a5-46f6-917c-5f520dd8bbf3",
+        "type": "EARNING",
+        "amount": 40,
+        "balance_before": 0,
+        "balance_after": 40,
+        "reference_id": "CLM-L0W8ZZ",
+        "description": "Device Hourly Yield Claim (CLM-L0W8ZZ) • 4 cycle(s)",
+        "created_at": "2026-09-06T09:36:37.546+00:00",
+        "wallet_type": "WITHDRAW",
+        "status": "COMPLETED",
+        "balance_type": "RECHARGE_WALLET",
+        "reference_type": null,
+        "metadata": {}
+      }
+    ],
+    "sampleLedger": [
+      {
+        "id": "cd419a40-7bc3-4c10-ac9f-6c652de08cb5",
+        "user_id": "6b16324f-891c-4fc6-927a-f4965300f548",
+        "wallet_type": "DEVICE_EARNING",
+        "transaction_type": "DEVICE_EARNING_CLAIM",
+        "amount": 1.04,
+        "direction": "CREDIT",
+        "reference_type": "CLAIM_BATCH",
+        "reference_id": "CLM-RLEZIW",
+        "balance_before": 280,
+        "balance_after": 281.04,
+        "description": "Device Hourly Yield Claim (CLM-RLEZIW) • 1 cycle(s)",
+        "created_at": "2026-09-06T09:40:07.945+00:00",
+        "type": null,
+        "category": null
+      },
+      {
+        "id": "1aa094cb-4d93-43f5-85fe-c80853c99058",
+        "user_id": "eec7ac54-30a5-46f6-917c-5f520dd8bbf3",
+        "wallet_type": "DEVICE_EARNING",
+        "transaction_type": "DEVICE_EARNING_CLAIM",
+        "amount": 40,
+        "direction": "CREDIT",
+        "reference_type": "CLAIM_BATCH",
+        "reference_id": "CLM-L0W8ZZ",
+        "balance_before": 0,
+        "balance_after": 40,
+        "description": "Device Hourly Yield Claim (CLM-L0W8ZZ) • 4 cycle(s)",
+        "created_at": "2026-09-06T09:36:37.546+00:00",
+        "type": null,
+        "category": null
+      }
+    ]
+  },
+  "section5_6": {
+    "publicConfig": {},
+    "recentDeposits": [
+      {
+        "id": "0c3944fd-6bae-4138-ae9a-64ef77dcc3de",
+        "user_id": "6b16324f-891c-4fc6-927a-f4965300f548",
+        "amount": 500,
+        "status": "PENDING",
+        "type": "UNIVEPAY"
+      },
+      {
+        "id": "5d95fbaf-81e1-490a-ac2a-6396201d4c91",
+        "user_id": "6b16324f-891c-4fc6-927a-f4965300f548",
+        "amount": 500,
+        "status": "PENDING",
+        "type": "UNIVEPAY"
+      },
+      {
+        "id": "ebea4cfd-98ca-4851-ac57-4026fa1da66f",
+        "user_id": "6b16324f-891c-4fc6-927a-f4965300f548",
+        "amount": 500,
+        "status": "PENDING",
+        "type": "UNIVEPAY"
+      },
+      {
+        "id": "98443d14-297f-48e6-8627-b4042332c61c",
+        "user_id": "6b16324f-891c-4fc6-927a-f4965300f548",
+        "amount": 500,
+        "status": "PENDING",
+        "type": "UNIVEPAY"
+      },
+      {
+        "id": "832661f0-fea2-4d0c-aded-e988bb74afcc",
+        "user_id": "65dc75ef-50f8-456a-b1be-7ed40bb90039",
+        "amount": 30000,
+        "status": "PENDING",
+        "type": "UNIVEPAY"
+      }
+    ]
+  },
+  "section7": {
+    "sampleUserId": "d169e2a9-2cf9-47bc-be08-405d6bdaa949",
+    "apiTxCount": 0,
+    "sampleApiTx": []
+  },
+  "section8_11": {
+    "recentPurchasesSample": [
+      {
+        "id": "701b05c6-fc1e-4354-b6b8-7a628420b9b9",
+        "user_id": "eec7ac54-30a5-46f6-917c-5f520dd8bbf3",
+        "plan_id": "fa9936cb-2d1d-4b4b-93ce-9da0d9dd6319",
+        "price": 100,
+        "status": "ACTIVE",
+        "created_at": "2026-09-06T09:36:37.269026+00:00"
+      },
+      {
+        "id": "87e96322-8057-4bc0-9a27-42e6e77ed025",
+        "user_id": "91eac5d4-e597-427d-9e7f-4ddb4b10ab58",
+        "plan_id": "fa9936cb-2d1d-4b4b-93ce-9da0d9dd6319",
+        "price": 100,
+        "status": "ACTIVE",
+        "created_at": "2026-09-06T09:36:32.576502+00:00"
+      },
+      {
+        "id": "d0b5dda9-1d78-489d-bfa0-445c06eb23bb",
+        "user_id": "991a987c-a8c3-447e-af19-b1114a0ccd6e",
+        "plan_id": "fa9936cb-2d1d-4b4b-93ce-9da0d9dd6319",
+        "price": 100,
+        "status": "ACTIVE",
+        "created_at": "2026-09-06T09:36:25.133501+00:00"
+      },
+      {
+        "id": "8513d579-358a-47a4-b42a-2d0f3eb477ac",
+        "user_id": "890cfc35-0799-461d-b18e-e7fd3fbe0fd7",
+        "plan_id": "82238c72-4822-42bf-92b4-c6a0f196a4d6",
+        "price": 100,
+        "status": "ACTIVE",
+        "created_at": "2026-09-06T09:36:13.087+00:00"
+      },
+      {
+        "id": "bdcb415a-02a4-4dc5-9991-0c26592a1e09",
+        "user_id": "890cfc35-0799-461d-b18e-e7fd3fbe0fd7",
+        "plan_id": "4f12f8b8-cafa-47cd-b5bc-f265fdbb1217",
+        "price": 100,
+        "status": "ACTIVE",
+        "created_at": "2026-09-06T09:36:10.134+00:00"
+      }
+    ]
+  },
+  "section12_13": {
+    "checkinStatusResponse": {
+      "success": false,
+      "error": "User ID is required"
+    },
+    "recentStreakTxs": [
+      {
+        "id": "9fb63297-9d80-4737-93ee-2c9f8366a097",
+        "user_id": "6cd4605a-550f-4c45-bc41-e8d42a9e91b4",
+        "type": "REFERRAL_BONUS",
+        "amount": 20,
+        "balance_before": 15,
+        "balance_after": 35,
+        "reference_id": "STRK-REF-91eac5d4-e597-427d-9e7f-4ddb4b10ab58",
+        "description": "Streak Claim Reward: Invited friend claimed device earnings for 3 consecutive days",
+        "created_at": "2026-09-06T09:36:33.947+00:00",
+        "wallet_type": "WITHDRAW",
+        "status": "COMPLETED",
+        "balance_type": "RECHARGE_WALLET",
+        "reference_type": null,
+        "metadata": {
+          "refId": "STRK-REF-91eac5d4-e597-427d-9e7f-4ddb4b10ab58",
+          "rewardType": "STREAK_REFERRAL",
+          "refereeUserId": "91eac5d4-e597-427d-9e7f-4ddb4b10ab58"
+        }
+      },
+      {
+        "id": "163d3ecc-a3ee-4e56-9ce6-de63d4be2d7d",
+        "user_id": "6cd4605a-550f-4c45-bc41-e8d42a9e91b4",
+        "type": "REFERRAL_BONUS",
+        "amount": 15,
+        "balance_before": 0,
+        "balance_after": 15,
+        "reference_id": "STRK-REF-991a987c-a8c3-447e-af19-b1114a0ccd6e",
+        "description": "Streak Claim Reward: Invited friend claimed device earnings for 3 consecutive days",
+        "created_at": "2026-09-06T09:36:26.623+00:00",
+        "wallet_type": "WITHDRAW",
+        "status": "COMPLETED",
+        "balance_type": "RECHARGE_WALLET",
+        "reference_type": null,
+        "metadata": {
+          "refId": "STRK-REF-991a987c-a8c3-447e-af19-b1114a0ccd6e",
+          "rewardType": "STREAK_REFERRAL",
+          "refereeUserId": "991a987c-a8c3-447e-af19-b1114a0ccd6e"
+        }
+      },
+      {
+        "id": "d09a90ea-f472-4e56-83c2-637cda199d8d",
+        "user_id": "32f58cbe-b778-4eb7-9f6e-52864e3bcfdc",
+        "type": "REFERRAL_BONUS",
+        "amount": 15,
+        "balance_before": 0,
+        "balance_after": 15,
+        "reference_id": "STRK-REF-70f9973c-82fd-4e33-89f1-7b2ce3245df1",
+        "description": "Streak Claim Reward: Invited friend claimed device earnings for 3 consecutive days",
+        "created_at": "2026-09-06T09:34:46.507+00:00",
+        "wallet_type": "WITHDRAW",
+        "status": "COMPLETED",
+        "balance_type": "RECHARGE_WALLET",
+        "reference_type": null,
+        "metadata": {
+          "refId": "STRK-REF-70f9973c-82fd-4e33-89f1-7b2ce3245df1",
+          "rewardType": "STREAK_REFERRAL",
+          "refereeUserId": "70f9973c-82fd-4e33-89f1-7b2ce3245df1"
+        }
+      }
+    ]
+  },
+  "section14_15": {
+    "recentWithdrawals": [
+      {
+        "id": "891b6648-97ae-4b70-b8cf-7f70e32ab7f8",
+        "user_id": "d179d664-a4fa-4b47-bceb-3fba60bb8523",
+        "amount": 500,
+        "fee": 50,
+        "net_amount": 450,
+        "status": "PENDING"
+      },
+      {
+        "id": "a59a18a0-5beb-4abd-88e0-7fc7a81d8dd6",
+        "user_id": "d179d664-a4fa-4b47-bceb-3fba60bb8523",
+        "amount": 300,
+        "fee": 30,
+        "net_amount": 270,
+        "status": "COMPLETED"
+      },
+      {
+        "id": "b52b7365-d8b0-4352-97a6-ec3bb78e57e0",
+        "user_id": "851a924b-c992-48ad-b1bd-9ad4875adf44",
+        "amount": 150,
+        "fee": 15,
+        "net_amount": 135,
+        "status": "COMPLETED"
+      },
+      {
+        "id": "49867067-06cf-4ef6-a122-a342ac1d74b3",
+        "user_id": "cd282fae-80c4-466f-aa2c-635b39a5493b",
+        "amount": 200,
+        "fee": 20,
+        "net_amount": 180,
+        "status": "PENDING"
+      },
+      {
+        "id": "f70e4304-819d-4c91-8410-d41ebd8a26c2",
+        "user_id": "388c8c0c-5459-4e6c-8955-f3dc4ae5aa5c",
+        "amount": 150,
+        "fee": 15,
+        "net_amount": 135,
+        "status": "PENDING"
+      }
+    ],
+    "bankAccountsSample": [
+      {
+        "id": "23553b07-8c3b-4b8d-9741-3ec64d778c50",
+        "user_id": "b9ff6316-dfa9-4a47-939d-ba6551bc021f",
+        "bank_name": "HDFC Bank",
+        "account_number": "***7890",
+        "is_primary": true
+      },
+      {
+        "id": "040e03ec-765c-4ec7-8d90-f1e864443ad9",
+        "user_id": "388c8c0c-5459-4e6c-8955-f3dc4ae5aa5c",
+        "bank_name": "ICICI Bank",
+        "account_number": "***8374",
+        "is_primary": true
+      },
+      {
+        "id": "79241f09-9576-445d-bbd2-c4ad635043a0",
+        "user_id": "cd282fae-80c4-466f-aa2c-635b39a5493b",
+        "bank_name": "Axis Bank",
+        "account_number": "***6789",
+        "is_primary": true
+      },
+      {
+        "id": "5bfb64fb-456d-4c62-8adf-758d23fb8498",
+        "user_id": "d179d664-a4fa-4b47-bceb-3fba60bb8523",
+        "bank_name": "KOTAK",
+        "account_number": "***3311",
+        "is_primary": true
+      }
+    ]
+  },
+  "section16_17": {
+    "giftCodes": [
+      {
+        "code": "BONUSPDT8",
+        "amount": 100,
+        "is_active": true,
+        "claims_count": 1,
+        "wallet_type": "EARNING_BALANCE"
+      },
+      {
+        "code": "BONUSJAZ6",
+        "amount": 100,
+        "is_active": true,
+        "claims_count": 1,
+        "wallet_type": "RECHARGE_BALANCE"
+      }
+    ],
+    "missions": [
+      {
+        "id": "b0000000-0000-0000-0000-000000000001",
+        "title": "Invite 1 Active Friend",
+        "reward_amount": 50,
+        "target_count": 1,
+        "status": "ACTIVE"
+      },
+      {
+        "id": "b0000000-0000-0000-0000-000000000002",
+        "title": "Invite 3 Active Friends",
+        "reward_amount": 180,
+        "target_count": 3,
+        "status": "ACTIVE"
+      },
+      {
+        "id": "b0000000-0000-0000-0000-000000000003",
+        "title": "Invite 5 Active Friends",
+        "reward_amount": 350,
+        "target_count": 5,
+        "status": "ACTIVE"
+      }
+    ]
+  },
+  "section18_20": {
+    "banners": [
+      {
+        "id": "52e3e7d8-5df7-4a13-bb1d-91f26bdfd77f",
+        "title": "Promotional Banner",
+        "image_url": "https://evhwqlnymvoduclmzshz.supabase.co/storage/v1/object/public/site-assets/banner-1788607284688-a3y307.jpg",
+        "link_url": "",
+        "priority": 2
+      },
+      {
+        "id": "6c5513c0-b7ab-4b15-a76b-00a6c9d219f0",
+        "title": "Promotional Banner",
+        "image_url": "https://evhwqlnymvoduclmzshz.supabase.co/storage/v1/object/public/site-assets/banner-1788607323673-49x4qc.jpg",
+        "link_url": "/mission-bonus",
+        "priority": 2
+      },
+      {
+        "id": "0fe2e4a4-0c2f-4a92-8898-4eb827b050eb",
+        "title": "Promotional Banner",
+        "image_url": "https://evhwqlnymvoduclmzshz.supabase.co/storage/v1/object/public/site-assets/banner-1788607408227-wrghz9.jpg",
+        "link_url": "https://t.me/+RURBpjk1s3tkNTll",
+        "priority": 3
+      },
+      {
+        "id": "4e498591-6cbe-4e40-9217-c0c3255f8f92",
+        "title": "Promotional Banner",
+        "image_url": "https://evhwqlnymvoduclmzshz.supabase.co/storage/v1/object/public/site-assets/banner-1788607437551-0md98i.jpg",
+        "link_url": "/team",
+        "priority": 4
+      },
+      {
+        "id": "b1678125-955a-48b5-9043-44c0b26339b7",
+        "title": "Promotional Banner",
+        "image_url": "https://evhwqlnymvoduclmzshz.supabase.co/storage/v1/object/public/site-assets/banner-1788607462111-ac9rs1.jpg",
+        "link_url": "",
+        "priority": 5
+      }
+    ]
+  }
+}
