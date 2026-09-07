@@ -169,6 +169,7 @@ export interface ProductItem {
   description?: string;
   imageUrl?: string;
   limit: number;
+  purchaseLimit?: number;
   devicePrice: number;
   price?: number; // alias
   hourlyEarnings: number;

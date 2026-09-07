@@ -3648,7 +3648,9 @@ app.get('/api/plans', async (req, res) => {
         hourlyEarnings: Number(p.earning_rate || (p.daily_earnings ? +(p.daily_earnings / 24).toFixed(2) : 0)),
         durationDays: p.duration || p.duration_days || 365,
         duration: p.duration || p.duration_days || 365,
-        limit: Number(p.purchase_limit !== undefined && p.purchase_limit !== null ? p.purchase_limit : (p.limit_per_user !== undefined && p.limit_per_user !== null ? p.limit_per_user : (p.limit || 5))),
+        limit: Number(p.purchase_limit !== undefined && p.purchase_limit !== null ? p.purchase_limit : (p.limit_per_user !== undefined && p.limit_per_user !== null ? p.limit_per_user : (p.limit !== undefined && p.limit !== null ? p.limit : 5))),
+        purchaseLimit: Number(p.purchase_limit !== undefined && p.purchase_limit !== null ? p.purchase_limit : (p.limit_per_user !== undefined && p.limit_per_user !== null ? p.limit_per_user : (p.limit !== undefined && p.limit !== null ? p.limit : 5))),
+        purchase_limit: Number(p.purchase_limit !== undefined && p.purchase_limit !== null ? p.purchase_limit : (p.limit_per_user !== undefined && p.limit_per_user !== null ? p.limit_per_user : (p.limit !== undefined && p.limit !== null ? p.limit : 5))),
         instantBonus: Number(p.instant_bonus || 0),
         tags: p.tags || ['Hourly Yield'],
         imageType: p.image_type || (cat === 'PRO' ? 'cabinet-pro' : cat === 'EVENT' ? 'cabinet-gold' : 'cabinet-green'),
@@ -3690,7 +3692,7 @@ app.post('/api/plans/purchase', async (req, res) => {
     const { data: profile, error: profErr } = await supabase
       .from('profiles')
       .select('*')
-      .or(`user_id.eq.${userId},id.eq.${userId}`)
+      .or(`id.eq.${userId},user_id.eq.${userId},phone.eq.${userId},mobile.eq.${userId}`)
       .maybeSingle();
 
     if (profErr || !profile) {
@@ -3699,13 +3701,16 @@ app.post('/api/plans/purchase', async (req, res) => {
 
     const effectiveUserId = profile.user_id || profile.id || userId;
     const profileId = profile.id;
+    const candidateUserIds = Array.from(
+      new Set([userId, profile.id, profile.user_id, (profile as any).membership_number].filter(Boolean))
+    );
 
     // 2. Fetch User Purchases to compute qualifying investment and purchase counts
     // CRITICAL: Strictly per-user purchases for limit enforcement
     const { data: userPurchases, error: purErr } = await supabase
       .from('purchases')
       .select('*')
-      .or(`user_id.eq.${effectiveUserId}${profileId && profileId !== effectiveUserId ? `,user_id.eq.${profileId}` : ''}`);
+      .in('user_id', candidateUserIds);
 
     const purchasesList = userPurchases || [];
 
@@ -3767,19 +3772,67 @@ app.post('/api/plans/purchase', async (req, res) => {
       });
     }
 
-    // 5. Check Purchase Limit per user based on exact plan ID
-    const rawLimit = plan.purchase_limit !== undefined && plan.purchase_limit !== null
-      ? plan.purchase_limit
-      : (plan.limit_per_user !== undefined && plan.limit_per_user !== null ? plan.limit_per_user : plan.limit);
+    // 5. Check Purchase Limit PER USER + PER PLAN based on exact plan ID
+    // CRITICAL RULES:
+    // - Limit is strictly PER USER + PER PLAN, NOT GLOBAL plan-level.
+    // - Count only current logged-in user's purchases for this specific plan.
+    // - Query/filter MUST use BOTH: user_id = current user AND plan_id = selected plan.
+    // - Different users have separate independent limits and do NOT affect each other.
+    const rawLimit = plan.limit !== undefined && plan.limit !== null
+      ? plan.limit
+      : (plan.purchase_limit !== undefined && plan.purchase_limit !== null
+        ? plan.purchase_limit
+        : (plan.limit_per_user !== undefined && plan.limit_per_user !== null
+          ? plan.limit_per_user
+          : null));
 
     const purchaseLimit = (rawLimit !== null && rawLimit !== undefined && rawLimit !== '' && Number(rawLimit) > 0)
       ? Number(rawLimit)
       : null;
 
     if (purchaseLimit !== null) {
-      const existingPurchasesCount = purchasesList.filter(
-        (p: any) => p.plan_id === planId && !['CANCELLED', 'FAILED', 'REJECTED'].includes(String(p.status || '').toUpperCase())
-      ).length;
+      const candidatePlanIds = Array.from(
+        new Set([String(planId).trim(), String(plan.id).trim()].filter(Boolean))
+      );
+
+      // Direct authoritative query with BOTH user_id = current user AND plan_id = selected plan
+      const { data: specificPlanPurchases, error: planPurErr } = await supabase
+        .from('purchases')
+        .select('id, user_id, plan_id, plan_name, status, created_at')
+        .in('user_id', candidateUserIds)
+        .in('plan_id', candidatePlanIds);
+
+      if (planPurErr) {
+        console.warn('[PLAN PURCHASE LIMIT] DB query error for user plan purchases:', planPurErr);
+      }
+
+      const isNonCancelled = (status: any) => {
+        const st = String(status || '').toUpperCase().trim();
+        return st !== 'CANCELLED' && st !== 'FAILED' && st !== 'REJECTED';
+      };
+
+      const validDbPurchases = (specificPlanPurchases || []).filter((p: any) => isNonCancelled(p.status));
+      const validListPurchases = (purchasesList || []).filter((p: any) => {
+        const pPlanId = String(p.plan_id || p.planId || '').trim();
+        return candidatePlanIds.includes(pPlanId) && isNonCancelled(p.status);
+      });
+
+      // Deduplicate by purchase ID to strictly count distinct purchases by THIS user for THIS plan
+      const uniquePurchaseIds = new Set<string>();
+      validDbPurchases.forEach((p: any) => {
+        if (p.id) uniquePurchaseIds.add(String(p.id));
+      });
+      validListPurchases.forEach((p: any) => {
+        if (p.id) uniquePurchaseIds.add(String(p.id));
+      });
+
+      const existingPurchasesCount = Math.max(
+        uniquePurchaseIds.size,
+        validDbPurchases.length,
+        validListPurchases.length
+      );
+
+      console.log(`[PURCHASE LIMIT CHECK] User: ${userId} (${candidateUserIds.join(',')}), Plan: ${plan.name} (${planId}), Limit: ${purchaseLimit}, Current Purchases: ${existingPurchasesCount}`);
 
       if (existingPurchasesCount >= purchaseLimit) {
         return res.status(400).json({
@@ -3790,8 +3843,11 @@ app.post('/api/plans/purchase', async (req, res) => {
     }
 
     // Check duplicate restriction if allow_duplicate is false
+    const candidatePlanIds = Array.from(
+      new Set([String(planId).trim(), String(plan.id).trim()].filter(Boolean))
+    );
     const existingActiveCount = purchasesList.filter(
-      (p: any) => p.plan_id === planId && (p.status === 'ACTIVE' || p.status === 'active')
+      (p: any) => candidatePlanIds.includes(String(p.plan_id || p.planId || '').trim()) && String(p.status || '').toUpperCase() === 'ACTIVE'
     ).length;
 
     if (plan.allow_duplicate === false && existingActiveCount >= 1) {
@@ -7506,8 +7562,8 @@ app.post('/api/admin/plans/save', async (req, res) => {
       earning_type: cat === 'PRO' ? 'DAILY' : (plan.earningType || 'HOURLY'),
       duration: Number(plan.duration || plan.durationDays || 365),
       duration_days: Number(plan.durationDays || plan.duration || 365),
-      limit_per_user: Number(plan.limit || plan.purchaseLimit || plan.limit_per_user || 5),
-      purchase_limit: Number(plan.limit || plan.purchaseLimit || 5),
+      limit_per_user: Number(plan.limit !== undefined && plan.limit !== null ? plan.limit : (plan.purchaseLimit !== undefined && plan.purchaseLimit !== null ? plan.purchaseLimit : (plan.limit_per_user || 5))),
+      purchase_limit: Number(plan.limit !== undefined && plan.limit !== null ? plan.limit : (plan.purchaseLimit !== undefined && plan.purchaseLimit !== null ? plan.purchaseLimit : (plan.purchase_limit || 5))),
       instant_bonus: Number(plan.instantBonus || 0),
       tags: Array.isArray(plan.tags) ? plan.tags : ['Hourly Yield'],
       image_type: plan.imageType || (cat === 'PRO' ? 'cabinet-pro' : cat === 'EVENT' ? 'cabinet-gold' : 'cabinet-green'),
@@ -8440,10 +8496,20 @@ app.get('/api/user-devices', async (req, res) => {
     if (!userId) return res.status(400).json({ success: false, error: 'User ID required' });
     if (!supabase) return res.status(500).json({ success: false, error: 'Database unavailable' });
 
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('id, user_id, membership_number')
+      .or(`id.eq.${userId},user_id.eq.${userId},phone.eq.${userId},mobile.eq.${userId}`)
+      .maybeSingle();
+
+    const candidateUserIds = Array.from(
+      new Set([userId, profile?.id, profile?.user_id, (profile as any)?.membership_number].filter(Boolean))
+    );
+
     const { data: purchases, error: pErr } = await supabase
       .from('purchases')
       .select('*')
-      .eq('user_id', userId)
+      .in('user_id', candidateUserIds)
       .order('created_at', { ascending: false });
 
     if (pErr) throw pErr;

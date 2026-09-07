@@ -161,7 +161,8 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
     const planLimit = Number(product.limit ?? (product as any).purchaseLimit ?? (product as any).purchase_limit ?? (product as any).limit_per_user ?? 5);
     if (planLimit && planLimit > 0) {
       const userPurchasesForThisPlan = userPurchases.filter(
-        (p) => p.planId === product.id && !['CANCELLED', 'FAILED', 'REJECTED'].includes(String(p.status || '').toUpperCase())
+        (p) => (String(p.planId || (p as any).plan_id || '').trim() === String(product.id).trim()) &&
+          !['CANCELLED', 'FAILED', 'REJECTED'].includes(String(p.status || '').toUpperCase())
       );
       if (userPurchasesForThisPlan.length >= planLimit) {
         onShowToast(`You have reached the maximum purchase limit (${planLimit}) for this plan.`);
@@ -202,7 +203,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
       onPurchaseSuccess();
       await loadData();
     } catch (err: any) {
-      alert(err.message || 'Purchase failed');
+      onShowToast(err.message || 'Purchase failed');
     } finally {
       setPurchasing(false);
     }
@@ -408,7 +409,8 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
             const totalReturn = (dailyEarn * duration) + instantBonus;
             const planLimit = Number(item.limit ?? (item as any).purchaseLimit ?? (item as any).purchase_limit ?? (item as any).limit_per_user ?? 5);
             const userPurchasedCount = userPurchases.filter(
-              (p) => p.planId === item.id && !['CANCELLED', 'FAILED', 'REJECTED'].includes(String(p.status || '').toUpperCase())
+              (p) => (String(p.planId || (p as any).plan_id || '').trim() === String(item.id).trim()) &&
+                !['CANCELLED', 'FAILED', 'REJECTED'].includes(String(p.status || '').toUpperCase())
             ).length;
             const isLimitReached = planLimit > 0 && userPurchasedCount >= planLimit;
 
@@ -448,10 +450,18 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                       type={item.imageType || (isPro ? 'cabinet-pro' : isEvent ? 'cabinet-gold' : 'cabinet-green')}
                       className="w-16 h-16 rounded-xl border border-gray-900"
                     />
-                    <span className={`mt-1 px-2 py-0.5 rounded-full text-white font-bold text-[9.5px] leading-none shadow-2xs ${
-                      isPro ? 'bg-amber-600' : isEvent ? 'bg-rose-600' : 'bg-[#FF6200]'
+                    <span className={`mt-1 px-2 py-0.5 rounded-full font-bold text-[9px] leading-none shadow-2xs whitespace-nowrap ${
+                      isLimitReached
+                        ? 'bg-gray-800 text-white'
+                        : userPurchasedCount > 0
+                        ? 'bg-emerald-600 text-white'
+                        : isPro
+                        ? 'bg-amber-600 text-white'
+                        : isEvent
+                        ? 'bg-rose-600 text-white'
+                        : 'bg-[#FF6200] text-white'
                     }`}>
-                      {item.limit} limit
+                      {userPurchasedCount > 0 ? `Purchased: ${userPurchasedCount} / ${planLimit}` : `Purchase Limit: ${planLimit}`}
                     </span>
                   </div>
 
@@ -492,12 +502,31 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                       </div>
                     </div>
 
-                    {/* Cycle duration summary */}
+                    {/* Cycle duration & Purchase Limit summary */}
                     <div className="text-[11px] text-gray-500 font-medium mt-1">
                       Cycle Duration: <span className="font-bold text-gray-800">{duration} Days</span>
                       {totalReturn > 0 && (
                         <span className="text-green-600 font-bold ml-1.5">
                           (Est. Total: ₹{totalReturn.toFixed(0)})
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Purchase Limit & User Purchased Counter */}
+                    <div className="text-[11px] font-medium mt-0.5 flex items-center gap-1.5 flex-wrap">
+                      <span className="text-gray-500">Purchase Limit:</span>
+                      <span className="font-bold text-gray-800">{planLimit}</span>
+                      {userPurchasedCount > 0 ? (
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
+                          isLimitReached 
+                            ? 'bg-rose-100 text-rose-700' 
+                            : 'bg-emerald-100 text-emerald-700'
+                        }`}>
+                          Purchased: {userPurchasedCount} / {planLimit} {isLimitReached ? '(Limit Reached)' : ''}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-gray-400 font-medium">
+                          (Purchased: 0 / {planLimit})
                         </span>
                       )}
                     </div>
@@ -538,9 +567,9 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                   <button
                     onClick={() => handleBuyClick(item)}
                     disabled={isLimitReached}
-                    className={`px-6 py-1.5 rounded-lg font-bold text-[14px] shadow-sm transition-all ${
+                    className={`px-5 py-1.5 rounded-lg font-bold text-[13px] shadow-sm transition-all ${
                       isLimitReached
-                        ? 'bg-gray-200 text-gray-400 cursor-not-allowed border border-gray-300'
+                        ? 'bg-gray-200 text-gray-500 cursor-not-allowed border border-gray-300'
                         : isPro
                         ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-gray-950 font-black shadow-amber-500/25 hover:from-amber-600 hover:to-yellow-600 active:scale-95'
                         : isEvent
@@ -617,6 +646,19 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                 <div className="flex justify-between">
                   <span className="text-gray-600">Duration:</span>
                   <span className="font-bold text-gray-800">{selectedProduct.durationDays || selectedProduct.duration || 365} Days</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Purchase Limit:</span>
+                  <span className="font-bold text-gray-800">
+                    {(() => {
+                      const selLimit = Number(selectedProduct.limit ?? (selectedProduct as any).purchaseLimit ?? (selectedProduct as any).purchase_limit ?? (selectedProduct as any).limit_per_user ?? 5);
+                      const selCount = userPurchases.filter(
+                        (p) => (String(p.planId || (p as any).plan_id || '').trim() === String(selectedProduct.id).trim()) &&
+                          !['CANCELLED', 'FAILED', 'REJECTED'].includes(String(p.status || '').toUpperCase())
+                      ).length;
+                      return selCount > 0 ? `Purchased: ${selCount} / ${selLimit}` : `Purchase Limit: ${selLimit}`;
+                    })()}
+                  </span>
                 </div>
                 <div className="flex justify-between border-t border-orange-200/60 pt-1.5 font-bold">
                   <span className="text-gray-700">Payment Source:</span>

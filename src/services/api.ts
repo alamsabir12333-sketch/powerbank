@@ -2864,6 +2864,29 @@ export async function deletePlan(planId: string): Promise<void> {
 }
 
 export async function fetchPurchases(userId: string): Promise<PurchaseItem[]> {
+  try {
+    const res = await fetch(apiUrl(`/api/user-devices?userId=${encodeURIComponent(userId)}`));
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data && Array.isArray(json.data.devices)) {
+        return json.data.devices.map((p: any) => ({
+          id: p.id,
+          userId,
+          planId: p.planId || p.plan_id,
+          planName: p.planName || p.plan_name || 'Device Cabinet',
+          planCategory: p.planCategory || p.plan_category || 'VIP',
+          amount: Number(p.amount),
+          status: p.status,
+          startedAt: p.startedAt || p.started_at,
+          expiresAt: p.endDate || p.expires_at,
+          isActive: p.isActive,
+        }));
+      }
+    }
+  } catch {
+    // Fall through to Supabase
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase
@@ -2959,7 +2982,8 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
   const planLimit = Number(plan.limit ?? (plan as any).purchaseLimit ?? (plan as any).purchase_limit ?? (plan as any).limit_per_user ?? 5);
   if (planLimit && planLimit > 0) {
     const boughtCount = userPurchases.filter(
-      (p) => p.planId === plan.id && !['CANCELLED', 'FAILED', 'REJECTED'].includes(String(p.status || '').toUpperCase())
+      (p) => (String(p.planId || (p as any).plan_id || '').trim() === String(plan.id).trim()) &&
+        !['CANCELLED', 'FAILED', 'REJECTED'].includes(String(p.status || '').toUpperCase())
     ).length;
     if (boughtCount >= planLimit) {
       throw new Error(`You have reached the maximum purchase limit (${planLimit}) for this plan.`);
@@ -5062,7 +5086,8 @@ export async function saveAdminPlan(
     price: Number(plan.devicePrice || plan.price || 500),
     hourlyEarnings: Number(plan.hourlyEarnings || 1.25),
     dailyEarnings: Number(plan.dailyEarnings || (Number(plan.hourlyEarnings || 1.25) * 24)),
-    limit: Number(plan.limit || 3),
+    limit: Number(plan.limit !== undefined && plan.limit !== null ? plan.limit : ((plan as any).purchaseLimit !== undefined && (plan as any).purchaseLimit !== null ? (plan as any).purchaseLimit : 3)),
+    purchaseLimit: Number(plan.limit !== undefined && plan.limit !== null ? plan.limit : ((plan as any).purchaseLimit !== undefined && (plan as any).purchaseLimit !== null ? (plan as any).purchaseLimit : 3)),
     durationDays: Number(plan.durationDays || plan.duration || 365),
     duration: Number(plan.durationDays || plan.duration || 365),
     instantBonus: Number(plan.instantBonus || 0),

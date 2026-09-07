@@ -458,8 +458,11 @@ export const AdminPlansTab: React.FC<AdminPlansTabProps> = ({
                   <label className="block text-gray-300 font-semibold mb-1">Purchase Limit</label>
                   <input
                     type="number"
-                    value={editingPlan.limit || 5}
-                    onChange={(e) => setEditingPlan({ ...editingPlan, limit: Number(e.target.value) })}
+                    value={editingPlan.limit ?? (editingPlan as any).purchaseLimit ?? 5}
+                    onChange={(e) => {
+                      const val = Math.max(1, Number(e.target.value) || 1);
+                      setEditingPlan({ ...editingPlan, limit: val, purchaseLimit: val });
+                    }}
                     required
                     className="w-full bg-[#0d1117] border border-gray-700 rounded-xl p-2.5 text-white outline-none"
                   />
