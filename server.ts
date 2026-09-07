@@ -3612,14 +3612,24 @@ app.get('/api/plans', async (req, res) => {
     const { data, error } = await supabase
       .from('plans')
       .select('*')
-      .neq('status', 'archived')
       .order('sort_order', { ascending: true });
 
     if (error) {
       return res.status(500).json({ success: false, error: error.message });
     }
 
-    const cleaned = (data || []).map((p: any) => {
+    const cleaned = (data || [])
+      .filter((p: any) => {
+        const st = String(p.status || '').toLowerCase().trim();
+        if (st === 'archived' || st === 'deleted' || st === 'inactive' || st === 'disabled') {
+          return false;
+        }
+        if (p.is_active === false) {
+          return false;
+        }
+        return true;
+      })
+      .map((p: any) => {
       let cat = (p.category || '').toUpperCase();
       if (cat === 'STANDARD' || cat === 'HOURLY' || !cat) cat = 'VIP';
       return {

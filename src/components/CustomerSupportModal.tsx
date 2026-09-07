@@ -57,7 +57,7 @@ export const CustomerSupportModal: React.FC<CustomerSupportModalProps> = ({
             <div className="space-y-3 mb-5">
               <button
                 onClick={() => {
-                  window.open('https://t.me/+RURBpjk1s3tkNTll', '_blank');
+                  window.open('https://t.me/gainpower_channel', '_blank');
                 }}
                 className="w-full p-3.5 rounded-2xl border border-gray-100 bg-gray-50/80 hover:bg-orange-50/50 hover:border-orange-200 transition-all flex items-center justify-between group active:scale-98"
               >

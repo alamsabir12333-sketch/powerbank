@@ -61,9 +61,12 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
         fetchUserVipStatus(userId),
       ]);
       setUserVipLevel(Number(vipStatus?.currentLevel?.levelNumber || 0));
-      // Filter out archived and normalize to VIP, PRO, EVENT
+      // Filter out archived, deleted, inactive, or disabled plans and normalize to VIP, PRO, EVENT
       const validPlans = (fetchedPlans || [])
-        .filter((p) => p.status !== 'archived')
+        .filter((p) => {
+          const st = String(p.status || '').toLowerCase().trim();
+          return st !== 'archived' && st !== 'deleted' && st !== 'inactive' && st !== 'disabled' && (p as any).isActive !== false;
+        })
         .map((p) => {
           let cat = (p.category || '').toUpperCase();
           if (cat === 'STANDARD' || cat === 'HOURLY' || !cat) {

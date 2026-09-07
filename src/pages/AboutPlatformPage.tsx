@@ -78,7 +78,12 @@ export const AboutPlatformPage: React.FC<AboutPlatformPageProps> = ({
       ]);
 
       setConfig(cfg);
-      setPlans(plansData.filter((p) => p.status !== 'archived'));
+      setPlans(
+        (plansData || []).filter((p) => {
+          const st = String(p.status || '').toLowerCase().trim();
+          return st !== 'archived' && st !== 'deleted' && st !== 'inactive' && st !== 'disabled' && (p as any).isActive !== false;
+        })
+      );
       setVipLevels(vipData.filter((v) => v.isActive !== false));
       setSystemSettings(sysSettings);
       setReferralSettings(refData);

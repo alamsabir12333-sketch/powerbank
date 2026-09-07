@@ -57,7 +57,6 @@ import {
   UsdtDepositItem,
 } from '../types';
 import {
-  productsData,
   homeBanners,
   platformNewsList,
   defaultProEligibilityConfig,
@@ -206,9 +205,9 @@ function initializeMockStore() {
     }
   } catch {}
 
-  if (!localStorage.getItem(STORAGE_KEYS.PLANS)) {
-    saveLocal(STORAGE_KEYS.PLANS, productsData);
-  }
+  try {
+    localStorage.removeItem(STORAGE_KEYS.PLANS);
+  } catch {}
   if (!localStorage.getItem(STORAGE_KEYS.SETTINGS)) {
     saveLocal(STORAGE_KEYS.SETTINGS, defaultPaymentSettings);
   }
@@ -2532,56 +2531,70 @@ export async function fetchAdminReferralData(): Promise<{
 // ==============================================================================
 
 export async function fetchPlans(): Promise<ProductItem[]> {
-  // 1. Try server endpoint first
+  // 1. Try server endpoint first (Primary Source of Truth from live database)
   try {
     const res = await fetch(apiUrl('/api/plans'));
     if (res.ok) {
       const json = await res.json();
-      if (json.success && Array.isArray(json.data) && json.data.length > 0) {
-        return json.data;
+      if (json && json.success && Array.isArray(json.data)) {
+        // ALWAYS return database results even when empty ([])
+        // Filter out any archived, deleted, inactive, or disabled plans
+        return json.data.filter((p: any) => {
+          const st = String(p.status || '').toLowerCase().trim();
+          return st !== 'archived' && st !== 'deleted' && st !== 'inactive' && st !== 'disabled' && p.isActive !== false;
+        });
       }
     }
-  } catch (_err) {}
-
-  // 2. Direct Supabase query fallback
-  if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase
-      .from('plans')
-      .select('*')
-      .neq('status', 'archived')
-      .order('price', { ascending: false });
-
-    if (error || !data || data.length === 0) {
-      return getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData).filter((p) => p.status !== 'archived');
-    }
-
-    return data.map((p) => ({
-      id: p.id,
-      name: p.name,
-      category: p.category || (p.name.toUpperCase().includes('PRO') ? 'PRO' : 'HOURLY'),
-      description: p.description,
-      imageUrl: p.image_url,
-      limit: p.limit_per_user || 999,
-      devicePrice: Number(p.price),
-      price: Number(p.price),
-      hourlyEarnings: Number(p.earning_rate || (Number(p.daily_earnings || 0) / 24)),
-      dailyEarnings: Number(p.daily_earnings || (Number(p.earning_rate || 0) * 24)),
-      instantBonus: Number(p.instant_bonus || 0),
-      earningType: p.earning_type || (p.category === 'PRO' ? 'DAILY' : 'HOURLY'),
-      tags: p.tags || ['Shared Power', 'Sharing Economy'],
-      imageType: p.image_type || (p.category === 'PRO' ? 'cabinet-pro' : 'cabinet-green'),
-      status: p.status || 'active',
-      duration: p.duration || 365,
-      durationDays: p.duration_days || p.duration || 365,
-      allowDuplicate: p.allow_duplicate !== false,
-      eligibilityType: p.eligibility_type || 'ANY_ACTIVE_HOURLY',
-      minimumHourlyPlans: p.minimum_hourly_plans || 1,
-      minimumHourlyInvestment: p.minimum_hourly_investment || 0,
-      allowedHourlyPlanIds: p.allowed_hourly_plan_ids || [],
-    }));
-  } else {
-    return getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData).filter((p) => p.status !== 'archived');
+  } catch (_err) {
+    console.warn('Backend fetch plans error:', _err);
   }
+
+  // 2. Direct Supabase query fallback if server endpoint is unreachable
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('plans')
+        .select('*')
+        .order('price', { ascending: false });
+
+      if (!error && Array.isArray(data)) {
+        return data
+          .filter((p: any) => {
+            const st = String(p.status || '').toLowerCase().trim();
+            return st !== 'archived' && st !== 'deleted' && st !== 'inactive' && st !== 'disabled' && p.is_active !== false;
+          })
+          .map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            category: p.category || (p.name.toUpperCase().includes('PRO') ? 'PRO' : 'VIP'),
+            description: p.description,
+            imageUrl: p.image_url,
+            limit: p.limit_per_user || 999,
+            devicePrice: Number(p.price),
+            price: Number(p.price),
+            hourlyEarnings: Number(p.earning_rate || (Number(p.daily_earnings || 0) / 24)),
+            dailyEarnings: Number(p.daily_earnings || (Number(p.earning_rate || 0) * 24)),
+            instantBonus: Number(p.instant_bonus || 0),
+            earningType: p.earning_type || (p.category === 'PRO' ? 'DAILY' : 'HOURLY'),
+            tags: p.tags || ['Shared Power', 'Sharing Economy'],
+            imageType: p.image_type || (p.category === 'PRO' ? 'cabinet-pro' : 'cabinet-green'),
+            status: p.status || 'active',
+            duration: p.duration || 365,
+            durationDays: p.duration_days || p.duration || 365,
+            allowDuplicate: p.allow_duplicate !== false,
+            eligibilityType: p.eligibility_type || 'ANY_ACTIVE_HOURLY',
+            minimumHourlyPlans: p.minimum_hourly_plans || 1,
+            minimumHourlyInvestment: p.minimum_hourly_investment || 0,
+            allowedHourlyPlanIds: p.allowed_hourly_plan_ids || [],
+          }));
+      }
+    } catch (_sbErr) {
+      console.warn('Supabase direct query plans error:', _sbErr);
+    }
+  }
+
+  // 3. Database is the single source of truth. Under NO circumstance return mock plans or fallback lists.
+  return [];
 }
 
 export async function createPlan(planData: Omit<ProductItem, 'id'>): Promise<ProductItem> {
@@ -2611,7 +2624,7 @@ export async function createPlan(planData: Omit<ProductItem, 'id'>): Promise<Pro
     console.warn('Backend plan save error, falling back:', err);
   }
 
-  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, []);
   list.unshift(newPlan);
   saveLocal(STORAGE_KEYS.PLANS, list);
   return newPlan;
@@ -2632,7 +2645,7 @@ export async function updatePlan(planId: string, planData: Partial<ProductItem>)
     console.warn('Backend plan update error, falling back:', err);
   }
 
-  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, []);
   const index = list.findIndex((p) => p.id === planId);
   if (index !== -1) {
     list[index] = { ...list[index], ...planData };
@@ -2659,7 +2672,7 @@ export async function deletePlan(planId: string): Promise<void> {
     console.warn('Backend plan delete error, falling back:', err);
   }
 
-  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, []);
   const filtered = list.filter((p) => p.id !== planId);
   saveLocal(STORAGE_KEYS.PLANS, filtered);
 }
@@ -4820,7 +4833,7 @@ export async function saveAdminPlan(
     const json = await res.json();
     if (json.success && json.data) {
       const saved = { ...fullPlan, ...json.data, id: json.data.id || fullPlan.id };
-      const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+      const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, []);
       const existingIndex = list.findIndex((p) => p.id === planId || p.id === saved.id);
       if (existingIndex >= 0) {
         list[existingIndex] = saved;
@@ -4834,7 +4847,7 @@ export async function saveAdminPlan(
     console.warn('Backend plan save error, falling back:', err);
   }
 
-  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, []);
   const existingIndex = list.findIndex((p) => p.id === planId);
   if (existingIndex >= 0) {
     list[existingIndex] = fullPlan;
@@ -4857,7 +4870,7 @@ export async function deleteAdminPlan(planId: string, adminId?: string): Promise
     });
     const json = await res.json();
     if (json.success) {
-      const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+      const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, []);
       const filtered = list.filter((p) => p.id !== planId);
       saveLocal(STORAGE_KEYS.PLANS, filtered);
       return true;
@@ -4866,7 +4879,7 @@ export async function deleteAdminPlan(planId: string, adminId?: string): Promise
     console.warn('Backend delete plan error, falling back:', err);
   }
 
-  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, productsData);
+  const list = getLocal<ProductItem[]>(STORAGE_KEYS.PLANS, []);
   const filtered = list.filter((p) => p.id !== planId);
   saveLocal(STORAGE_KEYS.PLANS, filtered);
   if (adminId) {
