@@ -289,13 +289,13 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
 
     // 5. Referral Commission (Level 1, 2, 3)
     if (typeUpper === 'REFERRAL_BONUS' || typeUpper === 'TEAM_BONUS' || typeUpper === 'PRO_INSTANT_BONUS' || descLower.includes('referral') || descLower.includes('team commission')) {
-      if (descLower.includes('level 1') || descLower.includes('tier 1') || refLower.includes('ref-l1') || refLower.includes('t1')) {
+      if (descLower.includes('level 1') || descLower.includes('tier 1') || descLower.includes('l1 ') || refLower.includes('ref-l1') || refLower.includes('t1')) {
         return 'Referral Commission (Level 1)';
       }
-      if (descLower.includes('level 2') || descLower.includes('tier 2') || refLower.includes('ref-l2') || refLower.includes('t2')) {
+      if (descLower.includes('level 2') || descLower.includes('tier 2') || descLower.includes('l2 ') || refLower.includes('ref-l2') || refLower.includes('t2')) {
         return 'Referral Commission (Level 2)';
       }
-      if (descLower.includes('level 3') || descLower.includes('tier 3') || refLower.includes('ref-l3') || refLower.includes('t3')) {
+      if (descLower.includes('level 3') || descLower.includes('tier 3') || descLower.includes('l3 ') || refLower.includes('ref-l3') || refLower.includes('t3')) {
         return 'Referral Commission (Level 3)';
       }
       if (typeUpper === 'PRO_INSTANT_BONUS' || descLower.includes('pro instant')) {

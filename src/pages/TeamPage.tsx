@@ -525,10 +525,10 @@ export const TeamPage: React.FC<TeamPageProps> = ({
           <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
             <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl max-h-[85vh] flex flex-col overflow-hidden shadow-2xl animate-in slide-in-from-bottom-5">
               {/* Modal Header */}
-              <div className="p-4 border-b border-gray-100 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
+              <div className="p-3.5 sm:p-4 border-b border-gray-100 flex items-center justify-between gap-2 shrink-0">
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
                   <div
-                    className={`w-9 h-9 rounded-2xl flex items-center justify-center font-black text-sm text-white ${
+                    className={`w-9 h-9 rounded-2xl flex items-center justify-center font-black text-sm text-white shrink-0 ${
                       selectedTierForModal === 1
                         ? 'bg-[#FF6000]'
                         : selectedTierForModal === 2
@@ -538,11 +538,11 @@ export const TeamPage: React.FC<TeamPageProps> = ({
                   >
                     L{selectedTierForModal}
                   </div>
-                  <div>
-                    <h3 className="font-bold text-sm text-gray-900">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-bold text-sm text-gray-900 truncate">
                       L{selectedTierForModal} Member List ({members.length})
                     </h3>
-                    <p className="text-[11px] text-gray-500">
+                    <p className="text-[11px] text-gray-500 truncate">
                       {stats.memberCount} Member{stats.memberCount !== 1 ? 's' : ''} • ₹{Number(stats.depositAmount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Total Deposit
                     </p>
                   </div>
@@ -550,16 +550,17 @@ export const TeamPage: React.FC<TeamPageProps> = ({
                 <button
                   type="button"
                   onClick={() => setSelectedTierForModal(null)}
-                  className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500 cursor-pointer transition-colors"
+                  className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500 cursor-pointer transition-colors shrink-0"
+                  aria-label="Close"
                 >
                   ✕
                 </button>
               </div>
 
               {/* Member List Rows */}
-              <div className="overflow-y-auto p-4 space-y-3 divide-y divide-gray-100 flex-1">
+              <div className="overflow-y-auto overflow-x-hidden p-3.5 sm:p-4 space-y-3 divide-y divide-gray-100 flex-1 overscroll-contain">
                 {members.length === 0 ? (
-                  <div className="py-12 text-center text-gray-400">
+                  <div className="py-12 text-center text-gray-400 px-4">
                     <Users className="w-10 h-10 mx-auto mb-2 text-gray-300" />
                     <p className="text-xs font-semibold text-gray-600">No L{selectedTierForModal} members found</p>
                     <p className="text-[11px] text-gray-400 mt-0.5">
@@ -579,7 +580,7 @@ export const TeamPage: React.FC<TeamPageProps> = ({
                     return (
                       <div key={member.id || member.userId} className="pt-3 first:pt-0 space-y-2">
                         {/* Member Identity and Financials */}
-                        <div className="flex items-start justify-between gap-2">
+                        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3">
                           <div className="flex items-center gap-2.5 min-w-0">
                             <div
                               className={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
@@ -592,7 +593,7 @@ export const TeamPage: React.FC<TeamPageProps> = ({
                             >
                               {member.username ? member.username.slice(0, 2).toUpperCase() : member.mobile.slice(0, 2)}
                             </div>
-                            <div className="min-w-0">
+                            <div className="min-w-0 flex-1">
                               <h4 className="text-xs font-bold text-gray-900 flex items-center gap-1.5 flex-wrap">
                                 <span className="truncate">{member.username}</span>
                                 <span className="text-[10px] text-gray-400 font-mono font-normal">({member.mobile})</span>
@@ -603,26 +604,33 @@ export const TeamPage: React.FC<TeamPageProps> = ({
                             </div>
                           </div>
 
-                          <div className="text-right shrink-0">
-                            <div className="text-xs font-medium text-gray-600">
-                              Deposit Amount: <span className="font-bold text-gray-900">₹{memberDeposit.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          {/* Financial Details: On mobile, a clean 2-column strip so Deposit & Commission never get cramped or cut off; on desktop/tablet, right-aligned stacked */}
+                          <div className="grid grid-cols-2 gap-2 mt-1 sm:mt-0 sm:flex sm:flex-col sm:items-end sm:text-right shrink-0 bg-gray-50/90 sm:bg-transparent p-2.5 sm:p-0 rounded-xl sm:rounded-none border border-gray-100 sm:border-0">
+                            <div className="min-w-0 text-left sm:text-right">
+                              <span className="text-[10px] sm:text-xs font-medium text-gray-500 block sm:inline">Deposit Amount: </span>
+                              <span className="text-xs font-bold text-gray-900 block sm:inline">
+                                ₹{memberDeposit.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
                             </div>
-                            <div
-                              className={`text-[11px] font-bold mt-0.5 ${
-                                selectedTierForModal === 1
-                                  ? 'text-[#FF6000]'
-                                  : selectedTierForModal === 2
-                                  ? 'text-blue-600'
-                                  : 'text-purple-600'
-                              }`}
-                            >
-                              Commission: ₹{memberComm.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            <div className="min-w-0 text-right sm:text-right">
+                              <span className="text-[10px] sm:text-[11px] font-medium text-gray-500 block sm:inline">Commission: </span>
+                              <span
+                                className={`text-xs sm:text-[11px] font-bold block sm:inline ${
+                                  selectedTierForModal === 1
+                                    ? 'text-[#FF6000]'
+                                    : selectedTierForModal === 2
+                                    ? 'text-blue-600'
+                                    : 'text-purple-600'
+                                }`}
+                              >
+                                ₹{memberComm.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
                             </div>
                           </div>
                         </div>
 
                         {/* Plan Display (Requirement 4: No device count, show active plans sorted by price ascending) */}
-                        <div className="pt-0.5 pl-11">
+                        <div className="pt-0.5 sm:pl-11">
                           {sortedPlans.length === 0 ? (
                             <span className="inline-flex items-center text-[10px] font-medium text-gray-400 bg-gray-50 border border-gray-200/60 px-2 py-0.5 rounded-md">
                               0 Active Plans
@@ -632,10 +640,10 @@ export const TeamPage: React.FC<TeamPageProps> = ({
                               {sortedPlans.map((plan, pIdx) => (
                                 <span
                                   key={plan.id || pIdx}
-                                  className="inline-flex items-center gap-1 text-[10px] font-semibold bg-orange-50 text-orange-950 border border-orange-200/80 px-2 py-0.5 rounded-md shadow-2xs"
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold bg-orange-50 text-orange-950 border border-orange-200/80 px-2 py-0.5 rounded-md shadow-2xs max-w-full"
                                 >
-                                  <span className="font-bold text-[#FF6000]">₹{Number(plan.price || 0).toLocaleString('en-IN')}</span>
-                                  <span className="text-gray-700 font-medium">{plan.name}</span>
+                                  <span className="font-bold text-[#FF6000] shrink-0">₹{Number(plan.price || 0).toLocaleString('en-IN')}</span>
+                                  <span className="text-gray-700 font-medium truncate">{plan.name}</span>
                                 </span>
                               ))}
                             </div>

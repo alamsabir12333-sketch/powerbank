@@ -15,19 +15,14 @@ function verifySignature(params: Record<string, string>, secretKey: string, rece
 
 async function processReferralCommissions(supabase: any, userId: string, depositAmount: number, traceno: string) {
   try {
-    // 1. Fetch referral linkages where this user is the referee
-    const { data: refs, error: refErr } = await supabase
-      .from("referrals")
-      .select("*")
-      .eq("referee_id", userId);
+    if (!traceno || String(traceno).startsWith('PUR-')) {
+      return;
+    }
 
-    if (refErr || !refs || refs.length === 0) return;
-
-    // 2. Fetch admin percentage config if present
     let tiers = [
       { tier: 1, percentage: 10 },
-      { tier: 2, percentage: 3 },
-      { tier: 3, percentage: 1 },
+      { tier: 2, percentage: 5 },
+      { tier: 3, percentage: 2 },
     ];
 
     try {
@@ -38,22 +33,113 @@ async function processReferralCommissions(supabase: any, userId: string, deposit
         .maybeSingle();
       if (set?.value && Array.isArray(set.value)) {
         tiers = set.value;
+      } else {
+        const { data: refSet } = await supabase
+          .from("admin_settings")
+          .select("value")
+          .eq("id", "referral_settings")
+          .maybeSingle();
+        if (refSet?.value?.topupTiers && Array.isArray(refSet.value.topupTiers)) {
+          tiers = refSet.value.topupTiers;
+        } else if (refSet?.value?.tiers && Array.isArray(refSet.value.tiers)) {
+          tiers = refSet.value.tiers;
+        } else if (refSet?.value?.commissionRates) {
+          tiers = [
+            { tier: 1, percentage: Number(refSet.value.commissionRates.level1 ?? 10) },
+            { tier: 2, percentage: Number(refSet.value.commissionRates.level2 ?? 5) },
+            { tier: 3, percentage: Number(refSet.value.commissionRates.level3 ?? 2) },
+          ];
+        }
       }
     } catch (_e) {}
 
+    // Helper to find parent referrer
+    const findParentReferrer = async (childId: string, visited: Set<string> = new Set()) => {
+      if (!childId) return null;
+      const { data: rRow } = await supabase
+        .from("referrals")
+        .select("*")
+        .eq("referee_id", childId)
+        .maybeSingle();
+
+      if (rRow?.referrer_id && rRow.referrer_id !== childId && !visited.has(rRow.referrer_id)) {
+        return { referrerId: rRow.referrer_id, refRowId: rRow.id, currentCommission: Number(rRow.commission_earned || 0) };
+      }
+
+      const { data: childProf } = await supabase
+        .from("profiles")
+        .select("referred_by")
+        .or(`user_id.eq.${childId},id.eq.${childId}`)
+        .maybeSingle();
+
+      if (childProf?.referred_by) {
+        const cleanRef = String(childProf.referred_by).trim();
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanRef);
+        const filterStr = isUUID
+          ? `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef},user_id.eq.${cleanRef},id.eq.${cleanRef}`
+          : `referral_code.ilike.${cleanRef},membership_number.ilike.${cleanRef}`;
+        const { data: pProf } = await supabase
+          .from("profiles")
+          .select("id, user_id")
+          .or(filterStr)
+          .maybeSingle();
+
+        if (pProf) {
+          const pId = pProf.user_id || pProf.id;
+          if (pId && pId !== childId && !visited.has(pId)) {
+            try {
+              const { data: insRef } = await supabase.from("referrals").insert({
+                referrer_id: pId,
+                referee_id: childId,
+                level: 1,
+                bonus_amount: 0,
+                status: "ACTIVE",
+                qualifying_recharge_done: true,
+                commission_earned: 0,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              }).select("id").maybeSingle();
+              return { referrerId: pId, refRowId: insRef?.id || null, currentCommission: 0 };
+            } catch {
+              return { referrerId: pId, refRowId: null, currentCommission: 0 };
+            }
+          }
+        }
+      }
+      return null;
+    };
+
+    const visitedReferrers = new Set<string>([userId]);
+    const l1Info = await findParentReferrer(userId, visitedReferrers);
+    if (!l1Info?.referrerId) return;
+    visitedReferrers.add(l1Info.referrerId);
+
+    const l2Info = await findParentReferrer(l1Info.referrerId, visitedReferrers);
+    if (l2Info?.referrerId) visitedReferrers.add(l2Info.referrerId);
+
+    const l3Info = l2Info?.referrerId ? await findParentReferrer(l2Info.referrerId, visitedReferrers) : null;
+    if (l3Info?.referrerId) visitedReferrers.add(l3Info.referrerId);
+
+    const tierTargets = [
+      { tierNum: 1, referrerId: l1Info.referrerId, refRowId: l1Info.refRowId, currentCommission: l1Info.currentCommission },
+      { tierNum: 2, referrerId: l2Info?.referrerId || null, refRowId: l2Info?.refRowId || null, currentCommission: l2Info?.currentCommission || 0 },
+      { tierNum: 3, referrerId: l3Info?.referrerId || null, refRowId: l3Info?.refRowId || null, currentCommission: l3Info?.currentCommission || 0 },
+    ];
+
     const nowIso = new Date().toISOString();
 
-    for (const ref of refs) {
-      const tierNum = Number(ref.level || 1);
-      const tierConfig = tiers.find((t) => t.tier === tierNum);
+    for (const target of tierTargets) {
+      if (!target.referrerId || target.referrerId === userId) continue;
+      const tierConfig = tiers.find((t) => t.tier === target.tierNum);
       if (!tierConfig || tierConfig.percentage <= 0) continue;
 
       const commission = +(depositAmount * (tierConfig.percentage / 100)).toFixed(2);
       if (commission <= 0) continue;
 
-      const refId = `TOPUP-REF-L${tierNum}-${traceno}`;
+      const refId = `TOPUP-REF-L${target.tierNum}-${traceno}`;
+      const commDesc = `L${target.tierNum} Referral Commission (${tierConfig.percentage}%) from Topup #${traceno}`;
 
-      // Idempotency: verify this commission reference was not already credited
+      // Idempotency check in wallet_ledger and wallet_transactions
       const { data: existingLedger } = await supabase
         .from("wallet_ledger")
         .select("id")
@@ -62,20 +148,30 @@ async function processReferralCommissions(supabase: any, userId: string, deposit
 
       if (existingLedger) continue;
 
-      const referrerId = ref.referrer_id;
-      if (!referrerId) continue;
+      const { data: existingTx } = await supabase
+        .from("wallet_transactions")
+        .select("id")
+        .eq("reference_id", refId)
+        .maybeSingle();
+
+      if (existingTx) continue;
 
       // Fetch Referrer Wallet
       const { data: refWallet } = await supabase
         .from("wallets")
         .select("*")
-        .eq("user_id", referrerId)
+        .eq("user_id", target.referrerId)
         .maybeSingle();
 
-      const curWithdraw = Number(refWallet?.withdraw_balance || 0);
+      const curWithdraw = Number(refWallet?.withdraw_balance !== undefined && refWallet?.withdraw_balance !== null ? refWallet.withdraw_balance : (refWallet?.earned_balance || 0));
       const curRecharge = Number(refWallet?.recharge_balance || 0);
+      const curTotalEarned = Number(refWallet?.total_earned || 0);
+      const curTeamComm = Number(refWallet?.team_commission || 0);
+
       const newWithdraw = +(curWithdraw + commission).toFixed(2);
       const newAvail = +(curRecharge + newWithdraw).toFixed(2);
+      const newTotalEarned = +(curTotalEarned + commission).toFixed(2);
+      const newTeamComm = +(curTeamComm + commission).toFixed(2);
 
       // Update Referrer Wallet
       if (refWallet) {
@@ -83,70 +179,113 @@ async function processReferralCommissions(supabase: any, userId: string, deposit
           .from("wallets")
           .update({
             withdraw_balance: newWithdraw,
+            earned_balance: newWithdraw,
             available_balance: newAvail,
+            total_earned: newTotalEarned,
+            team_commission: newTeamComm,
             updated_at: nowIso,
           })
-          .eq("user_id", referrerId);
+          .eq("user_id", target.referrerId);
       } else {
         await supabase.from("wallets").insert({
-          user_id: referrerId,
+          user_id: target.referrerId,
           recharge_balance: 0,
           withdraw_balance: newWithdraw,
+          earned_balance: newWithdraw,
           available_balance: newWithdraw,
           pending_balance: 0,
-          total_earned: commission,
+          total_earned: newTotalEarned,
+          team_commission: newTeamComm,
           total_withdrawn: 0,
+          created_at: nowIso,
+          updated_at: nowIso,
         });
       }
 
-      // Record in wallet_ledger
-      await supabase.from("wallet_ledger").insert({
-        user_id: referrerId,
-        wallet_type: "WITHDRAW",
-        transaction_type: "REFERRAL_COMMISSION",
-        amount: commission,
-        direction: "CREDIT",
-        reference_type: "REFERRAL_COMMISSION",
-        reference_id: refId,
-        balance_before: curWithdraw,
-        balance_after: newWithdraw,
-        description: `Level ${tierNum} Team Commission (${tierConfig.percentage}%) from Topup #${traceno}`,
-        created_at: nowIso,
-      });
+      // Record in wallet_ledger (Valid wallet_type is 'DEVICE_EARNING')
+      try {
+        await supabase.from("wallet_ledger").insert({
+          id: crypto.randomUUID(),
+          user_id: target.referrerId,
+          wallet_type: "DEVICE_EARNING",
+          transaction_type: "REFERRAL_COMMISSION",
+          amount: commission,
+          direction: "CREDIT",
+          reference_type: "REFERRAL_COMMISSION",
+          reference_id: refId,
+          balance_before: curWithdraw,
+          balance_after: newWithdraw,
+          description: commDesc,
+          created_at: nowIso,
+        });
+      } catch (ledErr: any) {
+        console.warn("[EDGE COMMISSION LEDGER NOTICE]", ledErr.message);
+      }
 
-      // Record in wallet_transactions
+      // Record in wallet_transactions (Valid type is 'TEAM_BONUS')
       await supabase.from("wallet_transactions").insert({
-        user_id: referrerId,
-        type: "COMMISSION",
+        id: crypto.randomUUID(),
+        user_id: target.referrerId,
+        type: "TEAM_BONUS",
         amount: commission,
         balance_before: curWithdraw,
         balance_after: newWithdraw,
         reference_id: refId,
-        description: `Level ${tierNum} Team Commission (${tierConfig.percentage}%) from Topup #${traceno}`,
+        description: commDesc,
         wallet_type: "WITHDRAW",
-        status: "Completed",
+        status: "COMPLETED",
+        metadata: {
+          rewardType: "TOPUP_COMMISSION",
+          tier: target.tierNum,
+          type: "COMMISSION",
+          refId,
+          depositUserId: userId,
+          traceno,
+          depositAmount,
+        },
         created_at: nowIso,
       });
 
       // Notify Referrer
-      await supabase.from("notifications").insert({
-        user_id: referrerId,
-        title: `Tier ${tierNum} Team Commission Earned! 💰`,
-        message: `You received ₹${commission.toFixed(2)} (${tierConfig.percentage}%) commission from a team member recharge.`,
-        type: "EARNING",
-        read: false,
-        created_at: nowIso,
-      });
+      try {
+        await supabase.from("notifications").insert({
+          user_id: target.referrerId,
+          title: `L${target.tierNum} Referral Commission Earned! 💰`,
+          message: `You received ₹${commission.toFixed(2)} (${tierConfig.percentage}%) commission from a team member topup.`,
+          type: "EARNING",
+          read: false,
+          created_at: nowIso,
+        });
+      } catch {}
 
       // Update referral record
-      await supabase
-        .from("referrals")
-        .update({
-          qualifying_recharge_done: true,
-          commission_earned: +((ref.commission_earned || 0) + commission).toFixed(2),
-          updated_at: nowIso,
-        })
-        .eq("id", ref.id);
+      if (target.refRowId) {
+        try {
+          await supabase
+            .from("referrals")
+            .update({
+              qualifying_recharge_done: true,
+              status: "ACTIVE",
+              commission_earned: +(target.currentCommission + commission).toFixed(2),
+              updated_at: nowIso,
+            })
+            .eq("id", target.refRowId);
+        } catch {}
+      } else if (target.tierNum === 1) {
+        try {
+          await supabase.from("referrals").insert({
+            referrer_id: target.referrerId,
+            referee_id: userId,
+            level: 1,
+            bonus_amount: 0,
+            status: "ACTIVE",
+            qualifying_recharge_done: true,
+            commission_earned: commission,
+            created_at: nowIso,
+            updated_at: nowIso,
+          });
+        } catch {}
+      }
     }
   } catch (err: any) {
     console.error("[SETTLEMENT] Referral commission error:", err.message);

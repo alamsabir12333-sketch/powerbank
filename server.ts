@@ -173,6 +173,57 @@ async function recordGatewayLog(params: {
 }
 
 // ==============================================================================
+// UUID VALIDATION & USER RESOLUTION HELPERS
+// ==============================================================================
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isValidUUID(val?: string | null): boolean {
+  if (!val || typeof val !== 'string') return false;
+  return UUID_REGEX.test(val.trim());
+}
+
+async function findUserProfile(identifier: string): Promise<any> {
+  if (!supabase || !identifier) return null;
+  const cleanId = String(identifier).trim();
+  if (!cleanId) return null;
+
+  try {
+    if (isValidUUID(cleanId)) {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .or(`id.eq.${cleanId},user_id.eq.${cleanId}`)
+        .maybeSingle();
+      if (data && !error) return data;
+    }
+
+    const cleanDigits = cleanId.replace(/\D/g, '');
+    const conditions: string[] = [
+      `membership_number.eq.${cleanId}`,
+      `username.ilike.${cleanId}`
+    ];
+    if (cleanDigits.length >= 6) {
+      conditions.push(`phone.eq.${cleanDigits}`);
+      conditions.push(`mobile.eq.${cleanDigits}`);
+      conditions.push(`whatsapp_no.eq.${cleanDigits}`);
+    } else if (cleanId.length > 0) {
+      conditions.push(`phone.eq.${cleanId}`);
+      conditions.push(`mobile.eq.${cleanId}`);
+    }
+
+    const { data: byAttr, error: attrErr } = await supabase
+      .from('profiles')
+      .select('*')
+      .or(conditions.join(','))
+      .maybeSingle();
+
+    if (byAttr && !attrErr) return byAttr;
+  } catch (err) {
+    console.warn('[findUserProfile] Failed to query profile:', err);
+  }
+  return null;
+}
+
+// ==============================================================================
 // USER STATUS ENFORCEMENT MIDDLEWARE
 // ==============================================================================
 function extractTargetUserId(req: express.Request): string | null {
@@ -275,11 +326,7 @@ async function enforceActiveUserStatus(req: express.Request, res: express.Respon
   }
 
   try {
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('id, user_id, status, is_active')
-      .or(`id.eq.${targetUserId},user_id.eq.${targetUserId}`)
-      .maybeSingle();
+    const profile = await findUserProfile(targetUserId);
 
     if (!profile) {
       return next();
@@ -1251,7 +1298,9 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
           .select('value')
           .eq('id', 'referral_settings')
           .maybeSingle();
-        if (refSet?.value?.tiers && Array.isArray(refSet.value.tiers)) {
+        if (refSet?.value?.topupTiers && Array.isArray(refSet.value.topupTiers)) {
+          tiers = refSet.value.topupTiers;
+        } else if (refSet?.value?.tiers && Array.isArray(refSet.value.tiers)) {
           tiers = refSet.value.tiers;
         } else if (refSet?.value?.commissionRates) {
           tiers = [
@@ -1264,14 +1313,15 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
     } catch (_e) {}
 
     // Helper to find a user's parent inviter
-    const findParentReferrer = async (childId: string) => {
+    const findParentReferrer = async (childId: string, visited: Set<string> = new Set()) => {
+      if (!childId) return null;
       const { data: rRow } = await supabaseClient
         .from('referrals')
         .select('*')
         .eq('referee_id', childId)
         .maybeSingle();
 
-      if (rRow?.referrer_id && rRow.referrer_id !== childId) {
+      if (rRow?.referrer_id && rRow.referrer_id !== childId && !visited.has(rRow.referrer_id)) {
         return { referrerId: rRow.referrer_id, refRowId: rRow.id, currentCommission: Number(rRow.commission_earned || 0) };
       }
 
@@ -1296,7 +1346,7 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
 
         if (pProf) {
           const pId = pProf.user_id || pProf.id;
-          if (pId && pId !== childId) {
+          if (pId && pId !== childId && !visited.has(pId)) {
             try {
               const { data: insRef } = await supabaseClient.from('referrals').insert({
                 referrer_id: pId,
@@ -1319,15 +1369,19 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
       return null;
     };
 
+    const visitedReferrers = new Set<string>([userId]);
     // Find Level 1 referrer (direct parent of userId)
-    const l1Info = await findParentReferrer(userId);
+    const l1Info = await findParentReferrer(userId, visitedReferrers);
     if (!l1Info?.referrerId) return;
+    visitedReferrers.add(l1Info.referrerId);
 
     // Find Level 2 referrer (parent of Level 1)
-    const l2Info = await findParentReferrer(l1Info.referrerId);
+    const l2Info = await findParentReferrer(l1Info.referrerId, visitedReferrers);
+    if (l2Info?.referrerId) visitedReferrers.add(l2Info.referrerId);
 
     // Find Level 3 referrer (parent of Level 2)
-    const l3Info = l2Info?.referrerId ? await findParentReferrer(l2Info.referrerId) : null;
+    const l3Info = l2Info?.referrerId ? await findParentReferrer(l2Info.referrerId, visitedReferrers) : null;
+    if (l3Info?.referrerId) visitedReferrers.add(l3Info.referrerId);
 
     const tierTargets = [
       { tierNum: 1, referrerId: l1Info.referrerId, refRowId: l1Info.refRowId, currentCommission: l1Info.currentCommission },
@@ -1347,7 +1401,7 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
 
       if (String(traceno).startsWith('PUR-')) continue;
       const refId = `TOPUP-REF-L${target.tierNum}-${traceno}`;
-      const commDesc = `Tier ${target.tierNum} Referral Commission (${tierConfig.percentage}%) from Topup #${traceno}`;
+      const commDesc = `L${target.tierNum} Referral Commission (${tierConfig.percentage}%) from Topup #${traceno}`;
 
       // Idempotency: check both wallet_ledger and wallet_transactions
       const { data: existingLedger } = await supabaseClient
@@ -1427,6 +1481,9 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
           tier: target.tierNum,
           type: 'COMMISSION',
           refId,
+          depositUserId: userId,
+          traceno,
+          depositAmount,
         },
         created_at: nowIso,
       });
@@ -1453,8 +1510,8 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
       try {
         await supabaseClient.from('notifications').insert({
           user_id: target.referrerId,
-          title: `Tier ${target.tierNum} Team Commission Earned! 💰`,
-          message: `You received ₹${commission.toFixed(2)} (${tierConfig.percentage}%) commission from a team member purchase.`,
+          title: `L${target.tierNum} Referral Commission Earned! 💰`,
+          message: `You received ₹${commission.toFixed(2)} (${tierConfig.percentage}%) commission from a team member topup.`,
           type: 'EARNING',
           is_read: false,
           created_at: nowIso,
@@ -1472,6 +1529,20 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
               updated_at: nowIso,
             })
             .eq('id', target.refRowId);
+        } catch {}
+      } else if (target.tierNum === 1) {
+        try {
+          await supabaseClient.from('referrals').insert({
+            referrer_id: target.referrerId,
+            referee_id: userId,
+            level: 1,
+            bonus_amount: 0,
+            status: 'ACTIVE',
+            qualifying_recharge_done: true,
+            commission_earned: commission,
+            created_at: nowIso,
+            updated_at: nowIso,
+          });
         } catch {}
       }
     }
@@ -3689,30 +3760,33 @@ app.post('/api/plans/purchase', async (req, res) => {
 
   try {
     // 1. Fetch Profile (to determine VIP level)
-    const { data: profile, error: profErr } = await supabase
-      .from('profiles')
-      .select('*')
-      .or(`id.eq.${userId},user_id.eq.${userId},phone.eq.${userId},mobile.eq.${userId}`)
-      .maybeSingle();
+    const profile = await findUserProfile(userId);
 
-    if (profErr || !profile) {
+    if (!profile) {
       return res.status(404).json({ success: false, error: 'User profile not found.' });
     }
 
     const effectiveUserId = profile.user_id || profile.id || userId;
     const profileId = profile.id;
     const candidateUserIds = Array.from(
-      new Set([userId, profile.id, profile.user_id, (profile as any).membership_number].filter(Boolean))
+      new Set([profile.id, profile.user_id, userId].filter(id => isValidUUID(id)))
     );
 
     // 2. Fetch User Purchases to compute qualifying investment and purchase counts
     // CRITICAL: Strictly per-user purchases for limit enforcement
-    const { data: userPurchases, error: purErr } = await supabase
-      .from('purchases')
-      .select('*')
-      .in('user_id', candidateUserIds);
+    let purchasesList: any[] = [];
+    if (candidateUserIds.length > 0) {
+      const { data: userPurchases, error: purErr } = await supabase
+        .from('purchases')
+        .select('*')
+        .in('user_id', candidateUserIds);
 
-    const purchasesList = userPurchases || [];
+      if (purErr) {
+        console.warn('[PLAN PURCHASE] User purchases fetch warning:', purErr);
+      } else if (userPurchases) {
+        purchasesList = userPurchases;
+      }
+    }
 
     // Authoritative VIP level from database (source of truth)
     const currentVip = Number(profile.vip_level !== undefined && profile.vip_level !== null ? profile.vip_level : 0);
@@ -4566,6 +4640,25 @@ app.get('/api/user/earnings-summary', async (req, res) => {
       }
     });
 
+    // Authoritative claimed device earnings (only earnings claimed from My Device)
+    const claimedDeviceTxSum = allTxs
+      .filter((t: any) => {
+        const type = String(t.type || '').toUpperCase();
+        const ref = String(t.reference_id || '');
+        const desc = String(t.description || '');
+        return (
+          type === 'EARNING_CLAIM' ||
+          ref.startsWith('CLM-') ||
+          desc.includes('Device Hourly Yield Claim') ||
+          desc.includes('hourly device earnings') ||
+          (type === 'EARNING' && ref.startsWith('CLM-'))
+        );
+      })
+      .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
+
+    const purchasesClaimedSum = purchases.reduce((sum: number, p: any) => sum + (Number(p.claimed_amount) || 0), 0);
+    const claimedDeviceEarnings = Number(Math.max(claimedDeviceTxSum, purchasesClaimedSum).toFixed(2));
+
     return res.json({
       success: true,
       totalAssets,
@@ -4574,6 +4667,7 @@ app.get('/api/user/earnings-summary', async (req, res) => {
       todayEarnings: Number(todayEarnings.toFixed(2)),
       totalClaimable: Number(totalClaimable.toFixed(2)),
       totalEarned,
+      claimedDeviceEarnings,
       remainingHours: maxRemainingHours,
       activeDevicesCount: activePurchases.length,
       promotionEarnings,
@@ -4584,6 +4678,78 @@ app.get('/api/user/earnings-summary', async (req, res) => {
   } catch (err: any) {
     console.error('Earnings summary error:', err);
     return res.status(500).json({ success: false, error: err.message || 'Failed to fetch earnings summary.' });
+  }
+});
+
+// Authoritative Claimed Device Earnings (Claim records / wallet transactions / purchases)
+app.get('/api/user/claimed-device-earnings', async (req, res) => {
+  const userId = String(req.query.userId || req.headers['x-user-id'] || '').trim();
+  if (!userId) {
+    return res.status(400).json({ success: false, error: 'User ID required' });
+  }
+
+  if (!supabase) {
+    return res.json({ success: true, claimedDeviceEarnings: 0 });
+  }
+
+  try {
+    const profile = await findUserProfile(userId);
+    const candidateUserIds = Array.from(
+      new Set([userId, profile?.id, profile?.user_id].filter(id => isValidUUID(id)))
+    );
+
+    if (candidateUserIds.length === 0) {
+      return res.json({ success: true, claimedDeviceEarnings: 0 });
+    }
+
+    const [cbRes, wtRes, purRes] = await Promise.all([
+      supabase
+        .from('claim_batches')
+        .select('amount')
+        .in('user_id', candidateUserIds),
+      supabase
+        .from('wallet_transactions')
+        .select('amount, type, reference_id, description')
+        .in('user_id', candidateUserIds),
+      supabase
+        .from('purchases')
+        .select('claimed_amount')
+        .in('user_id', candidateUserIds),
+    ]);
+
+    const claimBatchesSum = (cbRes.data || []).reduce((sum: number, c: any) => sum + (Number(c.amount) || 0), 0);
+
+    const walletTxClaimSum = (wtRes.data || [])
+      .filter((t: any) => {
+        const type = String(t.type || '').toUpperCase();
+        const ref = String(t.reference_id || '');
+        const desc = String(t.description || '');
+        return (
+          type === 'EARNING_CLAIM' ||
+          ref.startsWith('CLM-') ||
+          desc.includes('Device Hourly Yield Claim') ||
+          desc.includes('hourly device earnings') ||
+          (type === 'EARNING' && ref.startsWith('CLM-'))
+        );
+      })
+      .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
+
+    const purchasesClaimedSum = (purRes.data || []).reduce((sum: number, p: any) => sum + (Number(p.claimed_amount) || 0), 0);
+
+    const totalClaimed = Number(Math.max(claimBatchesSum, walletTxClaimSum, purchasesClaimedSum).toFixed(2));
+
+    return res.json({
+      success: true,
+      claimedDeviceEarnings: totalClaimed,
+      details: {
+        claimBatchesSum: Number(claimBatchesSum.toFixed(2)),
+        walletTxClaimSum: Number(walletTxClaimSum.toFixed(2)),
+        purchasesClaimedSum: Number(purchasesClaimedSum.toFixed(2)),
+      },
+    });
+  } catch (err: any) {
+    console.error('Error fetching claimed device earnings:', err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -5589,6 +5755,14 @@ app.post('/api/admin/approve-recharge', async (req, res) => {
     // Check & update deposit-based VIP upgrades (VIP 3, 4, 5, 6)
     await checkAndUpdateDepositVip(payment.user_id);
 
+    // Process L1/L2/L3 referral commissions for valid topup
+    try {
+      const topupTrace = payment.order_id || payment.utr_number || payment.id;
+      await processReferralCommissionsServer(supabase, payment.user_id, Number(payment.amount), String(topupTrace));
+    } catch (_refCommErr: any) {
+      console.warn('[APPROVE-RECHARGE] Referral commission notice:', _refCommErr.message);
+    }
+
     return res.json({ success: true, message: 'Recharge approved successfully.' });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -6420,6 +6594,14 @@ app.post('/api/admin/approve-complaint', async (req, res) => {
 
     // Check & update deposit-based VIP upgrades (VIP 3, 4, 5, 6)
     await checkAndUpdateDepositVip(userId);
+
+    // Process L1/L2/L3 referral commissions for approved deposit complaint
+    try {
+      const commTrace = traceno || utr || complaint.id;
+      await processReferralCommissionsServer(supabase, userId, amount, String(commTrace));
+    } catch (_refCommErr: any) {
+      console.warn('[APPROVE-COMPLAINT] Referral commission notice:', _refCommErr.message);
+    }
 
     return res.json({
       success: true,
@@ -8492,29 +8674,31 @@ app.post('/api/referrals/process-commissions', async (req, res) => {
 // User Devices and PRO Eligibility Endpoints
 app.get('/api/user-devices', async (req, res) => {
   try {
-    const userId = String(req.query.userId || req.headers['x-user-id'] || '');
+    const userId = String(req.query.userId || req.headers['x-user-id'] || '').trim();
     if (!userId) return res.status(400).json({ success: false, error: 'User ID required' });
     if (!supabase) return res.status(500).json({ success: false, error: 'Database unavailable' });
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('id, user_id, membership_number')
-      .or(`id.eq.${userId},user_id.eq.${userId},phone.eq.${userId},mobile.eq.${userId}`)
-      .maybeSingle();
+    const profile = await findUserProfile(userId);
 
     const candidateUserIds = Array.from(
-      new Set([userId, profile?.id, profile?.user_id, (profile as any)?.membership_number].filter(Boolean))
+      new Set([userId, profile?.id, profile?.user_id].filter(id => isValidUUID(id)))
     );
 
-    const { data: purchases, error: pErr } = await supabase
-      .from('purchases')
-      .select('*')
-      .in('user_id', candidateUserIds)
-      .order('created_at', { ascending: false });
+    let allPurchases: any[] = [];
+    if (candidateUserIds.length > 0) {
+      const { data: purchases, error: pErr } = await supabase
+        .from('purchases')
+        .select('*')
+        .in('user_id', candidateUserIds)
+        .order('created_at', { ascending: false });
 
-    if (pErr) throw pErr;
+      if (pErr) {
+        console.warn('[GET USER DEVICES] Supabase query warning:', pErr);
+      } else if (purchases) {
+        allPurchases = purchases;
+      }
+    }
 
-    const allPurchases = purchases || [];
     const now = Date.now();
 
     // An active device is status = 'ACTIVE' and unexpired (endDate in the future or no endDate specified)
@@ -8561,18 +8745,30 @@ app.get('/api/user-devices', async (req, res) => {
 
 app.get('/api/user-devices/summary', async (req, res) => {
   try {
-    const userId = String(req.query.userId || req.headers['x-user-id'] || '');
+    const userId = String(req.query.userId || req.headers['x-user-id'] || '').trim();
     if (!userId) return res.status(400).json({ success: false, error: 'User ID required' });
     if (!supabase) return res.status(500).json({ success: false, error: 'Database unavailable' });
 
-    const { data: purchases, error: pErr } = await supabase
-      .from('purchases')
-      .select('id, status, expires_at, created_at')
-      .eq('user_id', userId);
+    const profile = await findUserProfile(userId);
 
-    if (pErr) throw pErr;
+    const candidateUserIds = Array.from(
+      new Set([userId, profile?.id, profile?.user_id].filter(id => isValidUUID(id)))
+    );
 
-    const allPurchases = purchases || [];
+    let allPurchases: any[] = [];
+    if (candidateUserIds.length > 0) {
+      const { data: purchases, error: pErr } = await supabase
+        .from('purchases')
+        .select('id, status, expires_at, created_at')
+        .in('user_id', candidateUserIds);
+
+      if (pErr) {
+        console.warn('[GET USER DEVICES SUMMARY] Supabase query warning:', pErr);
+      } else if (purchases) {
+        allPurchases = purchases;
+      }
+    }
+
     const now = Date.now();
 
     const activePurchases = allPurchases.filter((p: any) => {
