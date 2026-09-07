@@ -2889,10 +2889,13 @@ export async function fetchPurchases(userId: string): Promise<PurchaseItem[]> {
             totalPlanHours: Number(p.totalPlanHours || durationDays * 24),
             totalEarned: Number(p.totalEarned || p.total_earned || 0),
             claimedAmount: Number(p.claimedAmount || p.claimed_amount || 0),
+            claimedHours: Number(p.claimedHours || p.claimed_hours || 0),
             status: p.status,
             startedAt: p.startedAt || p.started_at,
             expiresAt: p.endDate || p.expiresAt || p.expires_at,
             isActive: p.isActive,
+            lastClaimedAt: p.lastClaimedAt || p.last_claimed_at || undefined,
+            lastSettledAt: p.lastSettledAt || p.last_settled_at || undefined,
           };
         });
       }
@@ -3521,8 +3524,10 @@ export interface DeviceHourlyStatus {
 export function calculateDeviceHourlyStatus(device: PurchaseItem, now: number = Date.now()): DeviceHourlyStatus {
   const durationDays = Number(device.durationDays || 365);
   const totalPlanHours = Number(device.totalPlanHours || durationDays * 24);
-  const startedMs = new Date(device.startedAt || now).getTime();
-  const expiresMs = device.expiresAt ? new Date(device.expiresAt).getTime() : startedMs + totalPlanHours * 3600 * 1000;
+  const rawStartedMs = new Date(device.startedAt || now).getTime();
+  const startedMs = !isNaN(rawStartedMs) && rawStartedMs > 0 ? rawStartedMs : now;
+  const rawExpiresMs = device.expiresAt ? new Date(device.expiresAt).getTime() : startedMs + totalPlanHours * 3600 * 1000;
+  const expiresMs = !isNaN(rawExpiresMs) && rawExpiresMs > 0 ? rawExpiresMs : startedMs + totalPlanHours * 3600 * 1000;
 
   // Authoritative hourly earnings rate:
   // If hourlyEarnings is explicitly provided and > 0, use it.
@@ -3543,9 +3548,8 @@ export function calculateDeviceHourlyStatus(device: PurchaseItem, now: number = 
   const isActive = (device.status === 'ACTIVE' || (device.status as string) === 'active') && startedMs < expiresMs;
 
   // Current hourly cycle begins at lastClaimedAt, or startedAt if never claimed
-  const lastCycleStartMs = device.lastClaimedAt
-    ? new Date(device.lastClaimedAt).getTime()
-    : startedMs;
+  const rawLastClaimed = device.lastClaimedAt ? new Date(device.lastClaimedAt).getTime() : NaN;
+  const lastCycleStartMs = !isNaN(rawLastClaimed) && rawLastClaimed > 0 ? rawLastClaimed : startedMs;
 
   // Respect the existing plan duration/end date. Do not calculate earnings beyond the existing plan's valid duration.
   const effectiveEndMs = Math.min(now, expiresMs);

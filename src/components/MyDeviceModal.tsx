@@ -152,6 +152,8 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
       await loadEarnings();
     } catch (err: any) {
       console.error('Claim error:', err);
+      // Immediately resynchronize so the client matches server timestamps
+      loadEarnings().catch(() => {});
       if (onShowToast) {
         onShowToast(err.message || 'Failed to claim earnings');
       } else {

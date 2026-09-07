@@ -4255,11 +4255,19 @@ app.post('/api/earnings/claim', async (req, res) => {
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
 
-    // 1. Fetch user purchases
-    const { data: purchases, error: purErr } = await supabase
-      .from('purchases')
-      .select('*')
-      .eq('user_id', userId);
+    // 1. Fetch user profile and candidate IDs
+    const profile = await findUserProfile(userId);
+    const candidateUserIds = Array.from(
+      new Set([userId, profile?.id, profile?.user_id].filter(id => Boolean(id) && isValidUUID(id)))
+    );
+
+    let purQuery = supabase.from('purchases').select('*');
+    if (candidateUserIds.length > 0) {
+      purQuery = purQuery.in('user_id', candidateUserIds);
+    } else {
+      purQuery = purQuery.eq('user_id', userId);
+    }
+    const { data: purchases, error: purErr } = await purQuery;
 
     if (purErr || !purchases || purchases.length === 0) {
       return res.status(400).json({ success: false, error: 'No active device purchases found.' });
@@ -4294,7 +4302,9 @@ app.post('/api/earnings/claim', async (req, res) => {
       const elapsedMs = Math.max(0, effectiveEndMs - lastCycleStartMs);
 
       // FORMULA: completed hours × hourly earning rate = current claimable earning
-      const completedHours = Math.floor(elapsedMs / (3600 * 1000));
+      // Add 60s tolerance to account for network latency & client/server clock drift
+      const elapsedMsWithGrace = elapsedMs + 60000;
+      const completedHours = Math.floor(elapsedMsWithGrace / (3600 * 1000));
       const isEligibleCycle = isActive && completedHours > 0 && hourlyEarnings > 0;
 
       if (isEligibleCycle) {
@@ -4304,12 +4314,14 @@ app.post('/api/earnings/claim', async (req, res) => {
 
         const newClaimedAmount = Number(((Number(p.claimed_amount || 0)) + deviceClaimAmount).toFixed(2));
         const newTotalEarned = Number(((Number(p.total_earned || 0)) + deviceClaimAmount).toFixed(2));
+        const settledUntilMs = Math.min(nowMs, lastCycleStartMs + (completedHours * 3600 * 1000));
+        const settledUntilIso = new Date(settledUntilMs).toISOString();
 
         purchasesToUpdate.push({
           id: p.id,
           claimed_amount: newClaimedAmount,
           total_earned: newTotalEarned,
-          last_claimed_at: nowIso,
+          last_claimed_at: settledUntilIso,
           last_settled_at: nowIso,
           status: isExpired ? 'COMPLETED' : p.status,
         });
@@ -4324,11 +4336,14 @@ app.post('/api/earnings/claim', async (req, res) => {
     }
 
     // 2. Fetch User Wallet
-    const { data: wallet, error: walErr } = await supabase
-      .from('wallets')
-      .select('*')
-      .eq('user_id', userId)
-      .maybeSingle();
+    let walQuery = supabase.from('wallets').select('*');
+    if (candidateUserIds.length > 0) {
+      walQuery = walQuery.in('user_id', candidateUserIds);
+    } else {
+      walQuery = walQuery.eq('user_id', userId);
+    }
+    const { data: walData, error: walErr } = await walQuery.limit(1);
+    const wallet = walData?.[0];
 
     if (walErr || !wallet) {
       return res.status(404).json({ success: false, error: 'User wallet not found.' });
@@ -4338,6 +4353,8 @@ app.post('/api/earnings/claim', async (req, res) => {
     const newWithdraw = Number((curWithdraw + totalClaimAmount).toFixed(2));
     const newAvailable = Number(((wallet.available_balance || 0) + totalClaimAmount).toFixed(2));
     const newTotalEarned = Number(((wallet.total_earned || 0) + totalClaimAmount).toFixed(2));
+    const targetWalletId = wallet.id;
+    const effectiveUserId = wallet.user_id || (candidateUserIds[0] || userId);
 
     // 3. Update Wallet: credit strictly to WITHDRAW WALLET
     const { error: walUpdErr } = await supabase
@@ -4349,7 +4366,7 @@ app.post('/api/earnings/claim', async (req, res) => {
         total_earned: newTotalEarned,
         updated_at: nowIso,
       })
-      .eq('user_id', userId);
+      .eq('id', targetWalletId);
 
     if (walUpdErr) {
       return res.status(500).json({ success: false, error: 'Failed to credit Withdraw wallet: ' + walUpdErr.message });
@@ -4374,7 +4391,7 @@ app.post('/api/earnings/claim', async (req, res) => {
     const claimBatchId = 'CLM-' + Math.random().toString(36).substring(2, 8).toUpperCase();
     try {
       await supabase.from('claim_batches').insert({
-        user_id: userId,
+        user_id: effectiveUserId,
         amount: totalClaimAmount,
         total_amount: totalClaimAmount,
         item_count: totalEligibleCycles,
@@ -4387,7 +4404,7 @@ app.post('/api/earnings/claim', async (req, res) => {
 
     // Record in wallet_transactions
     await supabase.from('wallet_transactions').insert({
-      user_id: userId,
+      user_id: effectiveUserId,
       type: 'EARNING',
       amount: totalClaimAmount,
       balance_before: curWithdraw,
@@ -4401,7 +4418,7 @@ app.post('/api/earnings/claim', async (req, res) => {
 
     // Record in wallet_ledger (Immutable Financial Double-Entry Audit Trail)
     const { error: ledgerErr } = await supabase.from('wallet_ledger').insert({
-      user_id: userId,
+      user_id: effectiveUserId,
       wallet_type: 'DEVICE_EARNING',
       transaction_type: 'DEVICE_EARNING_CLAIM',
       amount: totalClaimAmount,
@@ -4426,7 +4443,7 @@ app.post('/api/earnings/claim', async (req, res) => {
           total_earned: wallet.total_earned,
           updated_at: nowIso,
         })
-        .eq('user_id', userId);
+        .eq('id', targetWalletId);
       await supabase.from('wallet_transactions').delete().eq('reference_id', claimBatchId);
       for (const purUpd of purchasesToUpdate) {
         const origP = purchases.find((p: any) => p.id === purUpd.id);
@@ -4453,7 +4470,7 @@ app.post('/api/earnings/claim', async (req, res) => {
     // 6. Send Notification
     try {
       await supabase.from('notifications').insert({
-        user_id: userId,
+        user_id: effectiveUserId,
         title: 'Device Earnings Claimed 🎉',
         message: `₹${totalClaimAmount.toFixed(2)} (${totalEligibleCycles} cycle${totalEligibleCycles !== 1 ? 's' : ''}) has been credited to your Withdraw Wallet!`,
         type: 'SUCCESS',
@@ -4987,6 +5004,18 @@ app.use('/api/admin', (req, res, next) => {
     return next();
   }
   return verifyAdminAuth(req, res, next);
+});
+
+app.post('/api/admin/restore-missed-earnings', verifyAdminAuth, async (req, res) => {
+  try {
+    const dryRun = Boolean(req.body?.dryRun || req.query?.dryRun === 'true');
+    const { executeDeviceEarningsRestoration } = await import('./src/services/deviceEarningsRestoration');
+    const report = await executeDeviceEarningsRestoration({ dryRun });
+    return res.json({ success: true, ...report });
+  } catch (err: any) {
+    console.error('[ADMIN RESTORE MISSED EARNINGS ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.get('/api/admin/dashboard-stats', verifyAdminAuth, async (req, res) => {
@@ -8746,11 +8775,14 @@ app.get('/api/user-devices', async (req, res) => {
             durationDays,
             totalEarned,
             claimedAmount,
+            claimedHours: Number(p.claimed_hours || p.claimedHours || 0),
             status: isActive ? 'ACTIVE' : (p.status || 'EXPIRED'),
             startedAt: p.started_at || p.startedAt || p.created_at,
             endDate: endDate,
             expiresAt: endDate,
             isActive,
+            lastClaimedAt: p.last_claimed_at || p.lastClaimedAt || null,
+            lastSettledAt: p.last_settled_at || p.lastSettledAt || null,
           };
         }),
       },
