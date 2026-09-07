@@ -397,7 +397,7 @@ export const FortunePage: React.FC<FortunePageProps> = ({
                             <span>Day {h.dayNumber} Check-in</span>
                             <span className="text-white/60 text-[10px]">({h.date})</span>
                           </div>
-                          <span className="font-bold text-amber-200">+₹{h.amount.toFixed(2)}</span>
+                          <span className="font-bold text-amber-200">+₹{Number(h.amount ?? 0).toFixed(2)}</span>
                         </div>
                       ))
                     ) : (
@@ -445,7 +445,7 @@ export const FortunePage: React.FC<FortunePageProps> = ({
             <div className="space-y-2">
               {activePurchases.map((p) => {
                 const isPro = (p.planCategory || '').toUpperCase() === 'PRO';
-                const daily = p.dailyEarnings || (p.earningRate * 24);
+                const daily = Number(p.dailyEarnings ?? ((p.earningRate ?? 0) * 24));
                 return (
                   <div
                     key={p.id}
@@ -465,7 +465,7 @@ export const FortunePage: React.FC<FortunePageProps> = ({
                         </span>
                       </div>
                       <p className="text-gray-500 text-[10.5px] mt-0.5 font-mono">
-                        Yield: ₹{daily.toFixed(2)}/day (₹{p.earningRate.toFixed(2)}/hr)
+                        Yield: ₹{daily.toFixed(2)}/day (₹{Number(p.earningRate ?? 0).toFixed(2)}/hr)
                       </p>
                       {p.instantBonus && p.instantBonus > 0 ? (
                         <p className="text-amber-700 text-[10px] font-bold mt-0.5">
@@ -475,7 +475,7 @@ export const FortunePage: React.FC<FortunePageProps> = ({
                     </div>
                     <div className="text-right">
                       <span className="text-[#FF6200] font-black text-sm">
-                        +₹{p.totalEarned.toFixed(2)}
+                        +₹{Number(p.totalEarned ?? 0).toFixed(2)}
                       </span>
                       <p className="text-gray-400 text-[9.5px]">Total Accrued</p>
                     </div>
