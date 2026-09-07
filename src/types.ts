@@ -273,6 +273,7 @@ export interface PaymentItem {
   orderId: string;
   amount: number;
   paymentType: string;
+  paymentMethod?: string;
   utr?: string;
   utrNumber?: string;
   proofUrl?: string;
@@ -818,16 +819,34 @@ export interface ReferralRewardLog {
   createdAt: string;
 }
 
+export interface MemberActivePlanItem {
+  id: string;
+  planId?: string;
+  name: string;
+  category?: string;
+  price: number;
+}
+
 export interface TeamMemberItem {
   id: string;
   userId: string;
   username: string;
   mobile: string;
   joined: string;
-  devices: number;
-  totalInvested: number;
-  totalCommissionEarned: number;
+  depositAmount: number;
+  commission: number;
+  activePlans?: MemberActivePlanItem[];
+  devices?: number;
+  totalInvested?: number;
+  totalCommissionEarned?: number;
   tier: 1 | 2 | 3;
+}
+
+export interface LevelSummaryStats {
+  memberCount: number;
+  depositAmount: number;
+  purchaseNumber?: number;
+  purchaseAmount?: number;
 }
 
 export interface LevelPurchaseStats {
@@ -849,6 +868,11 @@ export interface UserTeamSummary {
     1: TeamMemberItem[];
     2: TeamMemberItem[];
     3: TeamMemberItem[];
+  };
+  levelStats?: {
+    1: LevelSummaryStats;
+    2: LevelSummaryStats;
+    3: LevelSummaryStats;
   };
   levelPurchases?: {
     1: LevelPurchaseStats;

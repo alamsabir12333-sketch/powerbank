@@ -407,7 +407,7 @@ export const AboutPlatformPage: React.FC<AboutPlatformPageProps> = ({
                       {lvl.badgeText || `VIP ${lvl.levelNumber}`}
                     </span>
                     <span className="text-[10px] font-bold text-gray-500">
-                      {lvl.levelNumber === 0 ? 'Starter' : `Level ${lvl.levelNumber}`}
+                      {lvl.levelNumber === 0 ? 'Starter' : `VIP ${lvl.levelNumber}`}
                     </span>
                   </div>
                   <div className="text-xs font-black text-gray-900 pt-0.5">

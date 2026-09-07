@@ -116,6 +116,8 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
         }
       } else if (statusFilter === 'PAID') {
         if (p.status !== 'PAID') return false;
+      } else if (statusFilter === 'REJECTED') {
+        if (p.status !== 'REJECTED' && p.status !== 'FAILED') return false;
       } else if (p.status !== statusFilter) {
         return false;
       }
@@ -124,11 +126,14 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
       const q = searchQuery.toLowerCase();
       return (
         (p.utr || '').toLowerCase().includes(q) ||
+        (p.utrNumber || '').toLowerCase().includes(q) ||
         (p.id || '').toLowerCase().includes(q) ||
         (p.orderId || '').toLowerCase().includes(q) ||
         (p.userId || '').toLowerCase().includes(q) ||
         (p.userMobile || '').toLowerCase().includes(q) ||
-        (p.username || '').toLowerCase().includes(q)
+        (p.username || '').toLowerCase().includes(q) ||
+        (p.paymentType || '').toLowerCase().includes(q) ||
+        (p.paymentMethod || '').toLowerCase().includes(q)
       );
     }
     return true;
@@ -149,10 +154,10 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
           <div>
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <ArrowDownLeft className="w-5 h-5 text-emerald-400" />
-              Manual UPI Deposits & Recharge Review
+              Recharge & Gateway Deposits Review
             </h2>
             <p className="text-xs text-gray-400 mt-0.5">
-              Review user-submitted UPI UTR numbers and payment screenshots, approve balance credits, or reject invalid requests.
+              Live review of UniVePay gateway deposits and UPI recharge transactions, verify UTR numbers, and manage verification status.
             </p>
           </div>
 
@@ -178,7 +183,7 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by 12-digit UTR, Order ID, User Mobile or ID..."
+              placeholder="Search by UTR, Order ID, Method, Mobile or Username..."
               className="w-full bg-[#0d1117] border border-gray-700/80 focus:border-[#FF6000] rounded-xl py-2.5 pl-10 pr-4 text-xs text-white placeholder-gray-500 outline-none"
             />
           </div>
@@ -215,8 +220,8 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
                 <th className="py-3.5 px-4">Order ID & Date</th>
                 <th className="py-3.5 px-4">User</th>
                 <th className="py-3.5 px-4">Amount</th>
-                <th className="py-3.5 px-4">12-Digit UTR</th>
-                <th className="py-3.5 px-4">Payment Screenshot</th>
+                <th className="py-3.5 px-4">12-Digit UTR / Ref</th>
+                <th className="py-3.5 px-4">Payment Proof</th>
                 <th className="py-3.5 px-4">Status</th>
                 <th className="py-3.5 px-4 text-right">Actions</th>
               </tr>
@@ -226,13 +231,13 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
                 <tr>
                   <td colSpan={7} className="py-12 text-center text-gray-500">
                     <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-[#FF6000]" />
-                    <span>Loading deposit requests...</span>
+                    <span>Loading recharge records...</span>
                   </td>
                 </tr>
               ) : filteredPayments.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-10 text-center text-gray-500">
-                    No manual deposit records found.
+                    No recharge records found.
                   </td>
                 </tr>
               ) : (
@@ -242,6 +247,8 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
                     item.status === 'PAYMENT_PENDING';
                   const isPaid = item.status === 'PAID';
                   const isRejected = item.status === 'REJECTED' || item.status === 'FAILED';
+                  const methodLabel = item.paymentMethod || item.paymentType || 'GATEWAY';
+                  const isExternalLink = item.proofUrl && (item.proofUrl.startsWith('http') && !item.proofUrl.match(/\.(jpeg|jpg|gif|png|webp)($|\?)/i));
 
                   return (
                     <tr key={item.id} className="hover:bg-gray-800/30 transition-colors">
@@ -249,13 +256,23 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
                         <div className="font-bold text-white text-[11.5px]">
                           {item.orderId || item.id}
                         </div>
-                        <div className="text-[10px] text-gray-500">
-                          {new Date(item.createdAt).toLocaleString()}
+                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                          <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-amber-950/60 text-amber-400 border border-amber-800/40 font-semibold uppercase tracking-wider font-sans">
+                            {methodLabel}
+                          </span>
+                          <span className="text-[10px] text-gray-500 font-sans">
+                            {new Date(item.createdAt).toLocaleString()}
+                          </span>
                         </div>
                       </td>
 
                       <td className="py-3 px-4">
-                        <div className="font-semibold text-gray-200">{item.username || item.userMobile || 'User'}</div>
+                        <div className="font-semibold text-gray-200">{item.username || 'User'}</div>
+                        {item.userMobile && (
+                          <div className="text-[11px] text-gray-400 font-mono">
+                            {item.userMobile}
+                          </div>
+                        )}
                         <div className="text-[10px] text-gray-500 font-mono">
                           ID: {item.userId?.substring(0, 8)}...
                         </div>
@@ -293,16 +310,28 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
 
                       <td className="py-3 px-4">
                         {item.proofUrl ? (
-                          <button
-                            type="button"
-                            onClick={() => setPreviewImage(item.proofUrl!)}
-                            className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-cyan-300 font-semibold text-[11px] cursor-pointer"
-                          >
-                            <ImageIcon className="w-3.5 h-3.5" />
-                            <span>View Proof</span>
-                          </button>
+                          isExternalLink ? (
+                            <a
+                              href={item.proofUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-cyan-300 font-semibold text-[11px] cursor-pointer"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              <span>Gateway Link</span>
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setPreviewImage(item.proofUrl!)}
+                              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-cyan-300 font-semibold text-[11px] cursor-pointer"
+                            >
+                              <ImageIcon className="w-3.5 h-3.5" />
+                              <span>View Proof</span>
+                            </button>
+                          )
                         ) : (
-                          <span className="text-[10.5px] text-gray-500">No screenshot</span>
+                          <span className="text-[10.5px] text-gray-500">Auto-Gateway</span>
                         )}
                       </td>
 
@@ -350,7 +379,9 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
                             </button>
                           </>
                         ) : (
-                          <span className="text-[10px] text-gray-500 font-mono">Processed</span>
+                          <span className="text-[10px] text-gray-500 font-mono">
+                            {isPaid ? 'Completed' : 'Processed'}
+                          </span>
                         )}
                       </td>
                     </tr>

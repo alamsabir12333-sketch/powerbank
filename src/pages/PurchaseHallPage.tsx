@@ -31,6 +31,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
   const [selectedProduct, setSelectedProduct] = useState<ProductItem | null>(null);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [userVipLevel, setUserVipLevel] = useState<number>(0);
+  const [userPurchases, setUserPurchases] = useState<any[]>([]);
   const [insufficientBalanceModal, setInsufficientBalanceModal] = useState<{
     isOpen: boolean;
     required: number;
@@ -55,11 +56,13 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
     setLoading(true);
     setLoadError(null);
     try {
-      const [fetchedPlans, eligibility, vipStatus] = await Promise.all([
+      const [fetchedPlans, eligibility, vipStatus, purchases] = await Promise.all([
         fetchPlans(),
         checkProEligibility(userId),
         fetchUserVipStatus(userId),
+        userId ? fetchPurchases(userId).catch(() => []) : Promise.resolve([]),
       ]);
+      setUserPurchases(purchases || []);
       setUserVipLevel(Number(vipStatus?.currentLevel?.levelNumber || 0));
       // Filter out archived, deleted, inactive, or disabled plans and normalize to VIP, PRO, EVENT
       const validPlans = (fetchedPlans || [])
@@ -98,7 +101,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
     return ['VIP', 'PRO', 'EVENT'];
   }, []);
 
-  // Filter plans by selected category (VIP, PRO, EVENT)
+  // Filter plans by selected category (VIP, PRO, EVENT) and sort by price ascending
   const filteredPlans = useMemo(() => {
     return plans.filter((p) => {
       let cat = (p.category || '').toUpperCase();
@@ -106,7 +109,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
         cat = (p.name || '').toUpperCase().includes('PRO') ? 'PRO' : 'VIP';
       }
       return cat === selectedCategory;
-    });
+    }).sort((a, b) => (a.devicePrice || a.price || 0) - (b.devicePrice || b.price || 0));
   }, [plans, selectedCategory]);
 
   const handleBuyClick = async (product: ProductItem) => {
@@ -150,6 +153,18 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
       }
       if (end && now > new Date(end).getTime()) {
         onShowToast('This Event Plan has ended.');
+        return;
+      }
+    }
+
+    // Check Purchase Limit per user
+    const planLimit = Number(product.limit ?? (product as any).purchaseLimit ?? (product as any).purchase_limit ?? (product as any).limit_per_user ?? 5);
+    if (planLimit && planLimit > 0) {
+      const userPurchasesForThisPlan = userPurchases.filter(
+        (p) => p.planId === product.id && !['CANCELLED', 'FAILED', 'REJECTED'].includes(String(p.status || '').toUpperCase())
+      );
+      if (userPurchasesForThisPlan.length >= planLimit) {
+        onShowToast(`You have reached the maximum purchase limit (${planLimit}) for this plan.`);
         return;
       }
     }
@@ -391,6 +406,11 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
             const dailyEarn = item.dailyEarnings || (item.hourlyEarnings ? +(item.hourlyEarnings * 24).toFixed(2) : 0);
             const duration = item.durationDays || item.duration || (isPro ? 7 : isEvent ? 15 : 365);
             const totalReturn = (dailyEarn * duration) + instantBonus;
+            const planLimit = Number(item.limit ?? (item as any).purchaseLimit ?? (item as any).purchase_limit ?? (item as any).limit_per_user ?? 5);
+            const userPurchasedCount = userPurchases.filter(
+              (p) => p.planId === item.id && !['CANCELLED', 'FAILED', 'REJECTED'].includes(String(p.status || '').toUpperCase())
+            ).length;
+            const isLimitReached = planLimit > 0 && userPurchasedCount >= planLimit;
 
             return (
               <div
@@ -517,15 +537,18 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                   {/* Buy Button */}
                   <button
                     onClick={() => handleBuyClick(item)}
-                    className={`px-6 py-1.5 rounded-lg text-white font-bold text-[14px] shadow-sm active:scale-95 transition-all ${
-                      isPro
-                        ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-gray-950 font-black shadow-amber-500/25 hover:from-amber-600 hover:to-yellow-600'
+                    disabled={isLimitReached}
+                    className={`px-6 py-1.5 rounded-lg font-bold text-[14px] shadow-sm transition-all ${
+                      isLimitReached
+                        ? 'bg-gray-200 text-gray-400 cursor-not-allowed border border-gray-300'
+                        : isPro
+                        ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-gray-950 font-black shadow-amber-500/25 hover:from-amber-600 hover:to-yellow-600 active:scale-95'
                         : isEvent
-                        ? 'bg-gradient-to-r from-rose-500 to-red-600 text-white font-black shadow-rose-500/25 hover:from-rose-600 hover:to-red-700'
-                        : 'bg-[#FF6000] hover:bg-[#E65100] shadow-orange-500/25'
+                        ? 'bg-gradient-to-r from-rose-500 to-red-600 text-white font-black shadow-rose-500/25 hover:from-rose-600 hover:to-red-700 active:scale-95'
+                        : 'bg-[#FF6000] hover:bg-[#E65100] text-white shadow-orange-500/25 active:scale-95'
                     }`}
                   >
-                    Buy
+                    {isLimitReached ? 'Limit Reached' : 'Buy'}
                   </button>
                 </div>
               </div>

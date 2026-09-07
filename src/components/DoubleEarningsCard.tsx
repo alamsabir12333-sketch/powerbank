@@ -7,6 +7,7 @@ interface DoubleEarningsCardProps {
   promotionEarnings?: number;
   onDoubleHistoryClick?: () => void;
   onStatClick?: (type: string) => void;
+  onPromotionClick?: () => void;
 }
 
 export const DoubleEarningsCard: React.FC<DoubleEarningsCardProps> = ({
@@ -16,6 +17,7 @@ export const DoubleEarningsCard: React.FC<DoubleEarningsCardProps> = ({
   promotionEarnings = 0,
   onDoubleHistoryClick,
   onStatClick,
+  onPromotionClick,
 }) => {
   // Format remaining hours label
   const formattedHours =
@@ -30,7 +32,10 @@ export const DoubleEarningsCard: React.FC<DoubleEarningsCardProps> = ({
   })}`;
 
   const formattedToday = `+₹${Number(todayEarnings || 0) > 0 ? Number(todayEarnings).toFixed(2) : '0'}`;
-  const formattedPromo = `+₹${Number(promotionEarnings || 0) > 0 ? Number(promotionEarnings).toFixed(2) : '0'}`;
+  const formattedPromo =
+    Number(promotionEarnings || 0) > 0
+      ? `+₹${Number(promotionEarnings).toFixed(2)}`
+      : '₹0';
 
   return (
     <div className="w-full px-4 py-2">
@@ -95,15 +100,35 @@ export const DoubleEarningsCard: React.FC<DoubleEarningsCardProps> = ({
             </p>
           </div>
 
-          {/* 4. Promotion Earnings */}
+          {/* 4. Promotion Earnings - Entire Card Area Clickable */}
           <div
-            onClick={() => onStatClick?.('promo')}
-            className="pl-1 text-center cursor-pointer hover:opacity-80 transition-opacity"
+            id="promotion-stat-card"
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onPromotionClick) {
+                onPromotionClick();
+              } else if (onStatClick) {
+                onStatClick('promo');
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                if (onPromotionClick) {
+                  onPromotionClick();
+                } else if (onStatClick) {
+                  onStatClick('promo');
+                }
+              }
+            }}
+            className="pl-1 text-center cursor-pointer hover:opacity-80 active:scale-95 transition-all select-none"
           >
-            <p className="text-amber-400 font-bold text-[13px] sm:text-[14px] leading-tight truncate">
+            <p className="text-amber-400 font-bold text-[13px] sm:text-[14px] leading-tight truncate pointer-events-none">
               {formattedPromo}
             </p>
-            <p className="text-gray-500 text-[8.5px] sm:text-[9.5px] mt-1 whitespace-nowrap">
+            <p className="text-gray-500 text-[8.5px] sm:text-[9.5px] mt-1 whitespace-nowrap pointer-events-none">
               Promotion
             </p>
           </div>

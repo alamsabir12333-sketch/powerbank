@@ -36,6 +36,7 @@ import {
   ReferralStreakRecord,
   ReferralRewardLog,
   TeamMemberItem,
+  MemberActivePlanItem,
   UserTeamSummary,
   GiftCode,
   GiftCodeClaim,
@@ -2014,22 +2015,57 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
         level2Commission: d.level2Commission,
         level3Commission: d.level3Commission,
         subordinates: {
-          1: d.level1Members || [],
-          2: d.level2Members || [],
-          3: d.level3Members || [],
+          1: (d.level1Members || []).map((m: any) => ({
+            ...m,
+            depositAmount: Number(m.depositAmount !== undefined ? m.depositAmount : 0),
+            commission: Number(m.commission !== undefined ? m.commission : m.totalCommissionEarned || 0),
+            activePlans: Array.isArray(m.activePlans)
+              ? [...m.activePlans].sort((a, b) => Number(a.price || 0) - Number(b.price || 0))
+              : [],
+          })),
+          2: (d.level2Members || []).map((m: any) => ({
+            ...m,
+            depositAmount: Number(m.depositAmount !== undefined ? m.depositAmount : 0),
+            commission: Number(m.commission !== undefined ? m.commission : m.totalCommissionEarned || 0),
+            activePlans: Array.isArray(m.activePlans)
+              ? [...m.activePlans].sort((a, b) => Number(a.price || 0) - Number(b.price || 0))
+              : [],
+          })),
+          3: (d.level3Members || []).map((m: any) => ({
+            ...m,
+            depositAmount: Number(m.depositAmount !== undefined ? m.depositAmount : 0),
+            commission: Number(m.commission !== undefined ? m.commission : m.totalCommissionEarned || 0),
+            activePlans: Array.isArray(m.activePlans)
+              ? [...m.activePlans].sort((a, b) => Number(a.price || 0) - Number(b.price || 0))
+              : [],
+          })),
+        },
+        levelStats: {
+          1: {
+            memberCount: Number(d.level1MemberCount !== undefined ? d.level1MemberCount : (d.level1Members || []).length),
+            depositAmount: Number(d.level1DepositAmount !== undefined ? d.level1DepositAmount : (d.level1Members || []).reduce((s: number, m: any) => s + (m.depositAmount || 0), 0)),
+          },
+          2: {
+            memberCount: Number(d.level2MemberCount !== undefined ? d.level2MemberCount : (d.level2Members || []).length),
+            depositAmount: Number(d.level2DepositAmount !== undefined ? d.level2DepositAmount : (d.level2Members || []).reduce((s: number, m: any) => s + (m.depositAmount || 0), 0)),
+          },
+          3: {
+            memberCount: Number(d.level3MemberCount !== undefined ? d.level3MemberCount : (d.level3Members || []).length),
+            depositAmount: Number(d.level3DepositAmount !== undefined ? d.level3DepositAmount : (d.level3Members || []).reduce((s: number, m: any) => s + (m.depositAmount || 0), 0)),
+          },
         },
         levelPurchases: {
           1: {
-            purchaseNumber: Number(d.level1PurchaseNumber !== undefined ? d.level1PurchaseNumber : (d.level1Members || []).reduce((s: number, m: any) => s + (m.devices || 0), 0)),
-            purchaseAmount: Number(d.level1PurchaseAmount !== undefined ? d.level1PurchaseAmount : (d.level1Members || []).reduce((s: number, m: any) => s + (m.totalInvested || 0), 0)),
+            purchaseNumber: Number(d.level1MemberCount !== undefined ? d.level1MemberCount : (d.level1Members || []).length),
+            purchaseAmount: Number(d.level1DepositAmount !== undefined ? d.level1DepositAmount : (d.level1Members || []).reduce((s: number, m: any) => s + (m.depositAmount || 0), 0)),
           },
           2: {
-            purchaseNumber: Number(d.level2PurchaseNumber !== undefined ? d.level2PurchaseNumber : (d.level2Members || []).reduce((s: number, m: any) => s + (m.devices || 0), 0)),
-            purchaseAmount: Number(d.level2PurchaseAmount !== undefined ? d.level2PurchaseAmount : (d.level2Members || []).reduce((s: number, m: any) => s + (m.totalInvested || 0), 0)),
+            purchaseNumber: Number(d.level2MemberCount !== undefined ? d.level2MemberCount : (d.level2Members || []).length),
+            purchaseAmount: Number(d.level2DepositAmount !== undefined ? d.level2DepositAmount : (d.level2Members || []).reduce((s: number, m: any) => s + (m.depositAmount || 0), 0)),
           },
           3: {
-            purchaseNumber: Number(d.level3PurchaseNumber !== undefined ? d.level3PurchaseNumber : (d.level3Members || []).reduce((s: number, m: any) => s + (m.devices || 0), 0)),
-            purchaseAmount: Number(d.level3PurchaseAmount !== undefined ? d.level3PurchaseAmount : (d.level3Members || []).reduce((s: number, m: any) => s + (m.totalInvested || 0), 0)),
+            purchaseNumber: Number(d.level3MemberCount !== undefined ? d.level3MemberCount : (d.level3Members || []).length),
+            purchaseAmount: Number(d.level3DepositAmount !== undefined ? d.level3DepositAmount : (d.level3Members || []).reduce((s: number, m: any) => s + (m.depositAmount || 0), 0)),
           },
         },
         rewardHistory: [],
@@ -2043,21 +2079,53 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
   // 1. Live Supabase Query (when configured)
   if (isSupabaseConfigured && supabase) {
     try {
-      const [profilesRes, referralsRes, purchasesRes, txsRes] = await Promise.all([
+      const [profilesRes, referralsRes, purchasesRes, txsRes, depositsRes, rechargesRes] = await Promise.all([
         supabase.from('profiles').select('*'),
         supabase.from('referrals').select('*'),
         supabase.from('purchases').select('*'),
         supabase
           .from('wallet_transactions')
           .select('*')
-          .eq('user_id', userId)
-          .in('type', ['COMMISSION', 'REFERRAL_BONUS', 'REFERRAL_REWARD']),
+          .eq('user_id', userId),
+        supabase.from('deposit_transactions').select('*'),
+        supabase.from('wallet_transactions').select('*').eq('type', 'RECHARGE'),
       ]);
 
       const dbProfiles: any[] = profilesRes.data || [];
       const dbReferrals: any[] = referralsRes.data || [];
       const dbPurchases: any[] = purchasesRes.data || [];
       const dbTxs: any[] = txsRes.data || [];
+      const dbDeposits: any[] = depositsRes.data || [];
+      const dbRecharges: any[] = rechargesRes.data || [];
+
+      // Helper: compute total topup/recharge deposit amount for user
+      const computeUserDeposit = (uid: string): number => {
+        const counted = new Set<string>();
+        let sum = 0;
+        for (const d of dbDeposits) {
+          if (d.user_id !== uid) continue;
+          const s = String(d.status || '').toUpperCase();
+          if (s === 'SUCCESS' || s === 'COMPLETED') {
+            const ref = d.traceno || d.order_id || d.merchant_order_id || d.id;
+            if (ref && !counted.has(ref)) {
+              counted.add(ref);
+              sum += Number(d.amount || 0);
+            }
+          }
+        }
+        for (const w of dbRecharges) {
+          if (w.user_id !== uid) continue;
+          const s = String(w.status || '').toUpperCase();
+          if (s === 'COMPLETED' || s === 'SUCCESS') {
+            const ref = w.reference_id || w.id;
+            if (ref && !counted.has(ref)) {
+              counted.add(ref);
+              sum += Number(w.amount || 0);
+            }
+          }
+        }
+        return +sum.toFixed(2);
+      };
 
       if (dbProfiles.length > 0) {
         // Direct Level 1
@@ -2125,12 +2193,49 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
               (u.referred_by && level2Codes.has(u.referred_by.toUpperCase())))
         );
 
+        const now = Date.now();
+
+        // Extract topup-only commission transactions
+        const topupCommTxs = dbTxs.filter((t: any) => {
+          const type = String(t.type || '').toUpperCase();
+          const desc = String(t.description || '').toLowerCase();
+          const ref = String(t.reference_id || '').toLowerCase();
+          const rewType = String(t.metadata?.rewardType || '').toUpperCase();
+
+          if (ref.includes('pur-') || desc.includes('plan purchase') || desc.includes('device purchase')) return false;
+          if (['DAILY_DEVICE_EARNING', 'INSTANT_BONUS', 'SIGNUP_BONUS'].includes(type)) return false;
+
+          return (
+            rewType === 'TOPUP_COMMISSION' ||
+            ref.startsWith('topup-ref-') ||
+            (desc.includes('referral commission') && desc.includes('topup'))
+          );
+        });
+
         const mapDbMember = (u: any, tier: 1 | 2 | 3): TeamMemberItem => {
           const uId = u.user_id || u.id;
-          const userPurchases = dbPurchases.filter((p) => p.user_id === uId && p.status === 'ACTIVE');
-          const totalInvested = dbPurchases
-            .filter((p) => p.user_id === uId)
-            .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+          
+          // 1. Real deposit amount from successful TOPUP/RECHARGE
+          const depositAmount = computeUserDeposit(uId);
+
+          // 2. Active plans: sorted by PRICE ASCENDING (lowest amount first across all categories)
+          const userActivePurchases = dbPurchases.filter((p) => {
+            if (p.user_id !== uId) return false;
+            const isStatusActive = String(p.status || '').toUpperCase() === 'ACTIVE';
+            const endDate = p.expires_at || p.end_date;
+            const isUnexpired = !endDate || new Date(endDate).getTime() > now;
+            return isStatusActive && isUnexpired;
+          });
+
+          userActivePurchases.sort((a, b) => Number(a.amount || 0) - Number(b.amount || 0));
+
+          const activePlans = userActivePurchases.map((p) => ({
+            id: p.id,
+            planId: p.plan_id,
+            name: p.plan_name || 'Active Plan',
+            category: p.plan_category || 'VIP',
+            price: Number(p.amount || 0),
+          }));
 
           const mobileRaw = u.whatsapp_no || u.phone || u.mobile || '9800000000';
           const maskedMobile =
@@ -2138,8 +2243,38 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
               ? `${mobileRaw.substring(0, 4)}****${mobileRaw.substring(mobileRaw.length - 2)}`
               : mobileRaw;
 
+          // 3. Referral Commission from TOPUP only
+          const memberDepositRefs = new Set<string>();
+          dbDeposits
+            .filter((d: any) => d.user_id === uId)
+            .forEach((d: any) => {
+              [d.traceno, d.order_id, d.merchant_order_id, d.id].filter(Boolean).forEach((r) => memberDepositRefs.add(String(r)));
+            });
+          dbRecharges
+            .filter((w: any) => w.user_id === uId)
+            .forEach((w: any) => {
+              [w.reference_id, w.id].filter(Boolean).forEach((r) => memberDepositRefs.add(String(r)));
+            });
+
+          let memberComm = topupCommTxs
+            .filter((t: any) => {
+              const ref = String(t.reference_id || '');
+              for (const mRef of memberDepositRefs) {
+                if (mRef && ref.includes(mRef)) return true;
+              }
+              return false;
+            })
+            .reduce((sum: number, t: any) => sum + Number(t.amount || 0), 0);
+
           const refEntry = dbReferrals.find((r) => r.referrer_id === userId && r.referee_id === uId);
-          const commEarned = Number(refEntry?.commission_earned || 0);
+          if (tier === 1 && refEntry && Number(refEntry.commission_earned || 0) > memberComm) {
+            memberComm = Number(refEntry.commission_earned || 0);
+          }
+
+          if (memberComm === 0 && depositAmount > 0) {
+            const tierRate = tier === 1 ? 0.10 : tier === 2 ? 0.05 : 0.02;
+            memberComm = +(depositAmount * tierRate).toFixed(2);
+          }
 
           return {
             id: u.id || u.user_id,
@@ -2147,9 +2282,12 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
             username: u.username || 'Member',
             mobile: maskedMobile,
             joined: u.created_at ? u.created_at.split('T')[0] : '2026-08-20',
-            devices: userPurchases.length,
-            totalInvested,
-            totalCommissionEarned: +commEarned.toFixed(2),
+            depositAmount,
+            commission: +memberComm.toFixed(2),
+            totalCommissionEarned: +memberComm.toFixed(2),
+            activePlans,
+            devices: activePlans.length,
+            totalInvested: userActivePurchases.reduce((sum, p) => sum + (Number(p.amount) || 0), 0),
             tier,
           };
         };
@@ -2158,32 +2296,25 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
         const l2Items = level2Users.map((u) => mapDbMember(u, 2));
         const l3Items = level3Users.map((u) => mapDbMember(u, 3));
 
-        const level1Comm = +dbTxs
-          .filter((t) => (t.description || '').includes('Level 1') || (t.description || '').includes('Tier 1') || (t.description || '').includes('Direct'))
-          .reduce((sum, t) => sum + Number(t.amount || 0), 0)
-          .toFixed(2);
+        const level1Comm = +l1Items.reduce((sum, m) => sum + m.commission, 0).toFixed(2);
+        const level2Comm = +l2Items.reduce((sum, m) => sum + m.commission, 0).toFixed(2);
+        const level3Comm = +l3Items.reduce((sum, m) => sum + m.commission, 0).toFixed(2);
 
-        const level2Comm = +dbTxs
-          .filter((t) => (t.description || '').includes('Level 2') || (t.description || '').includes('Tier 2'))
-          .reduce((sum, t) => sum + Number(t.amount || 0), 0)
-          .toFixed(2);
-
-        const level3Comm = +dbTxs
-          .filter((t) => (t.description || '').includes('Level 3') || (t.description || '').includes('Tier 3'))
-          .reduce((sum, t) => sum + Number(t.amount || 0), 0)
-          .toFixed(2);
-
-        const totalComm = +(dbTxs.reduce((sum, t) => sum + Number(t.amount || 0), 0) || (level1Comm + level2Comm + level3Comm)).toFixed(2);
+        const totalComm = +(level1Comm + level2Comm + level3Comm).toFixed(2);
 
         const activeDevices =
-          l1Items.reduce((s, m) => s + m.devices, 0) +
-          l2Items.reduce((s, m) => s + m.devices, 0) +
-          l3Items.reduce((s, m) => s + m.devices, 0);
+          l1Items.reduce((s, m) => s + (m.devices || 0), 0) +
+          l2Items.reduce((s, m) => s + (m.devices || 0), 0) +
+          l3Items.reduce((s, m) => s + (m.devices || 0), 0);
+
+        const l1DepositTotal = +l1Items.reduce((s, m) => s + m.depositAmount, 0).toFixed(2);
+        const l2DepositTotal = +l2Items.reduce((s, m) => s + m.depositAmount, 0).toFixed(2);
+        const l3DepositTotal = +l3Items.reduce((s, m) => s + m.depositAmount, 0).toFixed(2);
 
         const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://gainpower-top-1.com';
         const referralLink = `${baseUrl}/invite/${myCode}`;
 
-        const rewardHistory: ReferralRewardLog[] = dbTxs.map((t) => ({
+        const rewardHistory: ReferralRewardLog[] = topupCommTxs.map((t) => ({
           id: t.id,
           referrerUserId: userId,
           refereeUserId: t.reference_id || '',
@@ -2211,18 +2342,32 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
             2: l2Items,
             3: l3Items,
           },
-          levelPurchases: {
+          levelStats: {
             1: {
-              purchaseNumber: l1Items.reduce((s, m) => s + m.devices, 0),
-              purchaseAmount: +l1Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+              memberCount: l1Items.length,
+              depositAmount: l1DepositTotal,
             },
             2: {
-              purchaseNumber: l2Items.reduce((s, m) => s + m.devices, 0),
-              purchaseAmount: +l2Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+              memberCount: l2Items.length,
+              depositAmount: l2DepositTotal,
             },
             3: {
-              purchaseNumber: l3Items.reduce((s, m) => s + m.devices, 0),
-              purchaseAmount: +l3Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+              memberCount: l3Items.length,
+              depositAmount: l3DepositTotal,
+            },
+          },
+          levelPurchases: {
+            1: {
+              purchaseNumber: l1Items.length,
+              purchaseAmount: l1DepositTotal,
+            },
+            2: {
+              purchaseNumber: l2Items.length,
+              purchaseAmount: l2DepositTotal,
+            },
+            3: {
+              purchaseNumber: l3Items.length,
+              purchaseAmount: l3DepositTotal,
             },
           },
           rewardHistory,
@@ -2277,13 +2422,34 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
   // Helper to map UserProfile to TeamMemberItem
   const mapMember = (u: UserProfile, tier: 1 | 2 | 3): TeamMemberItem => {
     const userPurchases = allPurchases.filter((p) => p.userId === u.userId && p.status === 'ACTIVE');
+    // Sort active plans by numeric price ascending
+    const sortedUserPurchases = [...userPurchases].sort((a, b) => Number(a.amount || 0) - Number(b.amount || 0));
+    const activePlans: MemberActivePlanItem[] = sortedUserPurchases.map((p) => ({
+      id: p.id,
+      planId: p.planId,
+      name: p.planName || 'Active Plan',
+      category: p.planCategory || 'VIP',
+      price: Number(p.amount || 0),
+    }));
+
     const userRewards = allRewards.filter(
-      (r) => r.referrerUserId === userId && r.refereeUserId === u.userId && r.status === 'CREDITED'
+      (r) => r.referrerUserId === userId && r.refereeUserId === u.userId && r.status === 'CREDITED' && r.rewardType === 'TOPUP_COMMISSION'
     );
     const commEarned = userRewards.reduce((sum, r) => sum + r.amount, 0);
-    const totalInvested = allPurchases
-      .filter((p) => p.userId === u.userId)
-      .reduce((sum, p) => sum + (p.amount || 0), 0);
+
+    // Get user deposit transactions from local state or fallback
+    let userDeposit = 0;
+    try {
+      const depositsRaw = localStorage.getItem('gainpower_deposit_records');
+      if (depositsRaw) {
+        const deposits = JSON.parse(depositsRaw);
+        userDeposit = deposits
+          .filter((d: any) => (d.userId === u.userId || d.user_id === u.userId) && (d.status === 'SUCCESS' || d.status === 'COMPLETED'))
+          .reduce((sum: number, d: any) => sum + Number(d.amount || 0), 0);
+      }
+    } catch {
+      // ignore
+    }
 
     const mobileRaw = u.whatsappNo || u.mobile || '9800000000';
     const maskedMobile =
@@ -2297,9 +2463,12 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
       username: u.username || 'Member',
       mobile: maskedMobile,
       joined: u.createdAt ? u.createdAt.split('T')[0] : '2026-08-20',
-      devices: userPurchases.length,
-      totalInvested,
+      depositAmount: +userDeposit.toFixed(2),
+      commission: +commEarned.toFixed(2),
       totalCommissionEarned: +commEarned.toFixed(2),
+      activePlans,
+      devices: activePlans.length,
+      totalInvested: activePlans.reduce((sum, p) => sum + p.price, 0),
       tier,
     };
   };
@@ -2309,17 +2478,19 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
   const l3Items = level3Users.map((u) => mapMember(u, 3));
 
   // Compute commissions earned from rewards log
-  const myRewards = allRewards.filter((r) => r.referrerUserId === userId && r.status === 'CREDITED');
-  const level1Comm = myRewards
-    .filter((r) => r.tier === 1 || r.rewardType === 'REGISTRATION' || r.rewardType === 'CONSECUTIVE_CLAIM')
-    .reduce((sum, r) => sum + r.amount, 0);
-  const level2Comm = myRewards.filter((r) => r.tier === 2).reduce((sum, r) => sum + r.amount, 0);
-  const level3Comm = myRewards.filter((r) => r.tier === 3).reduce((sum, r) => sum + r.amount, 0);
+  const myRewards = allRewards.filter((r) => r.referrerUserId === userId && r.status === 'CREDITED' && r.rewardType === 'TOPUP_COMMISSION');
+  const level1Comm = l1Items.reduce((sum, m) => sum + m.commission, 0);
+  const level2Comm = l2Items.reduce((sum, m) => sum + m.commission, 0);
+  const level3Comm = l3Items.reduce((sum, m) => sum + m.commission, 0);
   const totalComm = level1Comm + level2Comm + level3Comm;
 
-  const activeDevices = l1Items.reduce((s, m) => s + m.devices, 0) +
-    l2Items.reduce((s, m) => s + m.devices, 0) +
-    l3Items.reduce((s, m) => s + m.devices, 0);
+  const activeDevices = l1Items.reduce((s, m) => s + (m.devices || 0), 0) +
+    l2Items.reduce((s, m) => s + (m.devices || 0), 0) +
+    l3Items.reduce((s, m) => s + (m.devices || 0), 0);
+
+  const l1DepositTotal = +l1Items.reduce((s, m) => s + m.depositAmount, 0).toFixed(2);
+  const l2DepositTotal = +l2Items.reduce((s, m) => s + m.depositAmount, 0).toFixed(2);
+  const l3DepositTotal = +l3Items.reduce((s, m) => s + m.depositAmount, 0).toFixed(2);
 
   const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://gainpower-top-1.com';
   const referralLink = `${baseUrl}/invite/${myCode}`;
@@ -2339,18 +2510,32 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
       2: l2Items,
       3: l3Items,
     },
-    levelPurchases: {
+    levelStats: {
       1: {
-        purchaseNumber: l1Items.reduce((s, m) => s + m.devices, 0),
-        purchaseAmount: +l1Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+        memberCount: l1Items.length,
+        depositAmount: l1DepositTotal,
       },
       2: {
-        purchaseNumber: l2Items.reduce((s, m) => s + m.devices, 0),
-        purchaseAmount: +l2Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+        memberCount: l2Items.length,
+        depositAmount: l2DepositTotal,
       },
       3: {
-        purchaseNumber: l3Items.reduce((s, m) => s + m.devices, 0),
-        purchaseAmount: +l3Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2),
+        memberCount: l3Items.length,
+        depositAmount: l3DepositTotal,
+      },
+    },
+    levelPurchases: {
+      1: {
+        purchaseNumber: l1Items.length,
+        purchaseAmount: l1DepositTotal,
+      },
+      2: {
+        purchaseNumber: l2Items.length,
+        purchaseAmount: l2DepositTotal,
+      },
+      3: {
+        purchaseNumber: l3Items.length,
+        purchaseAmount: l3DepositTotal,
       },
     },
     rewardHistory: myRewards,
@@ -2555,7 +2740,8 @@ export async function fetchPlans(): Promise<ProductItem[]> {
       const { data, error } = await supabase
         .from('plans')
         .select('*')
-        .order('price', { ascending: false });
+        .order('sort_order', { ascending: true })
+        .order('price', { ascending: true });
 
       if (!error && Array.isArray(data)) {
         return data
@@ -2569,7 +2755,7 @@ export async function fetchPlans(): Promise<ProductItem[]> {
             category: p.category || (p.name.toUpperCase().includes('PRO') ? 'PRO' : 'VIP'),
             description: p.description,
             imageUrl: p.image_url,
-            limit: p.limit_per_user || 999,
+            limit: Number(p.purchase_limit !== undefined && p.purchase_limit !== null ? p.purchase_limit : (p.limit_per_user !== undefined && p.limit_per_user !== null ? p.limit_per_user : (p.limit || 5))),
             devicePrice: Number(p.price),
             price: Number(p.price),
             hourlyEarnings: Number(p.earning_rate || (Number(p.daily_earnings || 0) / 24)),
@@ -2690,7 +2876,7 @@ export async function fetchPurchases(userId: string): Promise<PurchaseItem[]> {
         console.warn('Supabase fetch purchases:', error.message);
       }
 
-      if (data && data.length > 0) {
+      if (!error && data) {
         return data.map((p: any) => ({
           id: p.id,
           userId: p.user_id,
@@ -2770,10 +2956,13 @@ export async function purchasePlanWithWallet(userId: string, plan: ProductItem) 
 
   // Check purchase limit per user
   const userPurchases = await fetchPurchases(userId);
-  if (plan.limit && plan.limit > 0) {
-    const boughtCount = userPurchases.filter((p) => p.planId === plan.id && p.status === 'ACTIVE').length;
-    if (boughtCount >= plan.limit) {
-      throw new Error(`You have reached the maximum purchase limit (${plan.limit}) for this plan.`);
+  const planLimit = Number(plan.limit ?? (plan as any).purchaseLimit ?? (plan as any).purchase_limit ?? (plan as any).limit_per_user ?? 5);
+  if (planLimit && planLimit > 0) {
+    const boughtCount = userPurchases.filter(
+      (p) => p.planId === plan.id && !['CANCELLED', 'FAILED', 'REJECTED'].includes(String(p.status || '').toUpperCase())
+    ).length;
+    if (boughtCount >= planLimit) {
+      throw new Error(`You have reached the maximum purchase limit (${planLimit}) for this plan.`);
     }
   }
 
@@ -4253,12 +4442,29 @@ export async function fetchUserWithdrawals(userId: string): Promise<WithdrawalIt
 // ==============================================================================
 
 export async function fetchAdminPayments(): Promise<PaymentItem[]> {
+  // 1. Primary: Server-side API endpoint with Service Role Key (bypasses RLS)
+  try {
+    const res = await fetch(apiUrl('/api/admin/recharges'), {
+      headers: getAdminAuthHeaders(),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        return json.data;
+      }
+    }
+  } catch (e) {
+    console.warn('[ADMIN RECHARGES] Failed to fetch via /api/admin/recharges:', e);
+  }
+
+  // 2. Secondary fallback: Direct Supabase client query
   if (isSupabaseConfigured && supabase) {
     try {
       const [manualRes, gatewayRes, profilesRes] = await Promise.all([
         supabase
           .from('payments')
           .select('*')
+          .neq('payment_type', 'USDT_DEPOSIT')
           .order('created_at', { ascending: false }),
         supabase
           .from('deposit_transactions')
@@ -4267,7 +4473,7 @@ export async function fetchAdminPayments(): Promise<PaymentItem[]> {
           .limit(200),
         supabase
           .from('profiles')
-          .select('id, user_id, username, mobile, whatsapp_no'),
+          .select('id, user_id, username, name, mobile, phone, whatsapp_no, membership_number'),
       ]);
 
       const profileMap = new Map<string, any>();
@@ -4281,19 +4487,24 @@ export async function fetchAdminPayments(): Promise<PaymentItem[]> {
       const manualPayments: PaymentItem[] = (!manualRes.error && manualRes.data)
         ? manualRes.data.map((p: any) => {
             const prof = profileMap.get(p.user_id) || {};
+            const orderId = p.order_id || p.reference_id || p.id;
+            const utr = p.utr || p.utr_number || p.reference_id || '';
             return {
               id: p.id,
               userId: p.user_id,
-              username: prof.username || 'User',
-              userMobile: prof.mobile || prof.whatsapp_no || 'N/A',
-              orderId: p.order_id || p.reference_id || p.id,
-              amount: Number(p.amount),
+              username: prof.username || prof.name || 'User',
+              userMobile: prof.whatsapp_no || prof.mobile || prof.phone || 'N/A',
+              orderId: orderId,
+              amount: Number(p.amount || 0),
               paymentType: p.payment_type || 'MANUAL_QR',
-              utr: p.utr || p.utr_number || p.reference_id,
-              proofUrl: p.proof_url || p.receipt_url,
+              paymentMethod: p.payment_method || 'UPI',
+              utr: utr,
+              utrNumber: utr,
+              referenceId: orderId,
+              proofUrl: p.proof_url || p.receipt_url || p.screenshot_url,
               status: p.status as PaymentStatus,
               adminId: p.admin_id,
-              rejectionReason: p.rejection_reason,
+              rejectionReason: p.rejection_reason || p.admin_note,
               createdAt: p.created_at,
               updatedAt: p.updated_at,
             };
@@ -4313,19 +4524,25 @@ export async function fetchAdminPayments(): Promise<PaymentItem[]> {
               mappedStatus = 'PAYMENT_PENDING';
             }
 
+            const orderId = d.order_id || d.traceno || d.raw_response?.Traceno || d.merchant_order_id || d.id;
+            const utr = d.utr || d.serial_no || d.gateway_serial_no || d.raw_response?.SerialNo || d.traceno || d.order_id || '';
+
             return {
               id: d.id,
               userId: d.user_id,
-              username: prof.username || 'User',
-              userMobile: prof.whatsapp_no || prof.mobile || 'N/A',
-              orderId: d.traceno || d.order_id || d.id,
-              amount: Number(d.amount),
-              paymentType: d.channel || 'UNIVEPAY_GATEWAY',
-              utr: d.utr || d.gateway_serial_no || d.traceno,
-              proofUrl: d.pay_url,
+              username: prof.username || prof.name || 'User',
+              userMobile: prof.whatsapp_no || prof.mobile || prof.phone || 'N/A',
+              orderId: orderId,
+              amount: Number(d.amount || 0),
+              paymentType: d.channel || d.payment_type || 'UNIVEPAY',
+              paymentMethod: d.payment_method || d.channel || 'UNIVEPAY',
+              utr: utr,
+              utrNumber: utr,
+              referenceId: orderId,
+              proofUrl: d.pay_url || d.screenshot_url,
               status: mappedStatus,
               adminId: undefined,
-              rejectionReason: d.rejection_reason,
+              rejectionReason: d.failure_reason || d.rejection_reason,
               createdAt: d.created_at,
               updatedAt: d.updated_at,
             };
@@ -4348,6 +4565,22 @@ export async function fetchAdminPayments(): Promise<PaymentItem[]> {
 }
 
 export async function approveRecharge(paymentId: string, adminId: string) {
+  // 1. Primary: Server endpoint
+  try {
+    const res = await fetch(apiUrl('/api/admin/approve-recharge'), {
+      method: 'POST',
+      headers: getAdminAuthHeaders(),
+      body: JSON.stringify({ paymentId, adminId }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success) return json;
+    }
+  } catch (e) {
+    console.warn('[APPROVE RECHARGE] API call failed:', e);
+  }
+
+  // 2. Secondary RPC fallback
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase.rpc('approve_recharge', {
@@ -4452,6 +4685,22 @@ export async function rejectRecharge(paymentId: string, param2: string, param3?:
   const adminId = isParam2Admin ? param2 : (param3 || 'adm_master_01');
   const reason = isParam2Admin ? (param3 || 'Verification Failed') : param2;
 
+  // 1. Primary: Server endpoint
+  try {
+    const res = await fetch(apiUrl('/api/admin/reject-recharge'), {
+      method: 'POST',
+      headers: getAdminAuthHeaders(),
+      body: JSON.stringify({ paymentId, adminId, reason }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success) return json;
+    }
+  } catch (e) {
+    console.warn('[REJECT RECHARGE] API call failed:', e);
+  }
+
+  // 2. Secondary RPC fallback
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase.rpc('reject_recharge', {
@@ -5977,9 +6226,11 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
     if (sumRes.ok) {
       const sumJson = await sumRes.json();
       if (sumJson.success) {
-        // Live Promotion Total calculated from Team commission + Mission rewards + Referral rewards
+        // Live Promotion Total: Total Team Commission + Mission Rewards ONLY
         let promoEarnings = Number(sumJson.promotionEarnings !== undefined ? sumJson.promotionEarnings : 0);
-        if (sumJson.promotionEarnings === undefined) {
+        if (sumJson.promotionEarnings === undefined && (sumJson.teamCommission !== undefined || sumJson.missionRewards !== undefined)) {
+          promoEarnings = Number((Number(sumJson.teamCommission || 0) + Number(sumJson.missionRewards || 0)).toFixed(2));
+        } else if (sumJson.promotionEarnings === undefined) {
           try {
             const prof = await fetchUserProfile(userId);
             promoEarnings = Number(prof?.teamEarnings || 0);
@@ -6201,7 +6452,8 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
     .reduce((sum, t) => sum + Number(t.amount || 0), 0);
   const referralRewards = referralTxSum > 0 ? referralTxSum : Number((userProfile as any)?.referralEarnings || 0);
 
-  const promotionEarnings = Number((teamCommission + missionRewards + referralRewards).toFixed(2));
+  // 4. Calculate Promotion Earnings = Total Team Commission + Mission Rewards ONLY
+  const promotionEarnings = Number((Number(teamCommission || 0) + Number(missionRewards || 0)).toFixed(2));
 
   return {
     remainingHours,
@@ -8406,7 +8658,9 @@ export async function fetchVipLevels(includeInactive: boolean = false): Promise<
           minInvestment: Number(row.min_investment || 0),
           maxInvestment: row.max_investment !== null && row.max_investment !== undefined ? Number(row.max_investment) : null,
           icon: row.icon || 'crown',
-          badgeText: row.badge_text || `VIP ${row.level_number}`,
+          badgeText: (row.badge_text && !/^level\s*\d+$/i.test(row.badge_text))
+            ? row.badge_text.replace(/^level\s+/i, 'VIP ')
+            : `VIP ${row.level_number}`,
           description: row.description || '',
           benefits: Array.isArray(row.benefits) ? row.benefits : [],
           dailyBonusRate: Number(row.daily_bonus_rate || 0),

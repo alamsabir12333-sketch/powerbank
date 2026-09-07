@@ -105,14 +105,19 @@ function getAppUrl(req: express.Request): string {
 function formatSupabaseUrl(url?: string): string {
   const fallback = 'https://evhwqlnymvoduclmzshz.supabase.co';
   if (!url) return fallback;
-  const trimmed = url.trim();
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return trimmed;
+  let trimmed = url.trim();
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    trimmed = `https://${trimmed}`;
   }
-  if (/^[a-z0-9-]+$/i.test(trimmed)) {
-    return `https://${trimmed}.supabase.co`;
+  try {
+    const parsed = new URL(trimmed);
+    if (!parsed.hostname.includes('.')) {
+      parsed.hostname = `${parsed.hostname}.supabase.co`;
+    }
+    return parsed.origin;
+  } catch {
+    return fallback;
   }
-  return fallback;
 }
 
 const rawSupabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://evhwqlnymvoduclmzshz.supabase.co';
@@ -3612,7 +3617,8 @@ app.get('/api/plans', async (req, res) => {
     const { data, error } = await supabase
       .from('plans')
       .select('*')
-      .order('sort_order', { ascending: true });
+      .order('sort_order', { ascending: true })
+      .order('price', { ascending: true });
 
     if (error) {
       return res.status(500).json({ success: false, error: error.message });
@@ -3642,7 +3648,7 @@ app.get('/api/plans', async (req, res) => {
         hourlyEarnings: Number(p.earning_rate || (p.daily_earnings ? +(p.daily_earnings / 24).toFixed(2) : 0)),
         durationDays: p.duration || p.duration_days || 365,
         duration: p.duration || p.duration_days || 365,
-        limit: p.limit || 5,
+        limit: Number(p.purchase_limit !== undefined && p.purchase_limit !== null ? p.purchase_limit : (p.limit_per_user !== undefined && p.limit_per_user !== null ? p.limit_per_user : (p.limit || 5))),
         instantBonus: Number(p.instant_bonus || 0),
         tags: p.tags || ['Hourly Yield'],
         imageType: p.image_type || (cat === 'PRO' ? 'cabinet-pro' : cat === 'EVENT' ? 'cabinet-gold' : 'cabinet-green'),
@@ -3684,18 +3690,22 @@ app.post('/api/plans/purchase', async (req, res) => {
     const { data: profile, error: profErr } = await supabase
       .from('profiles')
       .select('*')
-      .eq('user_id', userId)
+      .or(`user_id.eq.${userId},id.eq.${userId}`)
       .maybeSingle();
 
     if (profErr || !profile) {
       return res.status(404).json({ success: false, error: 'User profile not found.' });
     }
 
+    const effectiveUserId = profile.user_id || profile.id || userId;
+    const profileId = profile.id;
+
     // 2. Fetch User Purchases to compute qualifying investment and purchase counts
+    // CRITICAL: Strictly per-user purchases for limit enforcement
     const { data: userPurchases, error: purErr } = await supabase
       .from('purchases')
       .select('*')
-      .eq('user_id', userId);
+      .or(`user_id.eq.${effectiveUserId}${profileId && profileId !== effectiveUserId ? `,user_id.eq.${profileId}` : ''}`);
 
     const purchasesList = userPurchases || [];
 
@@ -4448,8 +4458,8 @@ app.get('/api/user/earnings-summary', async (req, res) => {
       .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
     const referralRewards = referralTxSum > 0 ? referralTxSum : Number(profile.referral_earnings || 0);
 
-    // Aggregated real Promotion Total
-    const promotionEarnings = Number((teamCommission + missionRewards + referralRewards).toFixed(2));
+    // Aggregated real Promotion Total = Total Team Commission + Mission Rewards ONLY
+    const promotionEarnings = Number((Number(teamCommission || 0) + Number(missionRewards || 0)).toFixed(2));
 
     // Sum of successful claims made TODAY
     const todayEarnings = claimsToday.reduce((sum: number, c: any) => sum + (Number(c.amount) || 0), 0);
@@ -5345,9 +5355,18 @@ app.get('/api/admin/recharges', async (req, res) => {
   if (!supabase) return res.json({ success: true, data: [] });
   try {
     const [paymentsRes, depositsRes, profilesRes] = await Promise.all([
-      supabase.from('payments').select('*').order('created_at', { ascending: false }),
-      supabase.from('deposit_transactions').select('*').order('created_at', { ascending: false }),
-      supabase.from('profiles').select('id, user_id, username, whatsapp_no, membership_number, mobile'),
+      supabase
+        .from('payments')
+        .select('*')
+        .neq('payment_type', 'USDT_DEPOSIT')
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('deposit_transactions')
+        .select('*')
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('profiles')
+        .select('id, user_id, username, name, mobile, phone, whatsapp_no, membership_number'),
     ]);
 
     const profileMap = new Map<string, any>();
@@ -5360,36 +5379,68 @@ app.get('/api/admin/recharges', async (req, res) => {
 
     const payments = (paymentsRes.data || []).map((p: any) => {
       const prof = profileMap.get(p.user_id) || {};
+      const orderId = p.order_id || p.reference_id || p.id;
+      const utr = p.utr || p.utr_number || p.reference_id || '';
       return {
         id: p.id,
         userId: p.user_id,
-        username: prof.username || 'User',
+        username: prof.username || prof.name || 'User',
+        userMobile: prof.whatsapp_no || prof.mobile || prof.phone || '',
         whatsappNo: prof.whatsapp_no || prof.mobile || '',
         membershipNumber: prof.membership_number || '',
         amount: Number(p.amount || 0),
+        orderId: orderId,
+        paymentType: p.payment_type || 'MANUAL_QR',
         paymentMethod: p.payment_method || 'UPI',
-        utrNumber: p.utr || p.utr_number || p.reference_id || '',
-        referenceId: p.order_id || p.reference_id || p.utr_number || '',
+        utr: utr,
+        utrNumber: utr,
+        referenceId: orderId,
+        proofUrl: p.proof_url || p.receipt_url || p.screenshot_url || p.proof_image || null,
+        screenshotUrl: p.screenshot_url || p.proof_url || p.receipt_url || null,
         status: p.status,
+        adminId: p.admin_id,
+        rejectionReason: p.rejection_reason || p.admin_note || null,
         createdAt: p.created_at,
+        updatedAt: p.updated_at,
         type: 'MANUAL_UPI',
       };
     });
 
     const deposits = (depositsRes.data || []).map((d: any) => {
       const prof = profileMap.get(d.user_id) || {};
+      const rawStatus = (d.status || '').toUpperCase();
+      let mappedStatus = 'PAYMENT_PENDING';
+      if (rawStatus === 'SUCCESS' || rawStatus === 'PAID' || rawStatus === 'COMPLETED') {
+        mappedStatus = 'PAID';
+      } else if (rawStatus === 'FAILED' || rawStatus === 'REJECTED' || rawStatus === 'FAILED_GATEWAY_CREATION') {
+        mappedStatus = 'FAILED';
+      } else {
+        mappedStatus = 'PAYMENT_PENDING';
+      }
+
+      const orderId = d.order_id || d.traceno || d.raw_response?.Traceno || d.merchant_order_id || d.id;
+      const utr = d.utr || d.serial_no || d.gateway_serial_no || d.raw_response?.SerialNo || d.traceno || d.order_id || '';
+
       return {
         id: d.id,
         userId: d.user_id,
-        username: prof.username || 'User',
+        username: prof.username || prof.name || 'User',
+        userMobile: prof.whatsapp_no || prof.mobile || prof.phone || '',
         whatsappNo: prof.whatsapp_no || prof.mobile || '',
         membershipNumber: prof.membership_number || '',
         amount: Number(d.amount || 0),
-        paymentMethod: d.channel || 'UNIVEPAY',
-        utrNumber: d.utr || d.traceno || '',
-        referenceId: d.traceno || '',
-        status: (d.status === 'SUCCESS' || d.status === 'COMPLETED') ? 'PAID' : d.status,
+        orderId: orderId,
+        paymentType: d.channel || d.payment_type || 'UNIVEPAY',
+        paymentMethod: d.payment_method || d.channel || 'UNIVEPAY',
+        utr: utr,
+        utrNumber: utr,
+        referenceId: orderId,
+        proofUrl: d.pay_url || d.screenshot_url || null,
+        screenshotUrl: d.screenshot_url || null,
+        status: mappedStatus,
+        rejectionReason: d.failure_reason || d.rejection_reason || null,
         createdAt: d.created_at,
+        updatedAt: d.updated_at,
         type: 'GATEWAY_DEPOSIT',
       };
     });
@@ -5406,9 +5457,29 @@ app.post('/api/admin/approve-recharge', async (req, res) => {
   if (!paymentId || !supabase) return res.status(400).json({ success: false, error: 'Missing paymentId' });
 
   try {
-    const { data: payment, error: fetchErr } = await supabase.from('payments').select('*').eq('id', paymentId).single();
-    if (fetchErr || !payment) return res.status(404).json({ success: false, error: 'Payment not found' });
-    if (payment.status === 'PAID') return res.json({ success: true, message: 'Already approved' });
+    let { data: payment, error: fetchErr } = await supabase.from('payments').select('*').eq('id', paymentId).maybeSingle();
+    let isGateway = false;
+
+    if (!payment) {
+      const { data: dep } = await supabase.from('deposit_transactions').select('*').eq('id', paymentId).maybeSingle();
+      if (dep) {
+        payment = {
+          id: dep.id,
+          user_id: dep.user_id,
+          amount: dep.amount,
+          status: dep.status,
+          utr_number: dep.utr || dep.serial_no || dep.gateway_serial_no || dep.order_id,
+          order_id: dep.order_id || dep.traceno,
+        };
+        isGateway = true;
+      }
+    }
+
+    if (!payment) return res.status(404).json({ success: false, error: 'Payment record not found' });
+    const statusUpper = (payment.status || '').toUpperCase();
+    if (statusUpper === 'PAID' || statusUpper === 'SUCCESS' || statusUpper === 'COMPLETED') {
+      return res.json({ success: true, message: 'Already approved' });
+    }
 
     // Credit User Wallet
     const { data: wallet } = await supabase.from('wallets').select('*').eq('user_id', payment.user_id).single();
@@ -5421,12 +5492,19 @@ app.post('/api/admin/approve-recharge', async (req, res) => {
       updated_at: new Date().toISOString(),
     }).eq('user_id', payment.user_id);
 
-    // Update payment status
-    await supabase.from('payments').update({
-      status: 'PAID',
-      verified_at: new Date().toISOString(),
-      verified_by: adminId,
-    }).eq('id', paymentId);
+    // Update payment record status
+    if (isGateway) {
+      await supabase.from('deposit_transactions').update({
+        status: 'SUCCESS',
+        updated_at: new Date().toISOString(),
+      }).eq('id', paymentId);
+    } else {
+      await supabase.from('payments').update({
+        status: 'PAID',
+        verified_at: new Date().toISOString(),
+        verified_by: adminId,
+      }).eq('id', paymentId);
+    }
 
     // Insert wallet transaction
     await supabase.from('wallet_transactions').insert({
@@ -5437,7 +5515,7 @@ app.post('/api/admin/approve-recharge', async (req, res) => {
       balance_after: newBal,
       wallet_type: 'TOPUP',
       status: 'COMPLETED',
-      reference_id: payment.utr_number || payment.id,
+      reference_id: payment.utr_number || payment.order_id || payment.id,
       description: `⚡ Admin Approved Topup: ₹${payment.amount} (UTR: ${payment.utr_number || 'N/A'})`,
       created_at: new Date().toISOString(),
     });
@@ -5456,6 +5534,40 @@ app.post('/api/admin/approve-recharge', async (req, res) => {
     await checkAndUpdateDepositVip(payment.user_id);
 
     return res.json({ success: true, message: 'Recharge approved successfully.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/reject-recharge', async (req, res) => {
+  const { paymentId, adminId = 'adm_root', reason = 'Verification Failed' } = req.body;
+  if (!paymentId || !supabase) return res.status(400).json({ success: false, error: 'Missing paymentId' });
+
+  try {
+    const { data: payment } = await supabase.from('payments').select('*').eq('id', paymentId).maybeSingle();
+    if (payment) {
+      await supabase.from('payments').update({
+        status: 'REJECTED',
+        rejection_reason: reason,
+        admin_note: reason,
+        verified_by: adminId,
+        verified_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).eq('id', paymentId);
+      return res.json({ success: true, message: 'Payment rejected.' });
+    }
+
+    const { data: dep } = await supabase.from('deposit_transactions').select('*').eq('id', paymentId).maybeSingle();
+    if (dep) {
+      await supabase.from('deposit_transactions').update({
+        status: 'REJECTED',
+        failure_reason: reason,
+        updated_at: new Date().toISOString(),
+      }).eq('id', paymentId);
+      return res.json({ success: true, message: 'Deposit transaction rejected.' });
+    }
+
+    return res.status(404).json({ success: false, error: 'Payment record not found' });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -8020,12 +8132,14 @@ app.get('/api/referrals/team-summary', async (req, res) => {
     const myCode = profile?.referral_code || profile?.membership_number || '';
     const myCodes = new Set([myCode, profile?.membership_number, profile?.user_id, profile?.id, userId].filter(Boolean));
 
-    const [referralsRes, profilesRes, purchasesRes, txsRes, walRes] = await Promise.all([
+    const [referralsRes, profilesRes, purchasesRes, txsRes, walRes, depositsRes, allRechargeTxsRes] = await Promise.all([
       supabase.from('referrals').select('*'),
       supabase.from('profiles').select('id, user_id, username, phone, mobile, whatsapp_no, referral_code, membership_number, referred_by, created_at'),
-      supabase.from('purchases').select('id, user_id, amount, status, started_at, created_at'),
+      supabase.from('purchases').select('id, user_id, plan_id, plan_name, plan_category, amount, status, started_at, expires_at, created_at'),
       supabase.from('wallet_transactions').select('*').eq('user_id', userId),
       supabase.from('wallets').select('*').eq('user_id', userId).maybeSingle(),
+      supabase.from('deposit_transactions').select('*'),
+      supabase.from('wallet_transactions').select('*').eq('type', 'RECHARGE'),
     ]);
 
     const allRefs = referralsRes.data || [];
@@ -8033,6 +8147,40 @@ app.get('/api/referrals/team-summary', async (req, res) => {
     const allPurchases = purchasesRes.data || [];
     const allTxs = txsRes.data || [];
     const userWallet = walRes.data || {};
+    const allDeposits = depositsRes.data || [];
+    const allRecharges = allRechargeTxsRes.data || [];
+
+    // Helper: Compute real total successful TOPUP/RECHARGE deposit amount for a specific user
+    const computeUserTotalDeposit = (uid: string): number => {
+      const countedRefs = new Set<string>();
+      let total = 0;
+
+      for (const d of allDeposits) {
+        if (d.user_id !== uid) continue;
+        const s = String(d.status || '').toUpperCase();
+        if (s === 'SUCCESS' || s === 'COMPLETED') {
+          const ref = d.traceno || d.order_id || d.merchant_order_id || d.id;
+          if (ref && !countedRefs.has(ref)) {
+            countedRefs.add(ref);
+            total += Number(d.amount || 0);
+          }
+        }
+      }
+
+      for (const w of allRecharges) {
+        if (w.user_id !== uid) continue;
+        const s = String(w.status || '').toUpperCase();
+        if (s === 'COMPLETED' || s === 'SUCCESS') {
+          const ref = w.reference_id || w.id;
+          if (ref && !countedRefs.has(ref)) {
+            countedRefs.add(ref);
+            total += Number(w.amount || 0);
+          }
+        }
+      }
+
+      return +total.toFixed(2);
+    };
 
     // Level 1 Members
     const l1RefereeIds = new Set<string>();
@@ -8082,28 +8230,84 @@ app.get('/api/referrals/team-summary', async (req, res) => {
       return false;
     });
 
-    const isSuccessfulPurchase = (p: any) => {
-      if (!p) return false;
-      const s = String(p.status || '').toUpperCase().trim();
-      if (['PENDING', 'REJECTED', 'CANCELLED', 'FAILED', 'ERROR', 'PAYMENT_PENDING'].includes(s)) {
-        return false;
-      }
-      return s === 'ACTIVE' || s === 'COMPLETED' || s === 'SUCCESS' || s === 'EXPIRED';
-    };
+    // Extract all TOPUP-only referral commission transactions received by userId
+    const topupCommTxs = allTxs.filter((t: any) => {
+      const type = String(t.type || '').toUpperCase();
+      const desc = String(t.description || '').toLowerCase();
+      const ref = String(t.reference_id || '').toLowerCase();
+      const rewType = String(t.metadata?.rewardType || '').toUpperCase();
+
+      if (ref.includes('pur-') || desc.includes('plan purchase') || desc.includes('device purchase')) return false;
+      if (['DAILY_DEVICE_EARNING', 'INSTANT_BONUS', 'SIGNUP_BONUS'].includes(type)) return false;
+
+      return (
+        rewType === 'TOPUP_COMMISSION' ||
+        ref.startsWith('topup-ref-') ||
+        (desc.includes('referral commission') && desc.includes('topup'))
+      );
+    });
+
+    const now = Date.now();
 
     const mapMember = (u: any, tier: 1 | 2 | 3) => {
       const uid = u.user_id || u.id;
-      const userPurchases = allPurchases.filter((p: any) => p.user_id === uid && isSuccessfulPurchase(p));
-      const totalInvested = userPurchases.reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
       const rawMobile = u.whatsapp_no || u.phone || u.mobile || '9800000000';
       const maskedMobile = rawMobile.length >= 10 ? `${rawMobile.substring(0, 4)}****${rawMobile.substring(rawMobile.length - 2)}` : rawMobile;
 
-      const refEntry = allRefs.find((r: any) => r.referrer_id === userId && r.referee_id === uid);
-      let commEarned = Number(refEntry?.commission_earned || 0);
+      // 1. Real total successful TOPUP/RECHARGE amount
+      const memberDepositAmount = computeUserTotalDeposit(uid);
 
-      if (commEarned === 0 && totalInvested > 0) {
-        const pct = tier === 1 ? 0.10 : tier === 2 ? 0.05 : 0.02;
-        commEarned = +(totalInvested * pct).toFixed(2);
+      // 2. Active plans: strictly sorted by numeric price ASCENDING (lowest amount first across all categories)
+      const userActivePurchases = allPurchases.filter((p: any) => {
+        if (p.user_id !== uid) return false;
+        const isStatusActive = String(p.status || '').toUpperCase() === 'ACTIVE';
+        const endDate = p.expires_at || p.end_date;
+        const isUnexpired = !endDate || new Date(endDate).getTime() > now;
+        return isStatusActive && isUnexpired;
+      });
+
+      // Sort strictly numeric ascending by price
+      userActivePurchases.sort((a: any, b: any) => Number(a.amount || 0) - Number(b.amount || 0));
+
+      const activePlans = userActivePurchases.map((p: any) => ({
+        id: p.id,
+        planId: p.plan_id,
+        name: p.plan_name || 'Active Plan',
+        category: p.plan_category || 'VIP',
+        price: Number(p.amount || 0),
+      }));
+
+      // 3. Referral Commission earned by userId from this member's TOPUP ONLY
+      const memberDepositRefs = new Set<string>();
+      allDeposits
+        .filter((d: any) => d.user_id === uid)
+        .forEach((d: any) => {
+          [d.traceno, d.order_id, d.merchant_order_id, d.id].filter(Boolean).forEach((r) => memberDepositRefs.add(String(r)));
+        });
+      allRecharges
+        .filter((w: any) => w.user_id === uid)
+        .forEach((w: any) => {
+          [w.reference_id, w.id].filter(Boolean).forEach((r) => memberDepositRefs.add(String(r)));
+        });
+
+      let memberComm = topupCommTxs
+        .filter((t: any) => {
+          const ref = String(t.reference_id || '');
+          for (const mRef of memberDepositRefs) {
+            if (mRef && ref.includes(mRef)) return true;
+          }
+          return false;
+        })
+        .reduce((sum: number, t: any) => sum + Number(t.amount || 0), 0);
+
+      const refEntry = allRefs.find((r: any) => r.referrer_id === userId && r.referee_id === uid);
+      if (tier === 1 && refEntry && Number(refEntry.commission_earned || 0) > memberComm) {
+        memberComm = Number(refEntry.commission_earned || 0);
+      }
+
+      if (memberComm === 0 && memberDepositAmount > 0) {
+        const tierRate = tier === 1 ? 0.10 : tier === 2 ? 0.05 : 0.02;
+        memberComm = +(memberDepositAmount * tierRate).toFixed(2);
       }
 
       return {
@@ -8112,9 +8316,12 @@ app.get('/api/referrals/team-summary', async (req, res) => {
         username: u.username || 'Member',
         mobile: maskedMobile,
         joined: u.created_at ? u.created_at.split('T')[0] : '2026-08-20',
-        devices: userPurchases.length,
-        totalInvested,
-        totalCommissionEarned: +commEarned.toFixed(2),
+        depositAmount: memberDepositAmount,
+        commission: +memberComm.toFixed(2),
+        totalCommissionEarned: +memberComm.toFixed(2),
+        activePlans,
+        devices: activePlans.length,
+        totalInvested: userActivePurchases.reduce((s: number, p: any) => s + Number(p.amount || 0), 0),
         tier,
       };
     };
@@ -8123,44 +8330,22 @@ app.get('/api/referrals/team-summary', async (req, res) => {
     const level2Items = l2Users.map((u: any) => mapMember(u, 2));
     const level3Items = l3Users.map((u: any) => mapMember(u, 3));
 
-    const level1PurchaseNumber = level1Items.reduce((s, m) => s + m.devices, 0);
-    const level1PurchaseAmount = +level1Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2);
-    const level2PurchaseNumber = level2Items.reduce((s, m) => s + m.devices, 0);
-    const level2PurchaseAmount = +level2Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2);
-    const level3PurchaseNumber = level3Items.reduce((s, m) => s + m.devices, 0);
-    const level3PurchaseAmount = +level3Items.reduce((s, m) => s + m.totalInvested, 0).toFixed(2);
+    const level1MemberCount = level1Items.length;
+    const level1DepositAmount = +level1Items.reduce((s, m) => s + m.depositAmount, 0).toFixed(2);
+    const level2MemberCount = level2Items.length;
+    const level2DepositAmount = +level2Items.reduce((s, m) => s + m.depositAmount, 0).toFixed(2);
+    const level3MemberCount = level3Items.length;
+    const level3DepositAmount = +level3Items.reduce((s, m) => s + m.depositAmount, 0).toFixed(2);
 
-    const commTxs = allTxs.filter((t: any) => {
-      const desc = (t.description || '').toLowerCase();
-      const ref = (t.reference_id || '').toLowerCase();
-      const type = (t.type || '').toUpperCase();
-      return type.includes('COMMISSION') || type.includes('REFERRAL') || type.includes('TEAM_BONUS') || desc.includes('commission') || desc.includes('referral') || ref.includes('ref-');
-    });
-
-    const l1Comm = +commTxs.filter((t: any) => {
-      const desc = (t.description || '').toLowerCase();
-      const ref = (t.reference_id || '').toLowerCase();
-      return desc.includes('tier 1') || desc.includes('level 1') || desc.includes('direct') || ref.includes('ref-l1');
-    }).reduce((s: number, t: any) => s + Number(t.amount || 0), 0).toFixed(2);
-
-    const l2Comm = +commTxs.filter((t: any) => {
-      const desc = (t.description || '').toLowerCase();
-      const ref = (t.reference_id || '').toLowerCase();
-      return desc.includes('tier 2') || desc.includes('level 2') || ref.includes('ref-l2');
-    }).reduce((s: number, t: any) => s + Number(t.amount || 0), 0).toFixed(2);
-
-    const l3Comm = +commTxs.filter((t: any) => {
-      const desc = (t.description || '').toLowerCase();
-      const ref = (t.reference_id || '').toLowerCase();
-      return desc.includes('tier 3') || desc.includes('level 3') || ref.includes('ref-l3');
-    }).reduce((s: number, t: any) => s + Number(t.amount || 0), 0).toFixed(2);
+    const l1Comm = +level1Items.reduce((s, m) => s + m.commission, 0).toFixed(2);
+    const l2Comm = +level2Items.reduce((s, m) => s + m.commission, 0).toFixed(2);
+    const l3Comm = +level3Items.reduce((s, m) => s + m.commission, 0).toFixed(2);
 
     const computedTotalComm = +(l1Comm + l2Comm + l3Comm).toFixed(2);
-    const calculatedMemberComm = +(level1Items.reduce((s, m) => s + m.totalCommissionEarned, 0) + level2Items.reduce((s, m) => s + m.totalCommissionEarned, 0) + level3Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2);
     const walletTeamComm = Number(userWallet.team_commission || 0);
     const profileTeamComm = Number(profile?.team_earnings || 0);
     const totalTeamCommission = +(Math.max(
-      computedTotalComm > 0 ? computedTotalComm : calculatedMemberComm,
+      computedTotalComm,
       walletTeamComm,
       profileTeamComm
     )).toFixed(2);
@@ -8170,21 +8355,29 @@ app.get('/api/referrals/team-summary', async (req, res) => {
     return res.json({
       success: true,
       data: {
-        totalMembers: level1Items.length + level2Items.length + level3Items.length,
-        directMembers: level1Items.length,
-        indirectMembers: level2Items.length + level3Items.length,
+        totalMembers: level1MemberCount + level2MemberCount + level3MemberCount,
+        directMembers: level1MemberCount,
+        indirectMembers: level2MemberCount + level3MemberCount,
         totalTeamCommission,
         teamCommission: totalTeamCommission,
-        level1Commission: l1Comm || +(level1Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2),
-        level2Commission: l2Comm || +(level2Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2),
-        level3Commission: l3Comm || +(level3Items.reduce((s, m) => s + m.totalCommissionEarned, 0)).toFixed(2),
+        level1Commission: l1Comm,
+        level2Commission: l2Comm,
+        level3Commission: l3Comm,
         activeDevicesCount,
-        level1PurchaseNumber,
-        level1PurchaseAmount,
-        level2PurchaseNumber,
-        level2PurchaseAmount,
-        level3PurchaseNumber,
-        level3PurchaseAmount,
+        // Spec 1: L1 / L2 / L3 Summary Cards (Member, Deposit Amount)
+        level1MemberCount,
+        level1DepositAmount,
+        level2MemberCount,
+        level2DepositAmount,
+        level3MemberCount,
+        level3DepositAmount,
+        // Backward compatibility mapping
+        level1PurchaseNumber: level1MemberCount,
+        level1PurchaseAmount: level1DepositAmount,
+        level2PurchaseNumber: level2MemberCount,
+        level2PurchaseAmount: level2DepositAmount,
+        level3PurchaseNumber: level3MemberCount,
+        level3PurchaseAmount: level3DepositAmount,
         level1Members: level1Items,
         level2Members: level2Items,
         level3Members: level3Items,

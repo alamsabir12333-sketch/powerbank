@@ -61,13 +61,20 @@ export const TeamPage: React.FC<TeamPageProps> = ({
   });
 
   const getLevelStats = (tier: 1 | 2 | 3) => {
+    if (teamSummary.levelStats && teamSummary.levelStats[tier]) {
+      return teamSummary.levelStats[tier];
+    }
     if (teamSummary.levelPurchases && teamSummary.levelPurchases[tier]) {
-      return teamSummary.levelPurchases[tier];
+      const lp = teamSummary.levelPurchases[tier] as any;
+      return {
+        memberCount: lp.memberCount !== undefined ? lp.memberCount : lp.purchaseNumber,
+        depositAmount: lp.depositAmount !== undefined ? lp.depositAmount : lp.purchaseAmount,
+      };
     }
     const list = teamSummary.subordinates[tier] || [];
-    const purchaseNumber = list.reduce((sum, m) => sum + (m.devices || 0), 0);
-    const purchaseAmount = list.reduce((sum, m) => sum + (m.totalInvested || 0), 0);
-    return { purchaseNumber, purchaseAmount };
+    const memberCount = list.length;
+    const depositAmount = list.reduce((sum, m) => sum + (m.depositAmount !== undefined ? m.depositAmount : 0), 0);
+    return { memberCount, depositAmount };
   };
 
   const [modalState, setModalState] = useState<{
@@ -181,20 +188,19 @@ export const TeamPage: React.FC<TeamPageProps> = ({
           gradientBg: 'from-purple-50/40 via-white to-white',
         };
 
-    const formattedAmount =
-      stats.purchaseAmount % 1 === 0
-        ? stats.purchaseAmount
-        : stats.purchaseAmount.toFixed(2);
+    const formattedDeposit = Number(stats.depositAmount || 0).toLocaleString('en-IN', {
+      minimumFractionDigits: (stats.depositAmount || 0) % 1 === 0 ? 0 : 2,
+      maximumFractionDigits: 2,
+    });
 
     return (
       <div
         key={tier}
         className={`w-full ${styles.panelBg} rounded-2xl border ${styles.cardBorder} overflow-hidden flex shadow-xs`}
       >
-        {/* LEFT: Solid colored vertical panel with stacked L V 1/2/3 */}
+        {/* LEFT: Solid colored vertical panel with stacked L 1/2/3 */}
         <div className="w-13 sm:w-15 flex flex-col items-center justify-center text-white shrink-0 py-3 font-black text-sm sm:text-base select-none leading-tight tracking-wider">
           <span>L</span>
-          <span className="my-0.5">V</span>
           <span>{tier}</span>
         </div>
 
@@ -204,29 +210,29 @@ export const TeamPage: React.FC<TeamPageProps> = ({
         >
           {/* Top labels & numbers in 2 columns */}
           <div className="grid grid-cols-2 gap-2 sm:gap-4">
-            {/* Purchase Number Column */}
+            {/* Member Column */}
             <div>
               <div className="flex items-center gap-1.5">
                 <span className={`w-0.5 sm:w-1 h-3 sm:h-3.5 rounded-full ${styles.indicatorBg} shrink-0`} />
                 <span className="text-[11px] sm:text-xs text-gray-500 font-medium whitespace-nowrap">
-                  Purchase Number
+                  Member
                 </span>
               </div>
               <div className="text-xl sm:text-2xl font-bold text-gray-800 tracking-tight mt-1 pl-2 sm:pl-2.5">
-                {stats.purchaseNumber}
+                {stats.memberCount}
               </div>
             </div>
 
-            {/* Purchase Amount Column */}
+            {/* Deposit Amount Column */}
             <div>
               <div className="flex items-center gap-1.5">
                 <span className={`w-0.5 sm:w-1 h-3 sm:h-3.5 rounded-full ${styles.indicatorBg} shrink-0`} />
                 <span className="text-[11px] sm:text-xs text-gray-500 font-medium whitespace-nowrap">
-                  Purchase Amount ( ₹ )
+                  Deposit Amount ( ₹ )
                 </span>
               </div>
               <div className="text-xl sm:text-2xl font-bold text-gray-800 tracking-tight mt-1 pl-2 sm:pl-2.5">
-                {formattedAmount}
+                {formattedDeposit}
               </div>
             </div>
           </div>
@@ -511,100 +517,139 @@ export const TeamPage: React.FC<TeamPageProps> = ({
       </div>
 
       {/* Member List Modal (Opened by More > button on L1 / L2 / L3 cards) */}
-      {selectedTierForModal !== null && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl max-h-[85vh] flex flex-col overflow-hidden shadow-2xl animate-in slide-in-from-bottom-5">
-            {/* Modal Header */}
-            <div className="p-4 border-b border-gray-100 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div
-                  className={`w-9 h-9 rounded-2xl flex items-center justify-center font-black text-sm text-white ${
-                    selectedTierForModal === 1
-                      ? 'bg-[#FF6000]'
-                      : selectedTierForModal === 2
-                      ? 'bg-[#2563EB]'
-                      : 'bg-[#9333EA]'
-                  }`}
-                >
-                  L{selectedTierForModal}
-                </div>
-                <div>
-                  <h3 className="font-bold text-sm text-gray-900">
-                    Level {selectedTierForModal} Member List ({teamSummary.subordinates[selectedTierForModal]?.length || 0})
-                  </h3>
-                  <p className="text-[11px] text-gray-500">
-                    {getLevelStats(selectedTierForModal).purchaseNumber} Purchases • ₹{getLevelStats(selectedTierForModal).purchaseAmount.toFixed(2)} Total
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedTierForModal(null)}
-                className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500 cursor-pointer transition-colors"
-              >
-                ✕
-              </button>
-            </div>
+      {selectedTierForModal !== null && (() => {
+        const stats = getLevelStats(selectedTierForModal);
+        const members = teamSummary.subordinates[selectedTierForModal] || [];
 
-            {/* Member List Rows */}
-            <div className="overflow-y-auto p-4 space-y-2.5 divide-y divide-gray-50 flex-1">
-              {(teamSummary.subordinates[selectedTierForModal] || []).length === 0 ? (
-                <div className="py-12 text-center text-gray-400">
-                  <Users className="w-10 h-10 mx-auto mb-2 text-gray-300" />
-                  <p className="text-xs font-semibold text-gray-600">No Level {selectedTierForModal} members found</p>
-                  <p className="text-[11px] text-gray-400 mt-0.5">
-                    Share your invitation link to register Level {selectedTierForModal} team members
-                  </p>
-                </div>
-              ) : (
-                (teamSummary.subordinates[selectedTierForModal] || []).map((member) => (
-                  <div key={member.id || member.userId} className="pt-2.5 first:pt-0 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
-                          selectedTierForModal === 1
-                            ? 'bg-orange-100 text-[#FF6000]'
-                            : selectedTierForModal === 2
-                            ? 'bg-blue-100 text-blue-600'
-                            : 'bg-purple-100 text-purple-600'
-                        }`}
-                      >
-                        {member.username ? member.username.slice(0, 2).toUpperCase() : member.mobile.slice(0, 2)}
-                      </div>
-                      <div>
-                        <h4 className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
-                          <span>{member.username}</span>
-                          <span className="text-[10px] text-gray-400 font-mono font-normal">({member.mobile})</span>
-                        </h4>
-                        <span className="text-[10px] text-gray-400 block mt-0.5">
-                          Joined: {member.joined}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="text-right">
-                      <span className="text-xs font-bold text-gray-800 block">
-                        {member.devices} Device{member.devices !== 1 ? 's' : ''}
-                      </span>
-                      <span
-                        className={`text-[10px] font-semibold ${
-                          selectedTierForModal === 1
-                            ? 'text-[#FF6000]'
-                            : selectedTierForModal === 2
-                            ? 'text-blue-600'
-                            : 'text-purple-600'
-                        }`}
-                      >
-                        Commission: ₹{member.totalCommissionEarned.toFixed(2)}
-                      </span>
-                    </div>
+        return (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+            <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl max-h-[85vh] flex flex-col overflow-hidden shadow-2xl animate-in slide-in-from-bottom-5">
+              {/* Modal Header */}
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className={`w-9 h-9 rounded-2xl flex items-center justify-center font-black text-sm text-white ${
+                      selectedTierForModal === 1
+                        ? 'bg-[#FF6000]'
+                        : selectedTierForModal === 2
+                        ? 'bg-[#2563EB]'
+                        : 'bg-[#9333EA]'
+                    }`}
+                  >
+                    L{selectedTierForModal}
                   </div>
-                ))
-              )}
+                  <div>
+                    <h3 className="font-bold text-sm text-gray-900">
+                      L{selectedTierForModal} Member List ({members.length})
+                    </h3>
+                    <p className="text-[11px] text-gray-500">
+                      {stats.memberCount} Member{stats.memberCount !== 1 ? 's' : ''} • ₹{Number(stats.depositAmount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Total Deposit
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedTierForModal(null)}
+                  className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500 cursor-pointer transition-colors"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Member List Rows */}
+              <div className="overflow-y-auto p-4 space-y-3 divide-y divide-gray-100 flex-1">
+                {members.length === 0 ? (
+                  <div className="py-12 text-center text-gray-400">
+                    <Users className="w-10 h-10 mx-auto mb-2 text-gray-300" />
+                    <p className="text-xs font-semibold text-gray-600">No L{selectedTierForModal} members found</p>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      Share your invitation link to register L{selectedTierForModal} team members
+                    </p>
+                  </div>
+                ) : (
+                  members.map((member) => {
+                    const memberDeposit = Number(member.depositAmount !== undefined ? member.depositAmount : 0);
+                    const memberComm = Number(member.commission !== undefined ? member.commission : member.totalCommissionEarned || 0);
+
+                    // Requirement 4: Sort active plans strictly by numeric price ascending (lowest amount first) across all categories
+                    const sortedPlans = Array.isArray(member.activePlans)
+                      ? [...member.activePlans].sort((a, b) => Number(a.price || 0) - Number(b.price || 0))
+                      : [];
+
+                    return (
+                      <div key={member.id || member.userId} className="pt-3 first:pt-0 space-y-2">
+                        {/* Member Identity and Financials */}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div
+                              className={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
+                                selectedTierForModal === 1
+                                  ? 'bg-orange-100 text-[#FF6000]'
+                                  : selectedTierForModal === 2
+                                  ? 'bg-blue-100 text-blue-600'
+                                  : 'bg-purple-100 text-purple-600'
+                              }`}
+                            >
+                              {member.username ? member.username.slice(0, 2).toUpperCase() : member.mobile.slice(0, 2)}
+                            </div>
+                            <div className="min-w-0">
+                              <h4 className="text-xs font-bold text-gray-900 flex items-center gap-1.5 flex-wrap">
+                                <span className="truncate">{member.username}</span>
+                                <span className="text-[10px] text-gray-400 font-mono font-normal">({member.mobile})</span>
+                              </h4>
+                              <span className="text-[10px] text-gray-400 block mt-0.5">
+                                Joined: {member.joined}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <div className="text-xs font-medium text-gray-600">
+                              Deposit Amount: <span className="font-bold text-gray-900">₹{memberDeposit.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                            <div
+                              className={`text-[11px] font-bold mt-0.5 ${
+                                selectedTierForModal === 1
+                                  ? 'text-[#FF6000]'
+                                  : selectedTierForModal === 2
+                                  ? 'text-blue-600'
+                                  : 'text-purple-600'
+                              }`}
+                            >
+                              Commission: ₹{memberComm.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Plan Display (Requirement 4: No device count, show active plans sorted by price ascending) */}
+                        <div className="pt-0.5 pl-11">
+                          {sortedPlans.length === 0 ? (
+                            <span className="inline-flex items-center text-[10px] font-medium text-gray-400 bg-gray-50 border border-gray-200/60 px-2 py-0.5 rounded-md">
+                              0 Active Plans
+                            </span>
+                          ) : (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {sortedPlans.map((plan, pIdx) => (
+                                <span
+                                  key={plan.id || pIdx}
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold bg-orange-50 text-orange-950 border border-orange-200/80 px-2 py-0.5 rounded-md shadow-2xs"
+                                >
+                                  <span className="font-bold text-[#FF6000]">₹{Number(plan.price || 0).toLocaleString('en-IN')}</span>
+                                  <span className="text-gray-700 font-medium">{plan.name}</span>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Floating Contact Button */}
       <FloatingContact

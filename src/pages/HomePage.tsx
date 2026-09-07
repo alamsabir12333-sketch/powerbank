@@ -385,7 +385,14 @@ export const HomePage: React.FC<HomePageProps> = ({
             todayEarnings={homeSummary.todayEarnings}
             promotionEarnings={homeSummary.promotionEarnings}
             onDoubleHistoryClick={() => setIsDoubleHistoryOpen(true)}
-            onStatClick={() => onNavigateTab('fortune')}
+            onPromotionClick={() => onNavigateTab('team')}
+            onStatClick={(type) => {
+              if (type === 'promo') {
+                onNavigateTab('team');
+              } else {
+                onNavigateTab('fortune');
+              }
+            }}
           />
 
           {/* 6. Platform News Section (Connected to Supabase) */}
