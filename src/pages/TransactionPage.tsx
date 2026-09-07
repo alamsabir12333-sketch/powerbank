@@ -564,8 +564,8 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
           ) : (
             filteredTransactions.map((tx) => {
               const { icon, bg } = getTransactionIcon(tx.type);
-              const isCredit = tx.amount > 0;
-              const formattedAmt = `${isCredit ? '+' : ''}₹${Math.abs(tx.amount).toFixed(2)}`;
+              const isCredit = (Number(tx.amount) || 0) > 0;
+              const formattedAmt = `${isCredit ? '+' : ''}₹${Math.abs(Number(tx.amount) || 0).toFixed(2)}`;
               return (
                 <motion.div
                   key={tx.id}
@@ -671,10 +671,10 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
                 <span className="text-xs text-gray-500 font-medium">Transaction Amount</span>
                 <div
                   className={`text-3xl font-black mt-0.5 ${
-                    selectedTx.amount > 0 ? 'text-emerald-600' : 'text-gray-900'
+                    (Number(selectedTx.amount) || 0) > 0 ? 'text-emerald-600' : 'text-gray-900'
                   }`}
                 >
-                  {selectedTx.amount > 0 ? '+' : ''}₹{Math.abs(selectedTx.amount).toFixed(2)}
+                  {(Number(selectedTx.amount) || 0) > 0 ? '+' : ''}₹{Math.abs(Number(selectedTx.amount) || 0).toFixed(2)}
                 </div>
                 <div className="mt-2 flex justify-center">
                   {getStatusBadge(selectedTx.status, selectedTx.type)}
@@ -749,7 +749,7 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
                   <div className="flex justify-between items-center p-2 bg-gray-50 rounded-xl">
                     <span className="text-gray-500">Balance Delta</span>
                     <span className="font-mono text-gray-700">
-                      ₹{selectedTx.balanceBefore.toFixed(2)} → ₹{selectedTx.balanceAfter.toFixed(2)}
+                      ₹{(Number(selectedTx.balanceBefore) || 0).toFixed(2)} → ₹{(Number(selectedTx.balanceAfter) || 0).toFixed(2)}
                     </span>
                   </div>
                 )}

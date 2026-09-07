@@ -4640,6 +4640,25 @@ app.get('/api/user/earnings-summary', async (req, res) => {
       }
     });
 
+    // Authoritative claimed device earnings (only earnings claimed from My Device)
+    const claimedDeviceTxSum = allTxs
+      .filter((t: any) => {
+        const type = String(t.type || '').toUpperCase();
+        const ref = String(t.reference_id || '');
+        const desc = String(t.description || '');
+        return (
+          type === 'EARNING_CLAIM' ||
+          ref.startsWith('CLM-') ||
+          desc.includes('Device Hourly Yield Claim') ||
+          desc.includes('hourly device earnings') ||
+          (type === 'EARNING' && ref.startsWith('CLM-'))
+        );
+      })
+      .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
+
+    const purchasesClaimedSum = purchases.reduce((sum: number, p: any) => sum + (Number(p.claimed_amount) || 0), 0);
+    const claimedDeviceEarnings = Number(Math.max(claimedDeviceTxSum, purchasesClaimedSum).toFixed(2));
+
     return res.json({
       success: true,
       totalAssets,
@@ -4648,6 +4667,7 @@ app.get('/api/user/earnings-summary', async (req, res) => {
       todayEarnings: Number(todayEarnings.toFixed(2)),
       totalClaimable: Number(totalClaimable.toFixed(2)),
       totalEarned,
+      claimedDeviceEarnings,
       remainingHours: maxRemainingHours,
       activeDevicesCount: activePurchases.length,
       promotionEarnings,
@@ -4658,6 +4678,82 @@ app.get('/api/user/earnings-summary', async (req, res) => {
   } catch (err: any) {
     console.error('Earnings summary error:', err);
     return res.status(500).json({ success: false, error: err.message || 'Failed to fetch earnings summary.' });
+  }
+});
+
+// Authoritative Claimed Device Earnings (Claim records / wallet transactions / purchases)
+app.get('/api/user/claimed-device-earnings', async (req, res) => {
+  const userId = String(req.query.userId || req.headers['x-user-id'] || '').trim();
+  if (!userId) {
+    return res.status(400).json({ success: false, error: 'User ID required' });
+  }
+
+  if (!supabase) {
+    return res.json({ success: true, claimedDeviceEarnings: 0 });
+  }
+
+  try {
+    const profile = await findUserProfile(userId);
+    const candidateUserIds = Array.from(
+      new Set([userId, profile?.id, profile?.user_id].filter(id => isValidUUID(id)))
+    );
+
+    if (candidateUserIds.length === 0) {
+      return res.json({ success: true, claimedDeviceEarnings: 0 });
+    }
+
+    const [cbRes, wtRes, purRes] = await Promise.all([
+      supabase
+        .from('claim_batches')
+        .select('amount')
+        .in('user_id', candidateUserIds),
+      supabase
+        .from('wallet_transactions')
+        .select('amount, type, reference_id, description')
+        .in('user_id', candidateUserIds),
+      supabase
+        .from('purchases')
+        .select('claimed_amount')
+        .in('user_id', candidateUserIds),
+    ]);
+
+    const claimBatchesSum = (cbRes.data || []).reduce((sum: number, c: any) => sum + (Number(c.amount) || 0), 0);
+
+    const walletTxClaimSum = (wtRes.data || [])
+      .filter((t: any) => {
+        const type = String(t.type || '').toUpperCase();
+        const ref = String(t.reference_id || '');
+        const desc = String(t.description || '');
+        return (
+          type === 'EARNING_CLAIM' ||
+          ref.startsWith('CLM-') ||
+          desc.includes('Device Hourly Yield Claim') ||
+          desc.includes('hourly device earnings') ||
+          (type === 'EARNING' && ref.startsWith('CLM-'))
+        );
+      })
+      .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
+
+    const purchasesClaimedSum = (purRes.data || []).reduce((sum: number, p: any) => sum + (Number(p.claimed_amount) || 0), 0);
+
+    const validCbSum = Number.isFinite(claimBatchesSum) ? claimBatchesSum : 0;
+    const validWtSum = Number.isFinite(walletTxClaimSum) ? walletTxClaimSum : 0;
+    const validPurSum = Number.isFinite(purchasesClaimedSum) ? purchasesClaimedSum : 0;
+
+    const totalClaimed = Number((Math.max(validCbSum, validWtSum, validPurSum) || 0).toFixed(2));
+
+    return res.json({
+      success: true,
+      claimedDeviceEarnings: totalClaimed,
+      details: {
+        claimBatchesSum: Number((validCbSum || 0).toFixed(2)),
+        walletTxClaimSum: Number((validWtSum || 0).toFixed(2)),
+        purchasesClaimedSum: Number((validPurSum || 0).toFixed(2)),
+      },
+    });
+  } catch (err: any) {
+    console.error('Error fetching claimed device earnings:', err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -8631,15 +8727,29 @@ app.get('/api/user-devices', async (req, res) => {
         devices: allPurchases.map((p: any) => {
           const endDate = p.expires_at || p.end_date || p.endDate;
           const isActive = String(p.status).toUpperCase() === 'ACTIVE' && (!endDate || new Date(endDate).getTime() > now);
+          const earningRate = Number(p.earning_rate || p.earningRate || (Number(p.daily_earnings || p.dailyEarnings || 0) / 24) || 0);
+          const dailyEarnings = Number(p.daily_earnings || p.dailyEarnings || (earningRate * 24) || 0);
+          const totalEarned = Number(p.total_earned || p.totalEarned || 0);
+          const claimedAmount = Number(p.claimed_amount || p.claimedAmount || 0);
+          const instantBonus = Number(p.instant_bonus || p.instantBonus || 0);
+          const durationDays = Number(p.duration_days || p.durationDays || 365);
           return {
             id: p.id,
             planId: p.plan_id || p.planId,
-            planName: p.plan_name || p.planName,
-            planCategory: p.plan_category || p.planCategory,
+            planName: p.plan_name || p.planName || 'Device Cabinet',
+            planCategory: p.plan_category || p.planCategory || 'VIP',
             amount: Number(p.amount || 0),
+            instantBonus,
+            dailyEarnings,
+            hourlyEarnings: earningRate,
+            earningRate,
+            durationDays,
+            totalEarned,
+            claimedAmount,
             status: isActive ? 'ACTIVE' : (p.status || 'EXPIRED'),
             startedAt: p.started_at || p.startedAt || p.created_at,
             endDate: endDate,
+            expiresAt: endDate,
             isActive,
           };
         }),

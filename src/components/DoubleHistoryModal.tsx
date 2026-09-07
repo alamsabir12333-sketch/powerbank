@@ -128,7 +128,7 @@ export const DoubleHistoryModal: React.FC<DoubleHistoryModalProps> = ({
                         <span>{item.date}</span>
                       </div>
                       <span className="text-gray-400 font-medium">
-                        Total Yield: <span className="text-emerald-400 font-semibold">₹{item.earned.toFixed(2)}</span>
+                        Total Yield: <span className="text-emerald-400 font-semibold">₹{(Number(item.earned) || 0).toFixed(2)}</span>
                       </span>
                     </div>
                   </div>

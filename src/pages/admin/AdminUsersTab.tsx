@@ -626,7 +626,7 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                           <div>
                             <div className="font-bold text-white">{p.planName}</div>
                             <div className="text-[10.5px] text-gray-400 font-mono">
-                              Staked: ₹{p.amount} • Yield: ₹{p.earningRate}/hr • Earned: ₹{p.totalEarned.toFixed(2)}
+                              Staked: ₹{p.amount} • Yield: ₹{p.earningRate || 0}/hr • Earned: ₹{(Number(p.totalEarned) || 0).toFixed(2)}
                             </div>
                           </div>
                           <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${p.status === 'ACTIVE' ? 'bg-emerald-950/80 text-emerald-400' : 'bg-gray-800 text-gray-400'}`}>

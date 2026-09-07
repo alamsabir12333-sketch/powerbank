@@ -31,10 +31,10 @@ export const DoubleEarningsCard: React.FC<DoubleEarningsCardProps> = ({
     maximumFractionDigits: 2,
   })}`;
 
-  const formattedToday = `+₹${Number(todayEarnings || 0) > 0 ? Number(todayEarnings).toFixed(2) : '0'}`;
+  const formattedToday = `+₹${Number(todayEarnings || 0) > 0 ? (Number(todayEarnings) || 0).toFixed(2) : '0'}`;
   const formattedPromo =
     Number(promotionEarnings || 0) > 0
-      ? `+₹${Number(promotionEarnings).toFixed(2)}`
+      ? `+₹${(Number(promotionEarnings) || 0).toFixed(2)}`
       : '₹0';
 
   return (

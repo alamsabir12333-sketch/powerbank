@@ -140,9 +140,9 @@ export const FortunePage: React.FC<FortunePageProps> = ({
       : wallet?.availableBalance || 0
   );
   const withdrawableEarnings = withdrawBalance;
-  const totalAssets = Number((topupBalance + withdrawBalance).toFixed(2));
+  const totalAssets = Number(((Number(topupBalance) || 0) + (Number(withdrawBalance) || 0)).toFixed(2));
   const todayEstimatedEarnings = activePurchases.reduce((acc, p) => {
-    const daily = p.dailyEarnings || (p.earningRate * 24) || 0;
+    const daily = Number(p.dailyEarnings || (Number(p.earningRate || 0) * 24) || 0);
     return acc + daily;
   }, 0);
   const totalEarned = Number(wallet?.totalEarned || 0);
@@ -183,22 +183,22 @@ export const FortunePage: React.FC<FortunePageProps> = ({
         <div className="text-white text-center py-2">
           <span className="text-xs text-white/80 font-medium">Total Assets (₹)</span>
           <div className="text-3xl font-black tracking-tight mt-0.5">
-            ₹{totalAssets.toFixed(2)}
+            ₹{(Number(totalAssets) || 0).toFixed(2)}
           </div>
         </div>
 
         {/* 3 Horizontal sub-stats */}
         <div className="grid grid-cols-3 text-center border-t border-white/20 pt-4 mt-2">
           <div>
-            <span className="text-white font-bold text-base">₹{withdrawableEarnings.toFixed(2)}</span>
+            <span className="text-white font-bold text-base">₹{(Number(withdrawableEarnings) || 0).toFixed(2)}</span>
             <span className="text-white/80 text-[11px] block mt-0.5">Device Earned</span>
           </div>
           <div className="border-x border-white/20 px-1">
-            <span className="text-white font-bold text-base">+₹{todayEstimatedEarnings.toFixed(2)}</span>
+            <span className="text-white font-bold text-base">+₹{(Number(todayEstimatedEarnings) || 0).toFixed(2)}</span>
             <span className="text-white/80 text-[11px] block mt-0.5">Est. Daily Yield</span>
           </div>
           <div>
-            <span className="text-white font-bold text-base">+₹{totalEarned.toFixed(2)}</span>
+            <span className="text-white font-bold text-base">+₹{(Number(totalEarned) || 0).toFixed(2)}</span>
             <span className="text-white/80 text-[11px] block mt-0.5">Total Claimed</span>
           </div>
         </div>
@@ -397,7 +397,7 @@ export const FortunePage: React.FC<FortunePageProps> = ({
                             <span>Day {h.dayNumber} Check-in</span>
                             <span className="text-white/60 text-[10px]">({h.date})</span>
                           </div>
-                          <span className="font-bold text-amber-200">+₹{Number(h.amount ?? 0).toFixed(2)}</span>
+                          <span className="font-bold text-amber-200">+₹{h.amount.toFixed(2)}</span>
                         </div>
                       ))
                     ) : (
@@ -445,7 +445,9 @@ export const FortunePage: React.FC<FortunePageProps> = ({
             <div className="space-y-2">
               {activePurchases.map((p) => {
                 const isPro = (p.planCategory || '').toUpperCase() === 'PRO';
-                const daily = Number(p.dailyEarnings ?? ((p.earningRate ?? 0) * 24));
+                const earningRate = Number(p.earningRate || p.hourlyEarnings || 0);
+                const daily = Number(p.dailyEarnings || (earningRate * 24) || 0);
+                const totalEarned = Number(p.totalEarned || 0);
                 return (
                   <div
                     key={p.id}
@@ -465,7 +467,7 @@ export const FortunePage: React.FC<FortunePageProps> = ({
                         </span>
                       </div>
                       <p className="text-gray-500 text-[10.5px] mt-0.5 font-mono">
-                        Yield: ₹{daily.toFixed(2)}/day (₹{Number(p.earningRate ?? 0).toFixed(2)}/hr)
+                        Yield: ₹{daily.toFixed(2)}/day (₹{earningRate.toFixed(2)}/hr)
                       </p>
                       {p.instantBonus && p.instantBonus > 0 ? (
                         <p className="text-amber-700 text-[10px] font-bold mt-0.5">
@@ -475,7 +477,7 @@ export const FortunePage: React.FC<FortunePageProps> = ({
                     </div>
                     <div className="text-right">
                       <span className="text-[#FF6200] font-black text-sm">
-                        +₹{Number(p.totalEarned ?? 0).toFixed(2)}
+                        +₹{totalEarned.toFixed(2)}
                       </span>
                       <p className="text-gray-400 text-[9.5px]">Total Accrued</p>
                     </div>

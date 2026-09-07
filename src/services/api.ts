@@ -2007,13 +2007,13 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
       return {
         referralCode: myCode,
         referralLink: `${siteBaseUrl}/invite/${myCode}`,
-        totalMembers: d.totalMembers,
-        directMembers: d.directMembers,
-        activeDevices: d.activeDevicesCount,
-        totalCommission: d.totalTeamCommission,
-        level1Commission: d.level1Commission,
-        level2Commission: d.level2Commission,
-        level3Commission: d.level3Commission,
+        totalMembers: Number(d.totalMembers || 0),
+        directMembers: Number(d.directMembers || 0),
+        activeDevices: Number(d.activeDevicesCount || 0),
+        totalCommission: Number(d.totalTeamCommission ?? d.totalCommission ?? 0),
+        level1Commission: Number(d.level1Commission || 0),
+        level2Commission: Number(d.level2Commission || 0),
+        level3Commission: Number(d.level3Commission || 0),
         subordinates: {
           1: (d.level1Members || []).map((m: any) => ({
             ...m,
@@ -2869,18 +2869,32 @@ export async function fetchPurchases(userId: string): Promise<PurchaseItem[]> {
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data && Array.isArray(json.data.devices)) {
-        return json.data.devices.map((p: any) => ({
-          id: p.id,
-          userId,
-          planId: p.planId || p.plan_id,
-          planName: p.planName || p.plan_name || 'Device Cabinet',
-          planCategory: p.planCategory || p.plan_category || 'VIP',
-          amount: Number(p.amount),
-          status: p.status,
-          startedAt: p.startedAt || p.started_at,
-          expiresAt: p.endDate || p.expires_at,
-          isActive: p.isActive,
-        }));
+        return json.data.devices.map((p: any) => {
+          const earningRate = Number(p.earningRate || p.hourlyEarnings || p.earning_rate || (p.dailyEarnings ? Number(p.dailyEarnings) / 24 : 0) || 0);
+          const dailyEarnings = Number(p.dailyEarnings || p.daily_earnings || (earningRate > 0 ? earningRate * 24 : 0));
+          const hourlyEarnings = earningRate > 0 ? earningRate : (dailyEarnings > 0 ? Number((dailyEarnings / 24).toFixed(2)) : 0);
+          const durationDays = Number(p.durationDays || p.duration_days || 365);
+          return {
+            id: p.id,
+            userId,
+            planId: p.planId || p.plan_id,
+            planName: p.planName || p.plan_name || 'Device Cabinet',
+            planCategory: p.planCategory || p.plan_category || 'VIP',
+            amount: Number(p.amount || 0),
+            instantBonus: Number(p.instantBonus || p.instant_bonus || 0),
+            dailyEarnings,
+            hourlyEarnings,
+            earningRate: hourlyEarnings,
+            durationDays,
+            totalPlanHours: Number(p.totalPlanHours || durationDays * 24),
+            totalEarned: Number(p.totalEarned || p.total_earned || 0),
+            claimedAmount: Number(p.claimedAmount || p.claimed_amount || 0),
+            status: p.status,
+            startedAt: p.startedAt || p.started_at,
+            expiresAt: p.endDate || p.expiresAt || p.expires_at,
+            isActive: p.isActive,
+          };
+        });
       }
     }
   } catch {
@@ -3867,6 +3881,104 @@ export async function fetchClaimHistory(userId: string): Promise<ClaimBatch[]> {
 
   const claims = getLocal<ClaimBatch[]>(STORAGE_KEYS.CLAIMS, []);
   return claims.filter((c) => c.userId === userId);
+}
+
+/**
+ * Authoritative source for claimed My Device earnings.
+ * Returns ONLY the cumulative amount successfully claimed from "My Device".
+ * Does NOT include unclaimed device earnings, referral commissions, bonuses, or other wallet earnings.
+ */
+export async function fetchClaimedDeviceEarnings(userId: string): Promise<number> {
+  if (!userId) return 0;
+
+  // 1. Try authoritative server endpoint first
+  try {
+    const res = await fetch(apiUrl(`/api/user/claimed-device-earnings?userId=${encodeURIComponent(userId)}`));
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.claimedDeviceEarnings !== undefined && data.claimedDeviceEarnings !== null) {
+        return Number((Number(data.claimedDeviceEarnings) || 0).toFixed(2));
+      }
+    }
+  } catch {
+    // Continue to database / local check
+  }
+
+  // 2. Authoritative Database source: query claim records / wallet transactions / purchases in Supabase
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const [cbRes, wtRes, purRes] = await Promise.all([
+        supabase
+          .from('claim_batches')
+          .select('amount')
+          .eq('user_id', userId),
+        supabase
+          .from('wallet_transactions')
+          .select('amount, type, reference_id, description')
+          .eq('user_id', userId),
+        supabase
+          .from('purchases')
+          .select('claimed_amount')
+          .eq('user_id', userId),
+      ]);
+
+      const claimBatchesSum = (cbRes.data || []).reduce((sum: number, c: any) => sum + (Number(c.amount) || 0), 0);
+
+      const walletTxClaimSum = (wtRes.data || [])
+        .filter((t: any) => {
+          const type = String(t.type || '').toUpperCase();
+          const ref = String(t.reference_id || '');
+          const desc = String(t.description || '');
+          return (
+            type === 'EARNING_CLAIM' ||
+            ref.startsWith('CLM-') ||
+            desc.includes('Device Hourly Yield Claim') ||
+            desc.includes('hourly device earnings') ||
+            (type === 'EARNING' && ref.startsWith('CLM-'))
+          );
+        })
+        .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
+
+      const purchasesClaimedSum = (purRes.data || []).reduce((sum: number, p: any) => sum + (Number(p.claimed_amount) || 0), 0);
+
+      const dbClaimedTotal = Math.max(claimBatchesSum, walletTxClaimSum, purchasesClaimedSum);
+      if (dbClaimedTotal > 0) {
+        return Number(dbClaimedTotal.toFixed(2));
+      }
+    } catch (dbErr) {
+      console.warn('Failed to query database claim records for device earnings:', dbErr);
+    }
+  }
+
+  // 3. Local storage fallback
+  const localClaims = getLocal<ClaimBatch[]>(STORAGE_KEYS.CLAIMS, []);
+  const localClaimsSum = localClaims
+    .filter((c) => c.userId === userId)
+    .reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
+
+  const localTxs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+  const localTxSum = localTxs
+    .filter((t) => {
+      if (t.userId !== userId) return false;
+      const type = String(t.type || '').toUpperCase();
+      const ref = String(t.referenceId || '');
+      const desc = String(t.description || '');
+      return (
+        type === 'EARNING_CLAIM' ||
+        ref.startsWith('CLM-') ||
+        desc.includes('Device Hourly Yield Claim') ||
+        (type === 'EARNING' && ref.startsWith('CLM-'))
+      );
+    })
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+  const localPurchases = getLocal<PurchaseItem[]>(STORAGE_KEYS.PURCHASES, []);
+  const localPurSum = localPurchases
+    .filter((p) => p.userId === userId)
+    .reduce((sum, p) => sum + (Number(p.claimedAmount) || 0), 0);
+
+  const maxLocalClaimed = Math.max(localClaimsSum, localTxSum, localPurSum);
+  return Number((Number(maxLocalClaimed) || 0).toFixed(2));
 }
 
 /**

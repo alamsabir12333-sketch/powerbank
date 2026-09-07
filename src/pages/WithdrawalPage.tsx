@@ -152,7 +152,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
 
     if (amount > withdrawableBalance) {
       setError(
-        `Insufficient Withdraw Wallet balance. You have ₹${withdrawableBalance.toFixed(2)} in your withdraw balance.`
+        `Insufficient Withdraw Wallet balance. You have ₹${(Number(withdrawableBalance) || 0).toFixed(2)} in your withdraw balance.`
       );
       return;
     }
@@ -234,12 +234,12 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
               {loading && !wallet ? (
                 <span className="inline-block w-16 h-3.5 bg-gray-200 rounded animate-pulse align-middle ml-1" />
               ) : (
-                <span className="font-bold text-gray-800">₹{withdrawableBalance.toFixed(2)}</span>
+                <span className="font-bold text-gray-800">₹{(Number(withdrawableBalance) || 0).toFixed(2)}</span>
               )}
             </p>
             {topupBalance > 0 && (
               <p className="text-[11px] text-gray-400 font-medium">
-                (Topup Wallet: ₹{topupBalance.toFixed(2)} — dedicated for plan activations)
+                (Topup Wallet: ₹{(Number(topupBalance) || 0).toFixed(2)} — dedicated for plan activations)
               </p>
             )}
           </div>
@@ -415,10 +415,10 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
             <div className="flex items-center justify-between text-xs pt-1">
               <div className="space-y-0.5">
                 <div className="font-semibold text-gray-700">
-                  Bank Settlement Amount: ₹{receivedAmount.toFixed(2)}
+                  Bank Settlement Amount: ₹{(Number(receivedAmount) || 0).toFixed(2)}
                 </div>
                 <div className="text-gray-400">
-                  Processing Fee ({withdrawalFeePercent}%): ₹{feeAmount.toFixed(2)}
+                  Processing Fee ({withdrawalFeePercent}%): ₹{(Number(feeAmount) || 0).toFixed(2)}
                 </div>
               </div>
 

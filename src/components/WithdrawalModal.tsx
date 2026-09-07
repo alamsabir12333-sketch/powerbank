@@ -185,7 +185,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
                 <div>
                   <span className="text-[11px] text-gray-400 block font-medium">Withdraw Wallet Balance</span>
                   <span className="text-xl font-extrabold text-[#FF6000]">
-                    ₹{withdrawableEarnings.toFixed(2)}
+                    ₹{(Number(withdrawableEarnings) || 0).toFixed(2)}
                   </span>
                 </div>
                 <button
@@ -199,7 +199,7 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
 
               {rechargeBalance > 0 && (
                 <div className="pt-2 border-t border-[#222] text-[10.5px] text-gray-400">
-                  Topup Wallet (Non-withdrawable): <strong className="text-gray-200">₹{rechargeBalance.toFixed(2)}</strong>
+                  Topup Wallet (Non-withdrawable): <strong className="text-gray-200">₹{(Number(rechargeBalance) || 0).toFixed(2)}</strong>
                 </div>
               )}
             </div>
@@ -325,15 +325,15 @@ export const WithdrawalModal: React.FC<WithdrawalModalProps> = ({
             <div className="p-3 bg-[#181818] rounded-xl border border-[#262626] text-xs text-gray-400 space-y-1.5">
               <div className="flex justify-between">
                 <span>Requested Amount:</span>
-                <span className="text-white font-bold">₹{numAmount.toFixed(2)}</span>
+                <span className="text-white font-bold">₹{(Number(numAmount) || 0).toFixed(2)}</span>
               </div>
               <div className="flex justify-between">
                 <span>Handling Fee ({withdrawalFeePercent}%):</span>
-                <span className="text-red-400 font-medium">-₹{feeAmount.toFixed(2)}</span>
+                <span className="text-red-400 font-medium">-₹{(Number(feeAmount) || 0).toFixed(2)}</span>
               </div>
               <div className="flex justify-between border-t border-[#262626] pt-1.5 font-semibold">
                 <span className="text-gray-300">Net to Bank:</span>
-                <span className="text-green-400 font-bold">₹{netReceivedAmount.toFixed(2)}</span>
+                <span className="text-green-400 font-bold">₹{(Number(netReceivedAmount) || 0).toFixed(2)}</span>
               </div>
               <div className="flex justify-between pt-0.5">
                 <span>Payout Method:</span>

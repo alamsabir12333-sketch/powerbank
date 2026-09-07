@@ -215,8 +215,8 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
       <div className="w-full bg-[#FF6000] px-4 pt-4 pb-3 flex items-center justify-between shadow-xs">
         <h1 className="text-lg font-bold text-white tracking-wide">Purchase Hall</h1>
         <div className="flex items-center gap-2">
-          <div className="bg-white/20 backdrop-blur-xs px-3 py-1 rounded-full text-white text-xs font-bold flex items-center gap-1.5 border border-white/20" title={`Topup: ₹${rechargeBalance.toFixed(2)} + Withdraw: ₹${withdrawBalance.toFixed(2)}`}>
-            <span>Usable: ₹{totalUsableBalance.toFixed(2)}</span>
+          <div className="bg-white/20 backdrop-blur-xs px-3 py-1 rounded-full text-white text-xs font-bold flex items-center gap-1.5 border border-white/20" title={`Topup: ₹${(Number(rechargeBalance) || 0).toFixed(2)} + Withdraw: ₹${(Number(withdrawBalance) || 0).toFixed(2)}`}>
+            <span>Usable: ₹{(Number(totalUsableBalance) || 0).toFixed(2)}</span>
           </div>
           <button
             onClick={onOpenRecharge}
@@ -666,7 +666,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                 </div>
                 <div className="flex justify-between text-[11px] text-gray-500 pt-0.5">
                   <span>Available Balance:</span>
-                  <span>Topup: ₹{rechargeBalance.toFixed(2)} + Withdraw: ₹{withdrawBalance.toFixed(2)}</span>
+                  <span>Topup: ₹{(Number(rechargeBalance) || 0).toFixed(2)} + Withdraw: ₹{(Number(withdrawBalance) || 0).toFixed(2)}</span>
                 </div>
               </div>
 
@@ -724,7 +724,7 @@ export const PurchaseHallPage: React.FC<PurchaseHallPageProps> = ({
                   Insufficient Usable Balance
                 </h3>
                 <p className="text-xs text-gray-600 leading-relaxed">
-                  Plans are purchased using your combined balance (<strong className="text-gray-900">Topup + Withdraw</strong>). Total usable: <span className="font-bold text-[#FF6000]">₹{insufficientBalanceModal.available.toFixed(2)}</span>. Required: <span className="font-bold text-gray-900">₹{insufficientBalanceModal.required.toFixed(2)}</span>. Please recharge ₹{Math.max(0, insufficientBalanceModal.required - insufficientBalanceModal.available).toFixed(2)} to activate this plan.
+                  Plans are purchased using your combined balance (<strong className="text-gray-900">Topup + Withdraw</strong>). Total usable: <span className="font-bold text-[#FF6000]">₹{(Number(insufficientBalanceModal.available) || 0).toFixed(2)}</span>. Required: <span className="font-bold text-gray-900">₹{(Number(insufficientBalanceModal.required) || 0).toFixed(2)}</span>. Please recharge ₹{(Math.max(0, (Number(insufficientBalanceModal.required) || 0) - (Number(insufficientBalanceModal.available) || 0)) || 0).toFixed(2)} to activate this plan.
                 </p>
               </div>
               <div className="flex items-center gap-2 pt-2">

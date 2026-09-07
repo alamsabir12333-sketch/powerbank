@@ -146,6 +146,9 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
       if (onClaimSuccess) {
         onClaimSuccess();
       }
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('device_earnings_claimed', { detail: { amount: res.amount } }));
+      }
       await loadEarnings();
     } catch (err: any) {
       console.error('Claim error:', err);
@@ -306,7 +309,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                 Daily Yield
               </span>
               <span className="text-sm font-black text-green-400">
-                ₹{totalDailyEarn.toFixed(2)}
+                ₹{(Number(totalDailyEarn) || 0).toFixed(2)}
               </span>
             </div>
             <div className="p-2 rounded-xl bg-[#1e1e1e] border border-[#2a2a2a]">
@@ -314,7 +317,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                 Total Claimed
               </span>
               <span className="text-sm font-black text-amber-400">
-                ₹{totalEarnedSoFar.toFixed(2)}
+                ₹{(Number(totalEarnedSoFar) || 0).toFixed(2)}
               </span>
             </div>
           </div>
@@ -407,16 +410,16 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                     <div className="grid grid-cols-3 gap-1.5 p-2 rounded-xl bg-[#141414] border border-[#262626] text-[10.5px]">
                       <div>
                         <span className="text-gray-500 block text-[9px]">Hourly Rate</span>
-                        <span className="font-bold text-green-400">₹{status.hourlyEarnings.toFixed(2)}/hr</span>
+                        <span className="font-bold text-green-400">₹{(Number(status?.hourlyEarnings) || 0).toFixed(2)}/hr</span>
                       </div>
                       <div>
                         <span className="text-gray-500 block text-[9px]">Remaining</span>
-                        <span className="font-bold text-gray-200">{status.remainingHours}h</span>
+                        <span className="font-bold text-gray-200">{status?.remainingHours || 0}h</span>
                       </div>
                       <div>
                         <span className="text-gray-500 block text-[9px]">Claimable</span>
-                        <span className={`font-black ${status.claimableAmount > 0 ? 'text-amber-400 animate-pulse' : 'text-gray-400'}`}>
-                          ₹{status.claimableAmount.toFixed(2)}
+                        <span className={`font-black ${(Number(status?.claimableAmount) || 0) > 0 ? 'text-amber-400 animate-pulse' : 'text-gray-400'}`}>
+                          ₹{(Number(status?.claimableAmount) || 0).toFixed(2)}
                         </span>
                       </div>
                     </div>
@@ -439,7 +442,7 @@ export const MyDeviceModal: React.FC<MyDeviceModalProps> = ({
                       <span>
                         Total Earned:{' '}
                         <strong className="text-amber-400">
-                          ₹{status.totalEarnedAmount.toFixed(2)}
+                          ₹{(Number(status?.totalEarnedAmount) || 0).toFixed(2)}
                         </strong>
                       </span>
                       <span className="font-mono text-gray-400">

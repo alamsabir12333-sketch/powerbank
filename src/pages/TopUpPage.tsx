@@ -587,7 +587,7 @@ export default function TopUpPage({
             {settingsLoading && !propWallet ? (
               <span className="inline-block w-16 h-3 bg-gray-200 rounded animate-pulse align-middle ml-1" />
             ) : (
-              `₹${balance.toFixed(2)}`
+              `₹${(Number(balance) || 0).toFixed(2)}`
             )}
           </p>
 

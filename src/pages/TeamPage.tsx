@@ -265,7 +265,7 @@ export const TeamPage: React.FC<TeamPageProps> = ({
         <div className="text-white text-center py-2">
           <span className="text-xs text-white/80 font-medium">Total Team Commission (₹)</span>
           <div className="text-3xl font-black tracking-tight mt-0.5">
-            {teamSummary.totalCommission.toFixed(2)}
+            {(Number(teamSummary?.totalCommission) || 0).toFixed(2)}
           </div>
         </div>
 
