@@ -1268,16 +1268,46 @@ app.post('/api/create-payin-order', handleCreatePayment);
 app.post('/functions/v1/create-payin-order', handleCreatePayment);
 
 // ==============================================================================
-// ATOMIC & IDEMPOTENT DEPOSIT SETTLEMENT HELPER
+// ATOMIC & IDEMPOTENT REFERRAL COMMISSION SETTLEMENT ENGINE
 // ==============================================================================
-async function processReferralCommissionsServer(supabaseClient: any, userId: string, depositAmount: number, traceno: string) {
+async function processReferralCommissionsServer(
+  supabaseClient: any,
+  userId: string,
+  depositAmount: number,
+  traceno: string
+): Promise<{
+  success: boolean;
+  settled: Array<{ tierNum: number; referrerId: string; commission: number; percentage: number; refId: string }>;
+  skipped: Array<{ tierNum: number; referrerId?: string; reason: string }>;
+  error?: string;
+}> {
+  const settledResults: Array<{ tierNum: number; referrerId: string; commission: number; percentage: number; refId: string }> = [];
+  const skippedResults: Array<{ tierNum: number; referrerId?: string; reason: string }> = [];
+
   try {
-    // FINAL BUSINESS RULE: L1/L2/L3 referral commission MUST be paid ONLY when the referred user's TOPUP/RECHARGE is successfully completed.
-    // PLAN PURCHASE MUST NEVER GENERATE L1/L2/L3 REFERRAL COMMISSION.
-    if (!traceno || String(traceno).startsWith('PUR-')) {
-      return;
+    const cleanTrace = String(traceno || '').trim();
+    const tLower = cleanTrace.toLowerCase();
+
+    // STRICT EXCLUSIONS:
+    // Plan purchases, device earnings, withdrawals, and daily check-ins MUST NEVER generate referral commission.
+    // Only successful Topup/Recharge generates referral commission.
+    if (
+      !cleanTrace ||
+      tLower.startsWith('pur-') ||
+      tLower.startsWith('plan-') ||
+      tLower.startsWith('dev-') ||
+      tLower.startsWith('claim-') ||
+      tLower.startsWith('wth-') ||
+      tLower.startsWith('checkin-') ||
+      tLower.startsWith('bonus-') ||
+      tLower.startsWith('signup-') ||
+      tLower.includes('purchase') ||
+      depositAmount <= 0
+    ) {
+      return { success: true, settled: [], skipped: [{ tierNum: 0, reason: 'EXCLUDED_SOURCE_OR_INVALID_AMOUNT' }] };
     }
 
+    // Retrieve configured rates with robust fallback
     let tiers = [
       { tier: 1, percentage: 10 },
       { tier: 2, percentage: 5 },
@@ -1312,20 +1342,21 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
       }
     } catch (_e) {}
 
-    // Helper to find a user's parent inviter
+    // Helper to find a user's parent inviter without altering existing relationships
     const findParentReferrer = async (childId: string, visited: Set<string> = new Set()) => {
       if (!childId) return null;
-      const { data: rRow } = await supabaseClient
+      const { data: rRows } = await supabaseClient
         .from('referrals')
         .select('*')
         .eq('referee_id', childId)
-        .maybeSingle();
+        .limit(1);
 
+      const rRow = rRows?.[0];
       if (rRow?.referrer_id && rRow.referrer_id !== childId && !visited.has(rRow.referrer_id)) {
         return { referrerId: rRow.referrer_id, refRowId: rRow.id, currentCommission: Number(rRow.commission_earned || 0) };
       }
 
-      // Check profiles.referred_by
+      // Fallback: Check profiles.referred_by
       const { data: childProf } = await supabaseClient
         .from('profiles')
         .select('referred_by')
@@ -1347,22 +1378,7 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
         if (pProf) {
           const pId = pProf.user_id || pProf.id;
           if (pId && pId !== childId && !visited.has(pId)) {
-            try {
-              const { data: insRef } = await supabaseClient.from('referrals').insert({
-                referrer_id: pId,
-                referee_id: childId,
-                level: 1,
-                bonus_amount: 0,
-                status: 'ACTIVE',
-                qualifying_recharge_done: true,
-                commission_earned: 0,
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-              }).select('id').maybeSingle();
-              return { referrerId: pId, refRowId: insRef?.id || null, currentCommission: 0 };
-            } catch {
-              return { referrerId: pId, refRowId: null, currentCommission: 0 };
-            }
+            return { referrerId: pId, refRowId: null, currentCommission: 0 };
           }
         }
       }
@@ -1370,16 +1386,18 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
     };
 
     const visitedReferrers = new Set<string>([userId]);
-    // Find Level 1 referrer (direct parent of userId)
+    // Level 1: direct referrer of depositing user
     const l1Info = await findParentReferrer(userId, visitedReferrers);
-    if (!l1Info?.referrerId) return;
+    if (!l1Info?.referrerId) {
+      return { success: true, settled: [], skipped: [{ tierNum: 1, reason: 'NO_REFERRER' }] };
+    }
     visitedReferrers.add(l1Info.referrerId);
 
-    // Find Level 2 referrer (parent of Level 1)
+    // Level 2: referrer of Level 1
     const l2Info = await findParentReferrer(l1Info.referrerId, visitedReferrers);
     if (l2Info?.referrerId) visitedReferrers.add(l2Info.referrerId);
 
-    // Find Level 3 referrer (parent of Level 2)
+    // Level 3: referrer of Level 2
     const l3Info = l2Info?.referrerId ? await findParentReferrer(l2Info.referrerId, visitedReferrers) : null;
     if (l3Info?.referrerId) visitedReferrers.add(l3Info.referrerId);
 
@@ -1392,41 +1410,65 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
     const nowIso = new Date().toISOString();
 
     for (const target of tierTargets) {
-      if (!target.referrerId || target.referrerId === userId) continue;
+      if (!target.referrerId || target.referrerId === userId) {
+        skippedResults.push({ tierNum: target.tierNum, reason: 'NO_TARGET_REFERRER' });
+        continue;
+      }
+
       const tierConfig = tiers.find((t) => t.tier === target.tierNum);
-      if (!tierConfig || tierConfig.percentage <= 0) continue;
+      const percentage = tierConfig ? Number(tierConfig.percentage || 0) : target.tierNum === 1 ? 10 : target.tierNum === 2 ? 5 : 2;
+      if (percentage <= 0) {
+        skippedResults.push({ tierNum: target.tierNum, referrerId: target.referrerId, reason: 'TIER_PERCENTAGE_ZERO' });
+        continue;
+      }
 
-      const commission = +(depositAmount * (tierConfig.percentage / 100)).toFixed(2);
-      if (commission <= 0) continue;
+      const commission = +(depositAmount * (percentage / 100)).toFixed(2);
+      if (commission <= 0) {
+        skippedResults.push({ tierNum: target.tierNum, referrerId: target.referrerId, reason: 'COMMISSION_AMOUNT_ZERO' });
+        continue;
+      }
 
-      if (String(traceno).startsWith('PUR-')) continue;
-      const refId = `TOPUP-REF-L${target.tierNum}-${traceno}`;
-      const commDesc = `L${target.tierNum} Referral Commission (${tierConfig.percentage}%) from Topup #${traceno}`;
+      const refId = `TOPUP-REF-L${target.tierNum}-${cleanTrace}`;
+      const legacyRefId = `TOPUP-T${target.tierNum}-${cleanTrace}`;
+      const commDesc = `L${target.tierNum} Referral Commission (${percentage}%) from Topup #${cleanTrace}`;
 
-      // Idempotency: check both wallet_ledger and wallet_transactions
+      // Idempotency: Verify no existing matching settlement/reference_id exists
       const { data: existingLedger } = await supabaseClient
         .from('wallet_ledger')
         .select('id')
-        .eq('reference_id', refId)
-        .maybeSingle();
+        .eq('user_id', target.referrerId)
+        .or(`reference_id.eq.${refId},reference_id.eq.${legacyRefId}`)
+        .limit(1);
 
-      if (existingLedger) continue;
+      if (existingLedger && existingLedger.length > 0) {
+        skippedResults.push({ tierNum: target.tierNum, referrerId: target.referrerId, reason: 'ALREADY_SETTLED_IN_LEDGER' });
+        continue;
+      }
 
       const { data: existingTx } = await supabaseClient
         .from('wallet_transactions')
         .select('id')
-        .eq('reference_id', refId)
-        .maybeSingle();
+        .eq('user_id', target.referrerId)
+        .or(`reference_id.eq.${refId},reference_id.eq.${legacyRefId}`)
+        .limit(1);
 
-      if (existingTx) continue;
+      if (existingTx && existingTx.length > 0) {
+        skippedResults.push({ tierNum: target.tierNum, referrerId: target.referrerId, reason: 'ALREADY_SETTLED_IN_TRANSACTIONS' });
+        continue;
+      }
 
+      // Fetch current wallet
       const { data: refWallet } = await supabaseClient
         .from('wallets')
         .select('*')
         .eq('user_id', target.referrerId)
         .maybeSingle();
 
-      const curWithdraw = Number(refWallet?.withdraw_balance !== undefined && refWallet?.withdraw_balance !== null ? refWallet.withdraw_balance : (refWallet?.earned_balance || 0));
+      const curWithdraw = Number(
+        refWallet?.withdraw_balance !== undefined && refWallet?.withdraw_balance !== null
+          ? refWallet.withdraw_balance
+          : (refWallet?.earned_balance || 0)
+      );
       const curRecharge = Number(refWallet?.recharge_balance || 0);
       const curTotalEarned = Number(refWallet?.total_earned || 0);
       const curTeamComm = Number(refWallet?.team_commission || 0);
@@ -1436,8 +1478,68 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
       const newTotalEarned = +(curTotalEarned + commission).toFixed(2);
       const newTeamComm = +(curTeamComm + commission).toFixed(2);
 
+      // ATOMIC TRANSACTION:
+      // 1. Create wallet_transactions entry: type = TEAM_BONUS, wallet_type = WITHDRAW
+      const txId = crypto.randomUUID();
+      const { error: txErr } = await supabaseClient.from('wallet_transactions').insert({
+        id: txId,
+        user_id: target.referrerId,
+        type: 'TEAM_BONUS',
+        amount: commission,
+        balance_before: curWithdraw,
+        balance_after: newWithdraw,
+        reference_id: refId,
+        description: commDesc,
+        wallet_type: 'WITHDRAW',
+        status: 'COMPLETED',
+        metadata: {
+          direction: 'CREDIT',
+          rewardType: 'TOPUP_COMMISSION',
+          tier: target.tierNum,
+          type: 'COMMISSION',
+          refId,
+          depositUserId: userId,
+          traceno: cleanTrace,
+          depositAmount,
+        },
+        created_at: nowIso,
+      });
+
+      if (txErr) {
+        console.error(`[REFERRAL ATOM FAIL] wallet_transactions insert error: ${txErr.message}`);
+        skippedResults.push({ tierNum: target.tierNum, referrerId: target.referrerId, reason: `TX_INSERT_FAILED: ${txErr.message}` });
+        continue;
+      }
+
+      // 2. Create wallet_ledger entry
+      const ledgerId = crypto.randomUUID();
+      const { error: ledErr } = await supabaseClient.from('wallet_ledger').insert({
+        id: ledgerId,
+        user_id: target.referrerId,
+        wallet_type: 'DEVICE_EARNING',
+        transaction_type: 'REFERRAL_COMMISSION',
+        amount: commission,
+        direction: 'CREDIT',
+        reference_type: 'REFERRAL_COMMISSION',
+        reference_id: refId,
+        balance_before: curWithdraw,
+        balance_after: newWithdraw,
+        description: commDesc,
+        created_at: nowIso,
+      });
+
+      if (ledErr) {
+        console.error(`[REFERRAL ATOM FAIL] wallet_ledger insert error: ${ledErr.message}`);
+        // Rollback wallet_transaction
+        await supabaseClient.from('wallet_transactions').delete().eq('id', txId);
+        skippedResults.push({ tierNum: target.tierNum, referrerId: target.referrerId, reason: `LEDGER_INSERT_FAILED: ${ledErr.message}` });
+        continue;
+      }
+
+      // 3. Update wallet balance: withdraw_balance, earned_balance, available_balance, team_commission
+      let walErr: any = null;
       if (refWallet) {
-        await supabaseClient
+        const { error } = await supabaseClient
           .from('wallets')
           .update({
             withdraw_balance: newWithdraw,
@@ -1448,8 +1550,9 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
             updated_at: nowIso,
           })
           .eq('user_id', target.referrerId);
+        walErr = error;
       } else {
-        await supabaseClient.from('wallets').insert({
+        const { error } = await supabaseClient.from('wallets').insert({
           user_id: target.referrerId,
           recharge_balance: 0,
           withdraw_balance: newWithdraw,
@@ -1462,62 +1565,19 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
           created_at: nowIso,
           updated_at: nowIso,
         });
+        walErr = error;
       }
 
-      const txId = crypto.randomUUID();
-      await supabaseClient.from('wallet_transactions').insert({
-        id: txId,
-        user_id: target.referrerId,
-        type: 'TEAM_BONUS',
-        amount: commission,
-        balance_before: curWithdraw,
-        balance_after: newWithdraw,
-        reference_id: refId,
-        description: commDesc,
-        wallet_type: 'WITHDRAW',
-        status: 'COMPLETED',
-        metadata: {
-          rewardType: 'TOPUP_COMMISSION',
-          tier: target.tierNum,
-          type: 'COMMISSION',
-          refId,
-          depositUserId: userId,
-          traceno,
-          depositAmount,
-        },
-        created_at: nowIso,
-      });
-
-      try {
-        await supabaseClient.from('wallet_ledger').insert({
-          id: crypto.randomUUID(),
-          user_id: target.referrerId,
-          wallet_type: 'DEVICE_EARNING',
-          transaction_type: 'REFERRAL_COMMISSION',
-          amount: commission,
-          direction: 'CREDIT',
-          reference_type: 'REFERRAL_COMMISSION',
-          reference_id: refId,
-          balance_before: curWithdraw,
-          balance_after: newWithdraw,
-          description: commDesc,
-          created_at: nowIso,
-        });
-      } catch (ledErr: any) {
-        console.warn('[REFERRAL COMMISSION LEDGER NOTICE]', ledErr.message);
+      if (walErr) {
+        console.error(`[REFERRAL ATOM FAIL] wallet balance update error: ${walErr.message}`);
+        // Rollback both wallet_transaction and wallet_ledger
+        await supabaseClient.from('wallet_transactions').delete().eq('id', txId);
+        await supabaseClient.from('wallet_ledger').delete().eq('id', ledgerId);
+        skippedResults.push({ tierNum: target.tierNum, referrerId: target.referrerId, reason: `WALLET_UPDATE_FAILED: ${walErr.message}` });
+        continue;
       }
 
-      try {
-        await supabaseClient.from('notifications').insert({
-          user_id: target.referrerId,
-          title: `L${target.tierNum} Referral Commission Earned! 💰`,
-          message: `You received ₹${commission.toFixed(2)} (${tierConfig.percentage}%) commission from a team member topup.`,
-          type: 'EARNING',
-          is_read: false,
-          created_at: nowIso,
-        });
-      } catch {}
-
+      // 4. Update referrals record if row exists
       if (target.refRowId) {
         try {
           await supabaseClient
@@ -1530,25 +1590,159 @@ async function processReferralCommissionsServer(supabaseClient: any, userId: str
             })
             .eq('id', target.refRowId);
         } catch {}
-      } else if (target.tierNum === 1) {
-        try {
-          await supabaseClient.from('referrals').insert({
-            referrer_id: target.referrerId,
-            referee_id: userId,
-            level: 1,
-            bonus_amount: 0,
-            status: 'ACTIVE',
-            qualifying_recharge_done: true,
-            commission_earned: commission,
-            created_at: nowIso,
-            updated_at: nowIso,
-          });
-        } catch {}
       }
+
+      // 5. User In-App Notification
+      try {
+        await supabaseClient.from('notifications').insert({
+          user_id: target.referrerId,
+          title: `L${target.tierNum} Referral Commission Earned! 💰`,
+          message: `You received ₹${commission.toFixed(2)} (${percentage}%) commission from a team member topup.`,
+          type: 'EARNING',
+          is_read: false,
+          created_at: nowIso,
+        });
+      } catch {}
+
+      settledResults.push({
+        tierNum: target.tierNum,
+        referrerId: target.referrerId,
+        commission,
+        percentage,
+        refId,
+      });
+      console.log(`[REFERRAL SETTLED] L${target.tierNum} Referrer ${target.referrerId} credited ₹${commission} for topup ${cleanTrace}`);
     }
+
+    return { success: true, settled: settledResults, skipped: skippedResults };
   } catch (err: any) {
     console.error('[SETTLEMENT] Referral commission error:', err.message);
+    return { success: false, settled: settledResults, skipped: skippedResults, error: err.message };
   }
+}
+
+/**
+ * HISTORICAL REFERRAL COMMISSION RECONCILIATION
+ * Audits all historical successful topups/recharges across the database.
+ * Strictly idempotent: restores missing eligible commissions without duplicating anything.
+ */
+async function reconcileHistoricalReferralCommissions(supabaseClient: any) {
+  if (!supabaseClient) throw new Error('Database client required');
+
+  console.log('[RECONCILIATION] Starting historical topup referral audit...');
+
+  const [depsRes, paysRes, compsRes, usdtRes] = await Promise.all([
+    supabaseClient.from('deposit_transactions').select('*').in('status', ['SUCCESS', 'PAID', 'COMPLETED', 'APPROVED']),
+    supabaseClient.from('payments').select('*').in('status', ['PAID', 'APPROVED', 'SUCCESS', 'COMPLETED']),
+    supabaseClient.from('deposit_complaints').select('*').in('status', ['PAID', 'APPROVED', 'SUCCESS', 'COMPLETED']),
+    supabaseClient.from('usdt_deposits').select('*').in('status', ['PAID', 'APPROVED', 'SUCCESS', 'COMPLETED']),
+  ]);
+
+  const allDeposits = depsRes.data || [];
+  const allPays = paysRes.data || [];
+  const allComps = compsRes.data || [];
+  const allUsdt = usdtRes.data || [];
+
+  // Build unique list of verified successful topups
+  const topupsToProcess: Array<{ userId: string; amount: number; trace: string; source: string }> = [];
+  const seenTraces = new Set<string>();
+
+  for (const d of allDeposits) {
+    const amt = Number(d.amount);
+    if (!d.user_id || isNaN(amt) || amt <= 0) continue;
+    const trace = String(d.order_id || d.traceno || d.merchant_order_id || d.id);
+    if (trace.startsWith('PUR-') || trace.toLowerCase().includes('plan')) continue;
+    if (!seenTraces.has(trace)) {
+      seenTraces.add(trace);
+      if (d.order_id) seenTraces.add(String(d.order_id));
+      if (d.traceno) seenTraces.add(String(d.traceno));
+      if (d.id) seenTraces.add(String(d.id));
+      topupsToProcess.push({ userId: d.user_id, amount: amt, trace, source: 'deposit_transactions' });
+    }
+  }
+
+  for (const p of allPays) {
+    const amt = Number(p.amount);
+    if (!p.user_id || isNaN(amt) || amt <= 0) continue;
+    const trace = String(p.order_id || p.utr_number || p.id);
+    if (trace.startsWith('PUR-') || trace.toLowerCase().includes('plan')) continue;
+    if (!seenTraces.has(trace) && !seenTraces.has(String(p.id)) && !seenTraces.has(String(p.order_id))) {
+      seenTraces.add(trace);
+      if (p.id) seenTraces.add(String(p.id));
+      if (p.order_id) seenTraces.add(String(p.order_id));
+      topupsToProcess.push({ userId: p.user_id, amount: amt, trace, source: 'payments' });
+    }
+  }
+
+  for (const c of allComps) {
+    const amt = Number(c.amount);
+    if (!c.user_id || isNaN(amt) || amt <= 0) continue;
+    const trace = String(c.utr_number || c.order_id || c.id);
+    if (trace.startsWith('PUR-') || trace.toLowerCase().includes('plan')) continue;
+    if (!seenTraces.has(trace) && !seenTraces.has(String(c.id))) {
+      seenTraces.add(trace);
+      topupsToProcess.push({ userId: c.user_id, amount: amt, trace, source: 'deposit_complaints' });
+    }
+  }
+
+  for (const u of allUsdt) {
+    const amt = Number(u.amount);
+    if (!u.user_id || isNaN(amt) || amt <= 0) continue;
+    const trace = String(u.order_id || u.tx_hash || u.id);
+    if (trace.startsWith('PUR-') || trace.toLowerCase().includes('plan')) continue;
+    if (!seenTraces.has(trace) && !seenTraces.has(String(u.id))) {
+      seenTraces.add(trace);
+      topupsToProcess.push({ userId: u.user_id, amount: amt, trace, source: 'usdt_deposits' });
+    }
+  }
+
+  console.log(`[RECONCILIATION] Total unique topups to audit: ${topupsToProcess.length}`);
+
+  let newlyRestoredCount = 0;
+  let newlyRestoredAmount = 0;
+  let alreadySettledCount = 0;
+  const restoredItems: any[] = [];
+
+  for (const topup of topupsToProcess) {
+    const res = await processReferralCommissionsServer(
+      supabaseClient,
+      topup.userId,
+      topup.amount,
+      topup.trace
+    );
+
+    if (res.settled && res.settled.length > 0) {
+      for (const item of res.settled) {
+        newlyRestoredCount++;
+        newlyRestoredAmount = +(newlyRestoredAmount + item.commission).toFixed(2);
+        restoredItems.push({
+          ...item,
+          depositUserId: topup.userId,
+          depositAmount: topup.amount,
+          source: topup.source,
+          trace: topup.trace,
+        });
+      }
+    }
+
+    if (res.skipped && res.skipped.length > 0) {
+      for (const sk of res.skipped) {
+        if (sk.reason.includes('ALREADY_SETTLED')) {
+          alreadySettledCount++;
+        }
+      }
+    }
+  }
+
+  console.log(`[RECONCILIATION] Audit complete. Already settled: ${alreadySettledCount}, Newly restored: ${newlyRestoredCount} (₹${newlyRestoredAmount})`);
+  return {
+    success: true,
+    totalAudited: topupsToProcess.length,
+    alreadySettledCount,
+    newlyRestoredCount,
+    newlyRestoredAmount,
+    restoredItems,
+  };
 }
 
 // ==============================================================================
@@ -1996,8 +2190,28 @@ app.post('/api/test-commission-settle', async (req, res) => {
     if (!userId || !amount || !traceno) {
       return res.status(400).json({ success: false, error: 'Missing parameters' });
     }
-    await processReferralCommissionsServer(supabase, userId, Number(amount), String(traceno));
-    return res.json({ success: true });
+    const result = await processReferralCommissionsServer(supabase, userId, Number(amount), String(traceno));
+    return res.json({ success: true, result });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/reconcile-referral-commissions', async (_req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ success: false, error: 'Database unavailable' });
+    const result = await reconcileHistoricalReferralCommissions(supabase);
+    return res.json({ success: true, ...result });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/admin/reconcile-referral-commissions', async (_req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ success: false, error: 'Database unavailable' });
+    const result = await reconcileHistoricalReferralCommissions(supabase);
+    return res.json({ success: true, ...result });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -2125,11 +2339,11 @@ async function settleDepositSuccess(
 ): Promise<{ success: boolean; alreadyProcessed?: boolean; error?: string; order?: any }> {
   if (!supabase || !traceno) return { success: false, error: 'Missing supabase or traceno' };
 
-  // 1. Fetch the deposit transaction
+  // 1. Fetch the deposit transaction (support traceno, merchant_order_id, order_id, or id)
   const { data: order, error: fetchErr } = await supabase
     .from('deposit_transactions')
     .select('*')
-    .or(`traceno.eq.${traceno},merchant_order_id.eq.${traceno}`)
+    .or(`traceno.eq.${traceno},merchant_order_id.eq.${traceno},order_id.eq.${traceno},id.eq.${traceno}`)
     .maybeSingle();
 
   if (fetchErr || !order) {
@@ -2137,10 +2351,12 @@ async function settleDepositSuccess(
     return { success: false, error: 'ORDER_NOT_FOUND' };
   }
 
-  // 2. Idempotency check: if order is already SUCCESS / PAID / COMPLETED, return immediately
+  // 2. Idempotency check: if order is already SUCCESS / PAID / COMPLETED, verify referral commissions then return
   const statusUpper = (order.status || '').toUpperCase();
   if (statusUpper === 'SUCCESS' || statusUpper === 'PAID' || statusUpper === 'COMPLETED') {
-    console.log(`[SETTLEMENT] Order ${traceno} already settled (${order.status}). Skipping duplicate credit.`);
+    console.log(`[SETTLEMENT] Order ${traceno} already settled (${order.status}). Ensuring referral commissions are settled.`);
+    const effectiveTrace = order.order_id || order.traceno || order.merchant_order_id || traceno;
+    await processReferralCommissionsServer(supabase, order.user_id, Number(order.amount), String(effectiveTrace));
     return { success: true, alreadyProcessed: true, order };
   }
 
@@ -2416,7 +2632,7 @@ const handleOrderQuery = async (req: express.Request, res: express.Response) => 
     const { data } = await supabase
       .from('deposit_transactions')
       .select('*')
-      .or(`traceno.eq.${traceno},merchant_order_id.eq.${traceno}`)
+      .or(`traceno.eq.${traceno},merchant_order_id.eq.${traceno},order_id.eq.${traceno},id.eq.${traceno}`)
       .maybeSingle();
     dbOrder = data;
   }
@@ -4518,28 +4734,33 @@ app.get('/api/user/earnings-summary', async (req, res) => {
     const todayStr = new Date(nowMs).toISOString().split('T')[0];
     const todayStart = todayStr + 'T00:00:00.000Z';
 
-    const [walRes, purRes, claimsTodayRes, allTxsRes, missionClaimsRes, profRes] = await Promise.all([
-      supabase.from('wallets').select('*').eq('user_id', userId).maybeSingle(),
-      supabase.from('purchases').select('*').eq('user_id', userId),
+    const { data: profileData } = await supabase
+      .from('profiles')
+      .select('*')
+      .or(`user_id.eq.${userId},id.eq.${userId},membership_number.eq.${userId},referral_code.eq.${userId}`)
+      .maybeSingle();
+
+    const authUserId = profileData?.user_id || userId;
+    const profileId = profileData?.id || userId;
+    const allUserIds = Array.from(new Set([authUserId, profileId, userId].filter(Boolean)));
+
+    const [walRes, purRes, claimsTodayRes, allTxsRes, missionClaimsRes] = await Promise.all([
+      supabase.from('wallets').select('*').in('user_id', allUserIds).maybeSingle(),
+      supabase.from('purchases').select('*').in('user_id', allUserIds),
       supabase
         .from('wallet_transactions')
         .select('amount, created_at')
-        .eq('user_id', userId)
+        .in('user_id', allUserIds)
         .in('type', ['EARNING', 'EARNING_CLAIM'])
         .gte('created_at', todayStart),
       supabase
         .from('wallet_transactions')
         .select('*')
-        .eq('user_id', userId),
+        .in('user_id', allUserIds),
       supabase
         .from('mission_claims')
         .select('reward_amount')
-        .eq('user_id', userId),
-      supabase
-        .from('profiles')
-        .select('team_earnings, referral_earnings')
-        .or(`user_id.eq.${userId},id.eq.${userId}`)
-        .maybeSingle(),
+        .in('user_id', allUserIds),
     ]);
 
     const wallet = walRes.data || {};
@@ -4547,29 +4768,39 @@ app.get('/api/user/earnings-summary', async (req, res) => {
     const claimsToday = claimsTodayRes.data || [];
     const allTxs = allTxsRes.data || [];
     const missionClaims = missionClaimsRes.data || [];
-    const profile = profRes.data || {};
+    const profile = profileData || {};
 
-    // 1. Team commission (from wallet_transactions or wallet.team_commission / profile.team_earnings)
+    // 1. Team commission (authoritative settled topup referral commission records only)
+    const isSettledTopupComm = (t: any) => {
+      const type = String(t.type || '').toUpperCase();
+      const desc = String(t.description || '').toLowerCase();
+      const ref = String(t.reference_id || '').toLowerCase();
+      const rewType = String(t.metadata?.rewardType || '').toUpperCase();
+      const metaType = String(t.metadata?.type || '').toUpperCase();
+      const status = String(t.status || 'COMPLETED').toUpperCase();
+
+      if (status === 'FAILED' || status === 'CANCELLED' || status === 'REJECTED') return false;
+
+      // STRICT EXCLUSIONS
+      if (ref.includes('pur-') || ref.includes('plan-ref-') || desc.includes('plan purchase') || desc.includes('device purchase')) return false;
+      if (['DAILY_DEVICE_EARNING', 'DEVICE_CLAIM', 'INSTANT_BONUS', 'SIGNUP_BONUS', 'DAILY_CHECKIN', 'MISSION_REWARD', 'RECHARGE', 'TOPUP', 'WITHDRAWAL', 'WITHDRAW', 'ADMIN_ADJUSTMENT'].includes(type)) return false;
+
+      // STRICT INCLUSIONS
+      return (
+        type === 'TEAM_BONUS' ||
+        rewType === 'TOPUP_COMMISSION' ||
+        (metaType === 'COMMISSION' && !ref.includes('plan')) ||
+        ref.startsWith('topup-ref-') ||
+        ref.startsWith('topup-t') ||
+        (desc.includes('referral commission') && desc.includes('topup'))
+      );
+    };
+
     const teamCommTxSum = allTxs
-      .filter((t: any) => {
-        const type = String(t.type || '').toUpperCase();
-        const desc = String(t.description || '').toLowerCase();
-        const metaType = String(t.metadata?.type || '').toUpperCase();
-        const metaReward = String(t.metadata?.rewardType || '').toUpperCase();
-        return (
-          type === 'TEAM_BONUS' ||
-          type === 'COMMISSION' ||
-          metaType === 'COMMISSION' ||
-          metaReward === 'TOPUP_COMMISSION' ||
-          desc.includes('team commission') ||
-          desc.includes('tier') ||
-          desc.includes('level') ||
-          desc.includes('referral commission')
-        );
-      })
+      .filter(isSettledTopupComm)
       .reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
 
-    const teamCommission = teamCommTxSum > 0 ? teamCommTxSum : Number(wallet.team_commission || profile.team_earnings || 0);
+    const teamCommission = +teamCommTxSum.toFixed(2);
 
     // 2. Mission rewards (from mission_claims or wallet_transactions)
     const missionClaimsSum = missionClaims.reduce((sum: number, m: any) => sum + (Number(m.reward_amount) || 0), 0);
@@ -4676,6 +4907,20 @@ app.get('/api/user/earnings-summary', async (req, res) => {
     const purchasesClaimedSum = purchases.reduce((sum: number, p: any) => sum + (Number(p.claimed_amount) || 0), 0);
     const claimedDeviceEarnings = Number(Math.max(claimedDeviceTxSum, purchasesClaimedSum).toFixed(2));
 
+    // Keep wallets.team_commission and profiles.team_earnings synchronized
+    try {
+      for (const uid of allUserIds) {
+        await supabase
+          .from('wallets')
+          .update({ team_commission: teamCommission, updated_at: new Date().toISOString() })
+          .eq('user_id', uid);
+      }
+      await supabase
+        .from('profiles')
+        .update({ team_earnings: teamCommission, updated_at: new Date().toISOString() })
+        .or(allUserIds.map((uid) => `user_id.eq.${uid},id.eq.${uid}`).join(','));
+    } catch (_syncErr) {}
+
     return res.json({
       success: true,
       totalAssets,
@@ -4689,6 +4934,9 @@ app.get('/api/user/earnings-summary', async (req, res) => {
       activeDevicesCount: activePurchases.length,
       promotionEarnings,
       teamCommission: Number(teamCommission.toFixed(2)),
+      teamEarnings: Number(teamCommission.toFixed(2)),
+      totalTeamCommission: Number(teamCommission.toFixed(2)),
+      teamEarn: Number(teamCommission.toFixed(2)),
       missionRewards: Number(missionRewards.toFixed(2)),
       referralRewards: Number(referralRewards.toFixed(2)),
     });
@@ -8397,18 +8645,22 @@ app.get('/api/referrals/team-summary', async (req, res) => {
     const { data: profile } = await supabase
       .from('profiles')
       .select('*')
-      .or(`user_id.eq.${userId},id.eq.${userId}`)
+      .or(`user_id.eq.${userId},id.eq.${userId},membership_number.eq.${userId},referral_code.eq.${userId}`)
       .maybeSingle();
 
+    const authUserId = profile?.user_id || userId;
+    const profileId = profile?.id || userId;
+    const allUserIds = Array.from(new Set([authUserId, profileId, userId].filter(Boolean)));
+
     const myCode = profile?.referral_code || profile?.membership_number || '';
-    const myCodes = new Set([myCode, profile?.membership_number, profile?.user_id, profile?.id, userId].filter(Boolean));
+    const myCodes = new Set([myCode, profile?.membership_number, profile?.user_id, profile?.id, userId, authUserId, profileId].filter(Boolean));
 
     const [referralsRes, profilesRes, purchasesRes, txsRes, walRes, depositsRes, allRechargeTxsRes] = await Promise.all([
       supabase.from('referrals').select('*'),
       supabase.from('profiles').select('id, user_id, username, phone, mobile, whatsapp_no, referral_code, membership_number, referred_by, created_at'),
       supabase.from('purchases').select('id, user_id, plan_id, plan_name, plan_category, amount, status, started_at, expires_at, created_at'),
-      supabase.from('wallet_transactions').select('*').eq('user_id', userId),
-      supabase.from('wallets').select('*').eq('user_id', userId).maybeSingle(),
+      supabase.from('wallet_transactions').select('*').in('user_id', allUserIds),
+      supabase.from('wallets').select('*').in('user_id', allUserIds).maybeSingle(),
       supabase.from('deposit_transactions').select('*'),
       supabase.from('wallet_transactions').select('*').eq('type', 'RECHARGE'),
     ]);
@@ -8502,21 +8754,45 @@ app.get('/api/referrals/team-summary', async (req, res) => {
     });
 
     // Extract all TOPUP-only referral commission transactions received by userId
-    const topupCommTxs = allTxs.filter((t: any) => {
+    const isSettledTopupComm = (t: any) => {
       const type = String(t.type || '').toUpperCase();
       const desc = String(t.description || '').toLowerCase();
       const ref = String(t.reference_id || '').toLowerCase();
       const rewType = String(t.metadata?.rewardType || '').toUpperCase();
+      const metaType = String(t.metadata?.type || '').toUpperCase();
+      const status = String(t.status || 'COMPLETED').toUpperCase();
 
-      if (ref.includes('pur-') || desc.includes('plan purchase') || desc.includes('device purchase')) return false;
-      if (['DAILY_DEVICE_EARNING', 'INSTANT_BONUS', 'SIGNUP_BONUS'].includes(type)) return false;
+      if (status === 'FAILED' || status === 'CANCELLED' || status === 'REJECTED') return false;
 
+      // STRICT EXCLUSIONS
+      if (ref.includes('pur-') || ref.includes('plan-ref-') || desc.includes('plan purchase') || desc.includes('device purchase')) return false;
+      if (['DAILY_DEVICE_EARNING', 'DEVICE_CLAIM', 'INSTANT_BONUS', 'SIGNUP_BONUS', 'DAILY_CHECKIN', 'MISSION_REWARD', 'RECHARGE', 'TOPUP', 'WITHDRAWAL', 'WITHDRAW', 'ADMIN_ADJUSTMENT'].includes(type)) return false;
+
+      // STRICT INCLUSIONS
       return (
+        type === 'TEAM_BONUS' ||
         rewType === 'TOPUP_COMMISSION' ||
+        (metaType === 'COMMISSION' && !ref.includes('plan')) ||
         ref.startsWith('topup-ref-') ||
+        ref.startsWith('topup-t') ||
         (desc.includes('referral commission') && desc.includes('topup'))
       );
-    });
+    };
+
+    const getTxTier = (t: any): 1 | 2 | 3 => {
+      if (t.metadata?.tier) return Number(t.metadata.tier) as 1 | 2 | 3;
+      const ref = String(t.reference_id || '').toUpperCase();
+      if (ref.includes('-L1-') || ref.includes('-T1-')) return 1;
+      if (ref.includes('-L2-') || ref.includes('-T2-')) return 2;
+      if (ref.includes('-L3-') || ref.includes('-T3-')) return 3;
+      const desc = String(t.description || '').toLowerCase();
+      if (desc.includes('l1') || desc.includes('tier 1') || desc.includes('level 1') || desc.includes('10%')) return 1;
+      if (desc.includes('l2') || desc.includes('tier 2') || desc.includes('level 2') || desc.includes('5%')) return 2;
+      if (desc.includes('l3') || desc.includes('tier 3') || desc.includes('level 3') || desc.includes('2%')) return 3;
+      return 1;
+    };
+
+    const topupCommTxs = allTxs.filter(isSettledTopupComm);
 
     const now = Date.now();
 
@@ -8549,20 +8825,22 @@ app.get('/api/referrals/team-summary', async (req, res) => {
       }));
 
       // 3. Referral Commission earned by userId from this member's TOPUP ONLY
+      const memberUids = new Set([u.user_id, u.id, uid].filter(Boolean));
       const memberDepositRefs = new Set<string>();
       allDeposits
-        .filter((d: any) => d.user_id === uid)
+        .filter((d: any) => memberUids.has(d.user_id))
         .forEach((d: any) => {
           [d.traceno, d.order_id, d.merchant_order_id, d.id].filter(Boolean).forEach((r) => memberDepositRefs.add(String(r)));
         });
       allRecharges
-        .filter((w: any) => w.user_id === uid)
+        .filter((w: any) => memberUids.has(w.user_id))
         .forEach((w: any) => {
           [w.reference_id, w.id].filter(Boolean).forEach((r) => memberDepositRefs.add(String(r)));
         });
 
       let memberComm = topupCommTxs
         .filter((t: any) => {
+          if (t.metadata?.depositUserId && memberUids.has(t.metadata.depositUserId)) return true;
           const ref = String(t.reference_id || '');
           for (const mRef of memberDepositRefs) {
             if (mRef && ref.includes(mRef)) return true;
@@ -8570,16 +8848,6 @@ app.get('/api/referrals/team-summary', async (req, res) => {
           return false;
         })
         .reduce((sum: number, t: any) => sum + Number(t.amount || 0), 0);
-
-      const refEntry = allRefs.find((r: any) => r.referrer_id === userId && r.referee_id === uid);
-      if (tier === 1 && refEntry && Number(refEntry.commission_earned || 0) > memberComm) {
-        memberComm = Number(refEntry.commission_earned || 0);
-      }
-
-      if (memberComm === 0 && memberDepositAmount > 0) {
-        const tierRate = tier === 1 ? 0.10 : tier === 2 ? 0.05 : 0.02;
-        memberComm = +(memberDepositAmount * tierRate).toFixed(2);
-      }
 
       return {
         id: u.id || u.user_id,
@@ -8608,18 +8876,36 @@ app.get('/api/referrals/team-summary', async (req, res) => {
     const level3MemberCount = level3Items.length;
     const level3DepositAmount = +level3Items.reduce((s, m) => s + m.depositAmount, 0).toFixed(2);
 
-    const l1Comm = +level1Items.reduce((s, m) => s + m.commission, 0).toFixed(2);
-    const l2Comm = +level2Items.reduce((s, m) => s + m.commission, 0).toFixed(2);
-    const l3Comm = +level3Items.reduce((s, m) => s + m.commission, 0).toFixed(2);
+    const l1Comm = +topupCommTxs
+      .filter((t: any) => getTxTier(t) === 1)
+      .reduce((s: number, t: any) => s + Number(t.amount || 0), 0)
+      .toFixed(2);
+    const l2Comm = +topupCommTxs
+      .filter((t: any) => getTxTier(t) === 2)
+      .reduce((s: number, t: any) => s + Number(t.amount || 0), 0)
+      .toFixed(2);
+    const l3Comm = +topupCommTxs
+      .filter((t: any) => getTxTier(t) === 3)
+      .reduce((s: number, t: any) => s + Number(t.amount || 0), 0)
+      .toFixed(2);
 
-    const computedTotalComm = +(l1Comm + l2Comm + l3Comm).toFixed(2);
-    const walletTeamComm = Number(userWallet.team_commission || 0);
-    const profileTeamComm = Number(profile?.team_earnings || 0);
-    const totalTeamCommission = +(Math.max(
-      computedTotalComm,
-      walletTeamComm,
-      profileTeamComm
-    )).toFixed(2);
+    const totalTeamCommission = +(l1Comm + l2Comm + l3Comm).toFixed(2);
+
+    // Synchronize wallets.team_commission and profiles.team_earnings with authoritative settled topup commissions
+    try {
+      for (const uid of allUserIds) {
+        await supabase
+          .from('wallets')
+          .update({ team_commission: totalTeamCommission, updated_at: new Date().toISOString() })
+          .eq('user_id', uid);
+      }
+      await supabase
+        .from('profiles')
+        .update({ team_earnings: totalTeamCommission, updated_at: new Date().toISOString() })
+        .or(allUserIds.map((uid) => `user_id.eq.${uid},id.eq.${uid}`).join(','));
+    } catch (err) {
+      console.warn('Failed to sync wallet.team_commission in team-summary:', err);
+    }
 
     const activeDevicesCount = level1Items.reduce((s, m) => s + m.devices, 0) + level2Items.reduce((s, m) => s + m.devices, 0) + level3Items.reduce((s, m) => s + m.devices, 0);
 
@@ -8631,6 +8917,8 @@ app.get('/api/referrals/team-summary', async (req, res) => {
         indirectMembers: level2MemberCount + level3MemberCount,
         totalTeamCommission,
         teamCommission: totalTeamCommission,
+        totalCommission: totalTeamCommission,
+        teamEarn: totalTeamCommission,
         level1Commission: l1Comm,
         level2Commission: l2Comm,
         level3Commission: l3Comm,

@@ -1603,36 +1603,69 @@ async function creditReferrerWallet(
         .maybeSingle();
 
       if (walletData) {
-        const balBefore = Number(walletData.available_balance || 0);
-        const earnedBefore = Number(walletData.earned_balance ?? 0);
-        const totalEarnedBefore = Number(walletData.total_earned || 0);
-        const newEarned = +(earnedBefore + roundedAmount).toFixed(2);
-        const newAvail = +(balBefore + roundedAmount).toFixed(2);
-        const newTotalEarned = +(totalEarnedBefore + roundedAmount).toFixed(2);
+        const curWithdraw = Number(
+          walletData.withdraw_balance !== undefined && walletData.withdraw_balance !== null
+            ? walletData.withdraw_balance
+            : (walletData.earned_balance || 0)
+        );
+        const curRecharge = Number(walletData.recharge_balance || 0);
+        const curTotalEarned = Number(walletData.total_earned || 0);
+        const curTeamComm = Number(walletData.team_commission || 0);
+
+        const newWithdraw = +(curWithdraw + roundedAmount).toFixed(2);
+        const newAvail = +(curRecharge + newWithdraw).toFixed(2);
+        const newTotalEarned = +(curTotalEarned + roundedAmount).toFixed(2);
+        const newTeamComm = +(curTeamComm + roundedAmount).toFixed(2);
+        const nowIso = new Date().toISOString();
 
         await supabase
           .from('wallets')
           .update({
+            withdraw_balance: newWithdraw,
+            earned_balance: newWithdraw,
             available_balance: newAvail,
-            earned_balance: newEarned,
             total_earned: newTotalEarned,
-            updated_at: new Date().toISOString(),
+            team_commission: newTeamComm,
+            updated_at: nowIso,
           })
           .eq('user_id', referrerUserId);
 
+        const txType = rewardType === 'TOPUP_COMMISSION' ? 'TEAM_BONUS' : 'REFERRAL_BONUS';
         await supabase.from('wallet_transactions').insert({
           user_id: referrerUserId,
-          type: 'REFERRAL_BONUS',
+          type: txType,
           amount: roundedAmount,
-          balance_before: balBefore,
-          balance_after: newAvail,
+          balance_before: curWithdraw,
+          balance_after: newWithdraw,
           balance_type: 'DEVICE_EARNING_BALANCE',
-          wallet_type: 'WITHDRAWABLE',
+          wallet_type: 'WITHDRAW',
           status: 'COMPLETED',
           reference_id: referenceId,
           description: rewardDescription,
-          created_at: new Date().toISOString(),
+          metadata: {
+            direction: 'CREDIT',
+            rewardType,
+            type: 'COMMISSION',
+            refId: referenceId,
+          },
+          created_at: nowIso,
         });
+
+        try {
+          await supabase.from('wallet_ledger').insert({
+            user_id: referrerUserId,
+            wallet_type: 'DEVICE_EARNING',
+            transaction_type: 'REFERRAL_COMMISSION',
+            amount: roundedAmount,
+            direction: 'CREDIT',
+            reference_type: 'REFERRAL_COMMISSION',
+            reference_id: referenceId,
+            balance_before: curWithdraw,
+            balance_after: newWithdraw,
+            description: rewardDescription,
+            created_at: nowIso,
+          });
+        } catch {}
       }
     } catch (e) {
       console.warn('Supabase referral credit warning:', e);
@@ -1923,8 +1956,8 @@ export async function processTopupReferralRewards(
           const idempotencyKey = `topup_ref_t${tier}_${paymentId}_${refereeUserId}`;
 
           if (commission > 0 && !rewards.some((r) => r.idempotencyKey === idempotencyKey)) {
-            const desc = `Tier ${tier} (${tierConfig.name || `Level ${tier}`}) Commission (${tierConfig.percentage}%): Top-up ₹${rechargeAmount.toFixed(2)} by ${refereeLabel}`;
-            const refId = `TOPUP-T${tier}-${paymentId}`;
+            const desc = `L${tier} Referral Commission (${tierConfig.percentage}%) from Topup #${paymentId}`;
+            const refId = `TOPUP-REF-L${tier}-${paymentId}`;
 
             await creditReferrerWallet(referrer.userId, commission, desc, refId, 'TOPUP_COMMISSION');
 
@@ -2004,13 +2037,17 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
     const json = await res.json();
     if (res.ok && json.success && json.data) {
       const d = json.data;
+      const totalComm = Number(d.totalTeamCommission ?? d.totalCommission ?? d.teamCommission ?? 0);
       return {
         referralCode: myCode,
         referralLink: `${siteBaseUrl}/invite/${myCode}`,
         totalMembers: Number(d.totalMembers || 0),
         directMembers: Number(d.directMembers || 0),
         activeDevices: Number(d.activeDevicesCount || 0),
-        totalCommission: Number(d.totalTeamCommission ?? d.totalCommission ?? 0),
+        totalCommission: totalComm,
+        totalTeamCommission: totalComm,
+        teamCommission: totalComm,
+        teamEarn: totalComm,
         level1Commission: Number(d.level1Commission || 0),
         level2Commission: Number(d.level2Commission || 0),
         level3Commission: Number(d.level3Commission || 0),
@@ -2079,6 +2116,7 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
   // 1. Live Supabase Query (when configured)
   if (isSupabaseConfigured && supabase) {
     try {
+      const allUserIds = Array.from(new Set([profile.userId, profile.id, (profile as any).user_id, userId].filter(Boolean)));
       const [profilesRes, referralsRes, purchasesRes, txsRes, depositsRes, rechargesRes] = await Promise.all([
         supabase.from('profiles').select('*'),
         supabase.from('referrals').select('*'),
@@ -2086,7 +2124,7 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
         supabase
           .from('wallet_transactions')
           .select('*')
-          .eq('user_id', userId),
+          .in('user_id', allUserIds),
         supabase.from('deposit_transactions').select('*'),
         supabase.from('wallet_transactions').select('*').eq('type', 'RECHARGE'),
       ]);
@@ -2196,21 +2234,45 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
         const now = Date.now();
 
         // Extract topup-only commission transactions
-        const topupCommTxs = dbTxs.filter((t: any) => {
+        const isSettledTopupComm = (t: any) => {
           const type = String(t.type || '').toUpperCase();
           const desc = String(t.description || '').toLowerCase();
           const ref = String(t.reference_id || '').toLowerCase();
           const rewType = String(t.metadata?.rewardType || '').toUpperCase();
+          const metaType = String(t.metadata?.type || '').toUpperCase();
+          const status = String(t.status || 'COMPLETED').toUpperCase();
 
-          if (ref.includes('pur-') || desc.includes('plan purchase') || desc.includes('device purchase')) return false;
-          if (['DAILY_DEVICE_EARNING', 'INSTANT_BONUS', 'SIGNUP_BONUS'].includes(type)) return false;
+          if (status === 'FAILED' || status === 'CANCELLED' || status === 'REJECTED') return false;
 
+          // STRICT EXCLUSIONS
+          if (ref.includes('pur-') || ref.includes('plan-ref-') || desc.includes('plan purchase') || desc.includes('device purchase')) return false;
+          if (['DAILY_DEVICE_EARNING', 'DEVICE_CLAIM', 'INSTANT_BONUS', 'SIGNUP_BONUS', 'DAILY_CHECKIN', 'MISSION_REWARD', 'RECHARGE', 'TOPUP', 'WITHDRAWAL', 'WITHDRAW', 'ADMIN_ADJUSTMENT'].includes(type)) return false;
+
+          // STRICT INCLUSIONS
           return (
+            type === 'TEAM_BONUS' ||
             rewType === 'TOPUP_COMMISSION' ||
+            (metaType === 'COMMISSION' && !ref.includes('plan')) ||
             ref.startsWith('topup-ref-') ||
+            ref.startsWith('topup-t') ||
             (desc.includes('referral commission') && desc.includes('topup'))
           );
-        });
+        };
+
+        const getTxTier = (t: any): 1 | 2 | 3 => {
+          if (t.metadata?.tier) return Number(t.metadata.tier) as 1 | 2 | 3;
+          const ref = String(t.reference_id || '').toUpperCase();
+          if (ref.includes('-L1-') || ref.includes('-T1-')) return 1;
+          if (ref.includes('-L2-') || ref.includes('-T2-')) return 2;
+          if (ref.includes('-L3-') || ref.includes('-T3-')) return 3;
+          const desc = String(t.description || '').toLowerCase();
+          if (desc.includes('l1') || desc.includes('tier 1') || desc.includes('level 1') || desc.includes('10%')) return 1;
+          if (desc.includes('l2') || desc.includes('tier 2') || desc.includes('level 2') || desc.includes('5%')) return 2;
+          if (desc.includes('l3') || desc.includes('tier 3') || desc.includes('level 3') || desc.includes('2%')) return 3;
+          return 1;
+        };
+
+        const topupCommTxs = dbTxs.filter(isSettledTopupComm);
 
         const mapDbMember = (u: any, tier: 1 | 2 | 3): TeamMemberItem => {
           const uId = u.user_id || u.id;
@@ -2258,6 +2320,7 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
 
           let memberComm = topupCommTxs
             .filter((t: any) => {
+              if (t.metadata?.depositUserId && t.metadata.depositUserId === uId) return true;
               const ref = String(t.reference_id || '');
               for (const mRef of memberDepositRefs) {
                 if (mRef && ref.includes(mRef)) return true;
@@ -2265,16 +2328,6 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
               return false;
             })
             .reduce((sum: number, t: any) => sum + Number(t.amount || 0), 0);
-
-          const refEntry = dbReferrals.find((r) => r.referrer_id === userId && r.referee_id === uId);
-          if (tier === 1 && refEntry && Number(refEntry.commission_earned || 0) > memberComm) {
-            memberComm = Number(refEntry.commission_earned || 0);
-          }
-
-          if (memberComm === 0 && depositAmount > 0) {
-            const tierRate = tier === 1 ? 0.10 : tier === 2 ? 0.05 : 0.02;
-            memberComm = +(depositAmount * tierRate).toFixed(2);
-          }
 
           return {
             id: u.id || u.user_id,
@@ -2296,9 +2349,18 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
         const l2Items = level2Users.map((u) => mapDbMember(u, 2));
         const l3Items = level3Users.map((u) => mapDbMember(u, 3));
 
-        const level1Comm = +l1Items.reduce((sum, m) => sum + m.commission, 0).toFixed(2);
-        const level2Comm = +l2Items.reduce((sum, m) => sum + m.commission, 0).toFixed(2);
-        const level3Comm = +l3Items.reduce((sum, m) => sum + m.commission, 0).toFixed(2);
+        const level1Comm = +topupCommTxs
+          .filter((t: any) => getTxTier(t) === 1)
+          .reduce((sum: number, t: any) => sum + Number(t.amount || 0), 0)
+          .toFixed(2);
+        const level2Comm = +topupCommTxs
+          .filter((t: any) => getTxTier(t) === 2)
+          .reduce((sum: number, t: any) => sum + Number(t.amount || 0), 0)
+          .toFixed(2);
+        const level3Comm = +topupCommTxs
+          .filter((t: any) => getTxTier(t) === 3)
+          .reduce((sum: number, t: any) => sum + Number(t.amount || 0), 0)
+          .toFixed(2);
 
         const totalComm = +(level1Comm + level2Comm + level3Comm).toFixed(2);
 
@@ -2334,6 +2396,9 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
           directMembers: l1Items.length,
           activeDevices,
           totalCommission: totalComm,
+          totalTeamCommission: totalComm,
+          teamCommission: totalComm,
+          teamEarn: totalComm,
           level1Commission: level1Comm,
           level2Commission: level2Comm,
           level3Commission: level3Comm,
@@ -6400,13 +6465,23 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
 
   if (isSupabaseConfigured && supabase) {
     try {
-      const [purchRes, walRes, profRes, earnRes, txRes] = await Promise.all([
-        supabase.from('purchases').select('*').eq('user_id', userId),
-        supabase.from('wallets').select('*').eq('user_id', userId).maybeSingle(),
-        supabase.from('profiles').select('*').eq('user_id', userId).maybeSingle(),
-        supabase.from('earnings').select('*').eq('user_id', userId),
-        supabase.from('wallet_transactions').select('*').eq('user_id', userId),
+      const { data: profData } = await supabase
+        .from('profiles')
+        .select('*')
+        .or(`user_id.eq.${userId},id.eq.${userId},membership_number.eq.${userId},referral_code.eq.${userId}`)
+        .maybeSingle();
+
+      const authUserId = profData?.user_id || userId;
+      const profileId = profData?.id || userId;
+      const allUserIds = Array.from(new Set([authUserId, profileId, userId].filter(Boolean)));
+
+      const [purchRes, walRes, earnRes, txRes] = await Promise.all([
+        supabase.from('purchases').select('*').in('user_id', allUserIds),
+        supabase.from('wallets').select('*').in('user_id', allUserIds).maybeSingle(),
+        supabase.from('earnings').select('*').in('user_id', allUserIds),
+        supabase.from('wallet_transactions').select('*').in('user_id', allUserIds),
       ]);
+      const profRes = { data: profData, error: null };
 
       if (!purchRes.error && purchRes.data) {
         purchases = purchRes.data.map((p: any) => ({
@@ -6532,26 +6607,36 @@ export async function fetchUserHomeSummary(userId: string): Promise<{
   const todayEarnings = Number(claimsToday.reduce((sum, t) => sum + Number(t.amount || 0), 0).toFixed(2));
 
   // 4. Calculate Promotion Earnings = Team commission + Mission rewards + Referral commission/rewards
-  // A. Team Commission
+  // A. Team Commission (authoritative settled topup referral commission records only)
+  const isSettledTopupComm = (t: any) => {
+    const type = String(t.type || '').toUpperCase();
+    const desc = String(t.description || '').toLowerCase();
+    const ref = String(t.reference_id || t.referenceId || '').toLowerCase();
+    const rewType = String(t.metadata?.rewardType || '').toUpperCase();
+    const metaType = String(t.metadata?.type || '').toUpperCase();
+    const status = String(t.status || 'COMPLETED').toUpperCase();
+
+    if (status === 'FAILED' || status === 'CANCELLED' || status === 'REJECTED') return false;
+
+    // STRICT EXCLUSIONS
+    if (ref.includes('pur-') || ref.includes('plan-ref-') || desc.includes('plan purchase') || desc.includes('device purchase')) return false;
+    if (['DAILY_DEVICE_EARNING', 'DEVICE_CLAIM', 'INSTANT_BONUS', 'SIGNUP_BONUS', 'DAILY_CHECKIN', 'MISSION_REWARD', 'RECHARGE', 'TOPUP', 'WITHDRAWAL', 'WITHDRAW', 'ADMIN_ADJUSTMENT'].includes(type)) return false;
+
+    // STRICT INCLUSIONS
+    return (
+      type === 'TEAM_BONUS' ||
+      rewType === 'TOPUP_COMMISSION' ||
+      (metaType === 'COMMISSION' && !ref.includes('plan')) ||
+      ref.startsWith('topup-ref-') ||
+      ref.startsWith('topup-t') ||
+      (desc.includes('referral commission') && desc.includes('topup'))
+    );
+  };
+
   const teamCommTxSum = transactions
-    .filter((t: any) => {
-      const type = String(t.type || '').toUpperCase();
-      const desc = String(t.description || '').toLowerCase();
-      const metaType = String(t.metadata?.type || '').toUpperCase();
-      const metaReward = String(t.metadata?.rewardType || '').toUpperCase();
-      return (
-        type === 'TEAM_BONUS' ||
-        type === 'COMMISSION' ||
-        metaType === 'COMMISSION' ||
-        metaReward === 'TOPUP_COMMISSION' ||
-        desc.includes('team commission') ||
-        desc.includes('tier') ||
-        desc.includes('level') ||
-        desc.includes('referral commission')
-      );
-    })
+    .filter(isSettledTopupComm)
     .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-  const teamCommission = teamCommTxSum > 0 ? teamCommTxSum : Number(userProfile?.teamEarnings || (userWallet as any)?.team_commission || 0);
+  const teamCommission = Number(teamCommTxSum.toFixed(2));
 
   // B. Mission Rewards
   let missionClaimsList: any[] = [];

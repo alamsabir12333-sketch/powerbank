@@ -862,6 +862,9 @@ export interface UserTeamSummary {
   directMembers: number;
   activeDevices: number;
   totalCommission: number;
+  totalTeamCommission?: number;
+  teamCommission?: number;
+  teamEarn?: number;
   level1Commission: number;
   level2Commission: number;
   level3Commission: number;

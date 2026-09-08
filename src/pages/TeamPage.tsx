@@ -104,6 +104,22 @@ export const TeamPage: React.FC<TeamPageProps> = ({
 
   useEffect(() => {
     loadTeamData();
+
+    const handleCommissionUpdate = () => {
+      if (activeUserId) {
+        fetchUserTeamSummary(activeUserId)
+          .then((data) => setTeamSummary(data))
+          .catch(() => {});
+      }
+    };
+
+    window.addEventListener('team_commission_updated', handleCommissionUpdate);
+    window.addEventListener('storage', handleCommissionUpdate);
+
+    return () => {
+      window.removeEventListener('team_commission_updated', handleCommissionUpdate);
+      window.removeEventListener('storage', handleCommissionUpdate);
+    };
   }, [activeUserId]);
 
   const copyCode = () => {
@@ -265,22 +281,26 @@ export const TeamPage: React.FC<TeamPageProps> = ({
         <div className="text-white text-center py-2">
           <span className="text-xs text-white/80 font-medium">Total Team Commission (₹)</span>
           <div className="text-3xl font-black tracking-tight mt-0.5">
-            {(Number(teamSummary?.totalCommission) || 0).toFixed(2)}
+            {loading ? (
+              <span className="opacity-60 font-medium text-2xl sm:text-3xl">...</span>
+            ) : (
+              (Number(teamSummary?.totalCommission) || 0).toFixed(2)
+            )}
           </div>
         </div>
 
         {/* 3 Horizontal sub-stats */}
         <div className="grid grid-cols-3 text-center border-t border-white/20 pt-4 mt-2">
           <div>
-            <span className="text-white font-bold text-base">{teamSummary.totalMembers}</span>
+            <span className="text-white font-bold text-base">{loading ? '...' : (teamSummary?.totalMembers ?? 0)}</span>
             <span className="text-white/80 text-[11px] block mt-0.5">Total Members</span>
           </div>
           <div className="border-x border-white/20 px-1">
-            <span className="text-white font-bold text-base">{teamSummary.directMembers}</span>
+            <span className="text-white font-bold text-base">{loading ? '...' : (teamSummary?.directMembers ?? 0)}</span>
             <span className="text-white/80 text-[11px] block mt-0.5">Direct Invites</span>
           </div>
           <div>
-            <span className="text-white font-bold text-base">{teamSummary.activeDevices}</span>
+            <span className="text-white font-bold text-base">{loading ? '...' : (teamSummary?.activeDevices ?? 0)}</span>
             <span className="text-white/80 text-[11px] block mt-0.5">Active Devices</span>
           </div>
         </div>
