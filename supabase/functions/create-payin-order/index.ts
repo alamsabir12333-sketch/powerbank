@@ -80,6 +80,8 @@ serve(async (req) => {
       try {
         await supabase.from("deposit_transactions").insert({
           order_id: orderId,
+          traceno: orderId,
+          merchant_order_id: orderId,
           user_id: userId && userId !== "00000000-0000-0000-0000-000000000000" ? userId : null,
           amount: Number(amount),
           currency: "INR",

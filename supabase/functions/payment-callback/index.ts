@@ -128,6 +128,7 @@ async function processReferralCommissions(supabase: any, userId: string, deposit
 
     const nowIso = new Date().toISOString();
 
+    const cleanTrace = String(traceno || "").trim();
     for (const target of tierTargets) {
       if (!target.referrerId || target.referrerId === userId) continue;
       const tierConfig = tiers.find((t) => t.tier === target.tierNum);
@@ -136,117 +137,35 @@ async function processReferralCommissions(supabase: any, userId: string, deposit
       const commission = +(depositAmount * (tierConfig.percentage / 100)).toFixed(2);
       if (commission <= 0) continue;
 
-      const refId = `TOPUP-REF-L${target.tierNum}-${traceno}`;
-      const commDesc = `L${target.tierNum} Referral Commission (${tierConfig.percentage}%) from Topup #${traceno}`;
+      const refId = `TOPUP-REF-L${target.tierNum}-${cleanTrace}`;
+      const legacyRefId = `TOPUP-T${target.tierNum}-${cleanTrace}`;
+      const commDesc = `L${target.tierNum} Referral Commission (${tierConfig.percentage}%) from Topup #${cleanTrace}`;
 
-      // Idempotency check in wallet_ledger and wallet_transactions
-      const { data: existingLedger } = await supabase
-        .from("wallet_ledger")
-        .select("id")
-        .eq("reference_id", refId)
-        .maybeSingle();
-
-      if (existingLedger) continue;
-
-      const { data: existingTx } = await supabase
-        .from("wallet_transactions")
-        .select("id")
-        .eq("reference_id", refId)
-        .maybeSingle();
-
-      if (existingTx) continue;
-
-      // Fetch Referrer Wallet
-      const { data: refWallet } = await supabase
-        .from("wallets")
-        .select("*")
-        .eq("user_id", target.referrerId)
-        .maybeSingle();
-
-      const curWithdraw = Number(refWallet?.withdraw_balance !== undefined && refWallet?.withdraw_balance !== null ? refWallet.withdraw_balance : (refWallet?.earned_balance || 0));
-      const curRecharge = Number(refWallet?.recharge_balance || 0);
-      const curTotalEarned = Number(refWallet?.total_earned || 0);
-      const curTeamComm = Number(refWallet?.team_commission || 0);
-
-      const newWithdraw = +(curWithdraw + commission).toFixed(2);
-      const newAvail = +(curRecharge + newWithdraw).toFixed(2);
-      const newTotalEarned = +(curTotalEarned + commission).toFixed(2);
-      const newTeamComm = +(curTeamComm + commission).toFixed(2);
-
-      // Update Referrer Wallet
-      if (refWallet) {
-        await supabase
-          .from("wallets")
-          .update({
-            withdraw_balance: newWithdraw,
-            earned_balance: newWithdraw,
-            available_balance: newAvail,
-            total_earned: newTotalEarned,
-            team_commission: newTeamComm,
-            updated_at: nowIso,
-          })
-          .eq("user_id", target.referrerId);
-      } else {
-        await supabase.from("wallets").insert({
-          user_id: target.referrerId,
-          recharge_balance: 0,
-          withdraw_balance: newWithdraw,
-          earned_balance: newWithdraw,
-          available_balance: newWithdraw,
-          pending_balance: 0,
-          total_earned: newTotalEarned,
-          team_commission: newTeamComm,
-          total_withdrawn: 0,
-          created_at: nowIso,
-          updated_at: nowIso,
-        });
-      }
-
-      // Record in wallet_ledger (Valid wallet_type is 'DEVICE_EARNING')
-      try {
-        await supabase.from("wallet_ledger").insert({
-          id: crypto.randomUUID(),
-          user_id: target.referrerId,
-          wallet_type: "DEVICE_EARNING",
-          transaction_type: "REFERRAL_COMMISSION",
-          amount: commission,
-          direction: "CREDIT",
-          reference_type: "REFERRAL_COMMISSION",
-          reference_id: refId,
-          balance_before: curWithdraw,
-          balance_after: newWithdraw,
-          description: commDesc,
-          created_at: nowIso,
-        });
-      } catch (ledErr: any) {
-        console.warn("[EDGE COMMISSION LEDGER NOTICE]", ledErr.message);
-      }
-
-      // Record in wallet_transactions (Valid type is 'TEAM_BONUS')
-      await supabase.from("wallet_transactions").insert({
-        id: crypto.randomUUID(),
-        user_id: target.referrerId,
-        type: "TEAM_BONUS",
-        amount: commission,
-        balance_before: curWithdraw,
-        balance_after: newWithdraw,
-        reference_id: refId,
-        description: commDesc,
-        wallet_type: "WITHDRAW",
-        status: "COMPLETED",
-        metadata: {
-          rewardType: "TOPUP_COMMISSION",
-          tier: target.tierNum,
-          type: "COMMISSION",
-          refId,
-          depositUserId: userId,
-          traceno,
-          depositAmount,
-        },
-        created_at: nowIso,
+      // ATOMIC POSTGRESQL SETTLEMENT VIA RPC (Dedicated referral_commission_settlements table)
+      const { data: rpcRes, error: rpcErr } = await supabase.rpc("settle_referral_commission", {
+        p_reference_id: refId,
+        p_topup_reference: cleanTrace,
+        p_deposit_user_id: userId,
+        p_deposit_amount: depositAmount,
+        p_tier: target.tierNum,
+        p_referrer_id: target.referrerId,
+        p_commission_percentage: tierConfig.percentage,
+        p_commission_amount: commission,
+        p_description: commDesc,
+        p_ref_row_id: target.refRowId || null,
       });
 
-      // Notify Referrer
+      if (rpcErr) {
+        console.error(`[EDGE REFERRAL ATOMIC RPC ERROR] settle_referral_commission failed for ${refId}:`, rpcErr.message);
+        continue;
+      }
+
+      if (rpcRes?.already_settled || !rpcRes?.settled) {
+        console.log(`[EDGE REFERRAL SKIPPED] ${refId}: ${rpcRes?.reason || "ALREADY_SETTLED"}`);
+        continue;
+      }
+
+      // User In-App Notification
       try {
         await supabase.from("notifications").insert({
           user_id: target.referrerId,
@@ -258,34 +177,7 @@ async function processReferralCommissions(supabase: any, userId: string, deposit
         });
       } catch {}
 
-      // Update referral record
-      if (target.refRowId) {
-        try {
-          await supabase
-            .from("referrals")
-            .update({
-              qualifying_recharge_done: true,
-              status: "ACTIVE",
-              commission_earned: +(target.currentCommission + commission).toFixed(2),
-              updated_at: nowIso,
-            })
-            .eq("id", target.refRowId);
-        } catch {}
-      } else if (target.tierNum === 1) {
-        try {
-          await supabase.from("referrals").insert({
-            referrer_id: target.referrerId,
-            referee_id: userId,
-            level: 1,
-            bonus_amount: 0,
-            status: "ACTIVE",
-            qualifying_recharge_done: true,
-            commission_earned: commission,
-            created_at: nowIso,
-            updated_at: nowIso,
-          });
-        } catch {}
-      }
+      console.log(`[EDGE COMMISSION SETTLED] L${target.tierNum} Referrer ${target.referrerId} credited ₹${commission} for topup ${cleanTrace}`);
     }
   } catch (err: any) {
     console.error("[SETTLEMENT] Referral commission error:", err.message);
@@ -344,11 +236,11 @@ serve(async (req) => {
         return new Response("MISSING_ORDER_ID", { status: 400 });
       }
 
-      // 1. Fetch deposit order by traceno or merchant_order_id
+      // 1. Fetch deposit order by traceno, merchant_order_id, order_id, or id
       const { data: order, error: fetchErr } = await supabase
         .from("deposit_transactions")
         .select("*")
-        .or(`traceno.eq.${orderId},merchant_order_id.eq.${orderId}`)
+        .or(`traceno.eq.${orderId},merchant_order_id.eq.${orderId},order_id.eq.${orderId},id.eq.${orderId}`)
         .maybeSingle();
 
       if (fetchErr || !order) {
@@ -356,10 +248,13 @@ serve(async (req) => {
         return new Response("ORDER_NOT_FOUND", { status: 404 });
       }
 
-      // 2. Idempotency Check: if already settled, return SUCCESS without duplicate credit
+      const effectiveTrace = order.order_id || order.traceno || order.merchant_order_id || orderId;
+
+      // 2. Idempotency Check: if already settled, verify referral commissions then return SUCCESS
       const currentStatus = (order.status || "").toUpperCase();
       if (currentStatus === "SUCCESS" || currentStatus === "PAID" || currentStatus === "COMPLETED") {
-        console.log(`[CALLBACK] Order ${orderId} already settled (${order.status}). Skipping duplicate credit.`);
+        console.log(`[CALLBACK] Order ${orderId} already settled (${order.status}). Ensuring referral commissions are settled.`);
+        await processReferralCommissions(supabase, order.user_id, Number(order.amount), effectiveTrace);
         return new Response("SUCCESS", {
           headers: { "Content-Type": "text/plain" },
           status: 200,
@@ -386,12 +281,15 @@ serve(async (req) => {
       const newAvailableBalance = +(newRechargeBalance + currentWithdrawBalance).toFixed(2);
       const nowIso = new Date().toISOString();
 
-      // 4. Update deposit_transactions record to SUCCESS
+      // 4. Update deposit_transactions record to SUCCESS with normalized traceno
       const { error: updateOrderErr } = await supabase
         .from("deposit_transactions")
         .update({
           status: "SUCCESS",
           gateway_status: "SUCCESS",
+          traceno: effectiveTrace,
+          order_id: effectiveTrace,
+          merchant_order_id: effectiveTrace,
           gateway_serial_no: serialNo || order.gateway_serial_no || null,
           serial_no: serialNo || order.serial_no || null,
           utr: utr || order.utr || null,
@@ -434,7 +332,7 @@ serve(async (req) => {
       const { data: existingTx } = await supabase
         .from("wallet_transactions")
         .select("id")
-        .eq("reference_id", order.traceno)
+        .eq("reference_id", effectiveTrace)
         .maybeSingle();
 
       if (existingTx) {
@@ -454,7 +352,7 @@ serve(async (req) => {
           amount: depositAmount,
           balance_before: currentRechargeBalance,
           balance_after: newRechargeBalance,
-          reference_id: order.traceno,
+          reference_id: effectiveTrace,
           description: `Topup Recharge of ₹${depositAmount} Credited to Recharge Wallet`,
           wallet_type: "TOPUP",
           status: "Completed",
@@ -470,7 +368,7 @@ serve(async (req) => {
         amount: depositAmount,
         direction: "CREDIT",
         reference_type: "DEPOSIT",
-        reference_id: order.traceno,
+        reference_id: effectiveTrace,
         balance_before: currentRechargeBalance,
         balance_after: newRechargeBalance,
         description: `Topup Recharge of ₹${depositAmount} Credited to Recharge Wallet`,
@@ -492,9 +390,9 @@ serve(async (req) => {
       }
 
       // 9. Process Referral Commissions for eligible L1/L2/L3 referrers
-      await processReferralCommissions(supabase, userId, depositAmount, order.traceno);
+      await processReferralCommissions(supabase, userId, depositAmount, effectiveTrace);
 
-      console.log(`[CALLBACK] Successfully settled order ${order.traceno}: ₹${depositAmount} credited to user ${userId}.`);
+      console.log(`[CALLBACK] Successfully settled order ${effectiveTrace}: ₹${depositAmount} credited to user ${userId}.`);
     }
 
     return new Response("SUCCESS", {
