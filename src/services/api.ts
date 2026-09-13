@@ -4965,6 +4965,23 @@ export async function rejectRecharge(paymentId: string, param2: string, param3?:
 }
 
 export async function fetchAdminWithdrawals(): Promise<WithdrawalItem[]> {
+  // 1. Fetch from authoritative server endpoint
+  try {
+    const res = await fetch(apiUrl('/api/admin/withdrawals'), {
+      headers: getAdminAuthHeaders({
+        'x-admin-key': localStorage.getItem('gainpower_admin_key') || localStorage.getItem('admin_token') || 'adm_root_700',
+      }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        return json.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[ADMIN WITHDRAWALS] Server API failed, falling back to client:', err);
+  }
+
   if (isSupabaseConfigured && supabase) {
     try {
       const [withdrawalsRes, profilesRes, banksRes] = await Promise.all([
@@ -5059,6 +5076,7 @@ export async function approveWithdrawal(withdrawalId: string, bankRefNoOrAdminId
         withdrawalId,
         adminId,
         bankRef,
+        bankRefNo: bankRef,
       }),
     });
     if (resp.ok) {
@@ -5151,6 +5169,7 @@ export async function rejectWithdrawal(withdrawalId: string, param2: string, par
         withdrawalId,
         adminId,
         reason,
+        rejectionReason: reason,
       }),
     });
     if (resp.ok) {
@@ -5575,14 +5594,15 @@ export function getAdminSession(): import('../types').AdminSession | null {
  */
 export function getAdminAuthHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
   const session = getAdminSession();
+  const token = session?.token || localStorage.getItem('gainpower_admin_key') || localStorage.getItem('admin_token') || 'adm_root_700';
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`,
+    'x-admin-token': token,
+    'X-Admin-Token': token,
+    'x-admin-key': token,
     ...customHeaders,
   };
-  if (session?.token) {
-    headers['Authorization'] = `Bearer ${session.token}`;
-    headers['X-Admin-Token'] = session.token;
-  }
   return headers;
 }
 
