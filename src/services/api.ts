@@ -4965,12 +4965,10 @@ export async function rejectRecharge(paymentId: string, param2: string, param3?:
 }
 
 export async function fetchAdminWithdrawals(): Promise<WithdrawalItem[]> {
-  // 1. Fetch from authoritative server endpoint
+  // 1. Fetch from authoritative server endpoint on Cloud Run backend
   try {
-    const res = await fetch(apiUrl('/api/admin/withdrawals'), {
-      headers: getAdminAuthHeaders({
-        'x-admin-key': localStorage.getItem('gainpower_admin_key') || localStorage.getItem('admin_token') || 'adm_root_700',
-      }),
+    const res = await fetch('https://power-bank-3ib3vyvgja-as.a.run.app/api/admin/withdrawals', {
+      headers: getAdminAuthHeaders(),
     });
     if (res.ok) {
       const json = await res.json();
@@ -4979,7 +4977,20 @@ export async function fetchAdminWithdrawals(): Promise<WithdrawalItem[]> {
       }
     }
   } catch (err) {
-    console.warn('[ADMIN WITHDRAWALS] Server API failed, falling back to client:', err);
+    console.warn('[ADMIN WITHDRAWALS] Production Cloud Run API failed, falling back:', err);
+    try {
+      const localRes = await fetch(apiUrl('/api/admin/withdrawals'), {
+        headers: getAdminAuthHeaders(),
+      });
+      if (localRes.ok) {
+        const localJson = await localRes.json();
+        if (localJson.success && Array.isArray(localJson.data)) {
+          return localJson.data;
+        }
+      }
+    } catch (localErr) {
+      // Ignore
+    }
   }
 
   if (isSupabaseConfigured && supabase) {
@@ -5598,9 +5609,8 @@ export function getAdminAuthHeaders(customHeaders: Record<string, string> = {}):
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${token}`,
-    'x-admin-token': token,
     'X-Admin-Token': token,
-    'x-admin-key': token,
+    'x-admin-token': token,
     ...customHeaders,
   };
   return headers;
