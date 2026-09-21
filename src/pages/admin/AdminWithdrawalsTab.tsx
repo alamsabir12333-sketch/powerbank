@@ -20,6 +20,7 @@ import {
   fetchAdminWithdrawals,
   approveWithdrawal,
   rejectWithdrawal,
+  requestUniVePayGatewayPayout,
 } from '../../services/api';
 import { WithdrawalItem } from '../../types';
 
@@ -44,6 +45,7 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
   const [payoutItem, setPayoutItem] = useState<WithdrawalItem | null>(null);
   const [bankRefNo, setBankRefNo] = useState('');
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [processingGatewayId, setProcessingGatewayId] = useState<string | null>(null);
 
   // Reject modal
   const [rejectItem, setRejectItem] = useState<WithdrawalItem | null>(null);
@@ -107,6 +109,36 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
       onShowToast(e.message || 'Rejection failed');
     } finally {
       setProcessingId(null);
+    }
+  };
+
+  const handleGatewayPayout = async (item: WithdrawalItem) => {
+    if (!item || !item.id) return;
+    if (processingGatewayId || processingId) return;
+
+    setProcessingGatewayId(item.id);
+    try {
+      const res = await requestUniVePayGatewayPayout(item.id);
+      const gatewayStatus = (res.gatewayStatus || '').toUpperCase();
+      const remarkMsg = res.remark ? ` - ${res.remark}` : '';
+
+      if (gatewayStatus === 'SUCCESS') {
+        onShowToast(`Payout Successful${remarkMsg}`);
+      } else if (gatewayStatus === 'ACCEPTED' || res.success) {
+        onShowToast(`Payout Request Accepted / Processing${remarkMsg}`);
+      } else if (gatewayStatus === 'REFUSE') {
+        onShowToast(`Gateway Refused Payout${remarkMsg}`);
+      } else if (gatewayStatus === 'FAIL') {
+        onShowToast(`Gateway Payout Failed${remarkMsg}`);
+      } else {
+        onShowToast(res.message || `Payout request processed${remarkMsg}`);
+      }
+    } catch (err: any) {
+      onShowToast(err.message || 'Gateway payout request failed');
+    } finally {
+      setProcessingGatewayId(null);
+      loadWithdrawals();
+      onRefreshGlobalStats();
     }
   };
 
@@ -361,7 +393,7 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
                                 setPayoutItem(item);
                                 setBankRefNo('');
                               }}
-                              disabled={processingId === item.id}
+                              disabled={processingId === item.id || processingGatewayId === item.id}
                               className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
                             >
                               <Send className="w-3.5 h-3.5" />
@@ -369,12 +401,30 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
                             </button>
 
                             <button
+                              onClick={() => handleGatewayPayout(item)}
+                              disabled={processingGatewayId === item.id || processingId === item.id}
+                              className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                            >
+                              {processingGatewayId === item.id ? (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  <span>Processing...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <CreditCard className="w-3.5 h-3.5" />
+                                  <span>Gateway Payout</span>
+                                </>
+                              )}
+                            </button>
+
+                            <button
                               onClick={() => {
                                 setRejectItem(item);
                                 setRejectReason('');
                               }}
-                              disabled={processingId === item.id}
-                              className="px-2.5 py-1.5 rounded-lg bg-red-950/60 border border-red-800 hover:bg-red-900 text-red-400 font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer"
+                              disabled={processingId === item.id || processingGatewayId === item.id}
+                              className="px-2.5 py-1.5 rounded-lg bg-red-950/60 border border-red-800 hover:bg-red-900 text-red-400 font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
                             >
                               <XCircle className="w-3.5 h-3.5" />
                               <span>Reject & Refund</span>

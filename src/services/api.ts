@@ -7858,6 +7858,36 @@ export async function requestWithdrawalGateway(params: {
   }
 }
 
+export async function requestUniVePayGatewayPayout(withdrawalId: string): Promise<{
+  success: boolean;
+  gatewayStatus?: string;
+  message?: string;
+  traceno?: string;
+  remark?: string;
+  error?: string;
+}> {
+  if (!withdrawalId) {
+    throw new Error('Withdrawal ID is required');
+  }
+
+  const res = await fetch(apiUrl('/api/univepay/create-withdrawal'), {
+    method: 'POST',
+    headers: getAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ withdrawalId }),
+  });
+
+  const data = await res.json().catch(() => ({
+    success: false,
+    error: 'Invalid response from gateway server',
+  }));
+
+  if (!res.ok || data.success === false) {
+    throw new Error(data.error || data.message || 'Gateway payout request failed');
+  }
+
+  return data;
+}
+
 export async function checkUniVePayWithdrawalStatus(traceno: string, amount?: number): Promise<{
   success: boolean;
   data: any;
