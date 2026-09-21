@@ -2708,7 +2708,7 @@ app.post('/api/univepay/create-withdrawal', async (req, res) => {
 
     // 4. Read authoritative values from database (never trust client values)
     const userId = withdrawalRecord.user_id;
-    const numAmount = Number(withdrawalRecord.amount || 0);
+    const numAmount = Number(withdrawalRecord.net_amount || withdrawalRecord.amount || 0);
     if (!numAmount || numAmount <= 0) {
       return res.status(400).json({
         success: false,
