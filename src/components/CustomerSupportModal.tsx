@@ -57,7 +57,7 @@ export const CustomerSupportModal: React.FC<CustomerSupportModalProps> = ({
             <div className="space-y-3 mb-5">
               <button
                 onClick={() => {
-                  window.open('https://t.me/gainpower_channel', '_blank');
+                  window.open('https://t.me/IQTRADE_OFFICIAL', '_blank');
                 }}
                 className="w-full p-3.5 rounded-2xl border border-gray-100 bg-gray-50/80 hover:bg-orange-50/50 hover:border-orange-200 transition-all flex items-center justify-between group active:scale-98"
               >
@@ -81,7 +81,7 @@ export const CustomerSupportModal: React.FC<CustomerSupportModalProps> = ({
 
               <button
                 onClick={() => {
-                  window.open('https://t.me/Gainpowercustomerservice9', '_blank');
+                  window.open('https://tawk.to/chat/68766d344ec95b190ffa0625/default?layout=modern', '_blank');
                 }}
                 className="w-full p-3.5 rounded-2xl border border-gray-100 bg-gray-50/80 hover:bg-orange-50/50 hover:border-orange-200 transition-all flex items-center justify-between group active:scale-98"
               >

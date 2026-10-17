@@ -2233,7 +2233,7 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
 
         const now = Date.now();
 
-        // Extract topup-only commission transactions
+        // Extract commission transactions across all commission types
         const isSettledTopupComm = (t: any) => {
           const type = String(t.type || '').toUpperCase();
           const desc = String(t.description || '').toLowerCase();
@@ -2244,18 +2244,26 @@ export async function fetchUserTeamSummary(userId: string): Promise<UserTeamSumm
 
           if (status === 'FAILED' || status === 'CANCELLED' || status === 'REJECTED') return false;
 
-          // STRICT EXCLUSIONS
-          if (ref.includes('pur-') || ref.includes('plan-ref-') || desc.includes('plan purchase') || desc.includes('device purchase')) return false;
-          if (['DAILY_DEVICE_EARNING', 'DEVICE_CLAIM', 'INSTANT_BONUS', 'SIGNUP_BONUS', 'DAILY_CHECKIN', 'MISSION_REWARD', 'RECHARGE', 'TOPUP', 'WITHDRAWAL', 'WITHDRAW', 'ADMIN_ADJUSTMENT'].includes(type)) return false;
+          // Non-commission transaction exclusions
+          if (['DAILY_DEVICE_EARNING', 'DEVICE_CLAIM', 'SIGNUP_BONUS', 'DAILY_CHECKIN', 'MISSION_REWARD', 'RECHARGE', 'TOPUP', 'WITHDRAWAL', 'WITHDRAW', 'WITHDRAWAL_REVERSAL'].includes(type)) return false;
 
-          // STRICT INCLUSIONS
+          // Comprehensive commission inclusions
           return (
             type === 'TEAM_BONUS' ||
+            type === 'COMMISSION' ||
+            type === 'REFERRAL_COMMISSION' ||
+            type === 'REFERRAL_BONUS' ||
+            type === 'REFERRAL' ||
             rewType === 'TOPUP_COMMISSION' ||
-            (metaType === 'COMMISSION' && !ref.includes('plan')) ||
+            rewType === 'COMMISSION' ||
+            metaType === 'COMMISSION' ||
             ref.startsWith('topup-ref-') ||
             ref.startsWith('topup-t') ||
-            (desc.includes('referral commission') && desc.includes('topup'))
+            ref.includes('ref-') ||
+            desc.includes('commission') ||
+            desc.includes('referral') ||
+            desc.includes('team bonus') ||
+            desc.includes('team earn')
           );
         };
 
@@ -4477,39 +4485,78 @@ export async function submitWithdrawalRequest(
   userId: string,
   amount: number,
   bankAccountId?: string,
-  withdrawalPassword?: string
+  withdrawalPassword?: string,
+  withdrawalMethod: 'BANK' | 'USDT' = 'BANK',
+  network?: 'TRC20' | 'BEP20',
+  walletAddress?: string
 ) {
-  // 1. Verify Bank Account (Bank Only - No UPI)
-  const activeBanks = await fetchBankAccounts(userId);
-  if (activeBanks.length === 0) {
-    throw new Error('Please bind your Bank Account first to request a withdrawal.');
-  }
-
-  let selectedBank = activeBanks.find((b) => b.id === bankAccountId);
-  if (!selectedBank) {
-    selectedBank = activeBanks.find((b) => b.isDefault) || activeBanks[0];
-  }
-
-  if (!selectedBank) {
-    throw new Error('Valid Bank Account is required for withdrawal.');
-  }
-
+  const isUsdt = withdrawalMethod === 'USDT';
   const cleanPin = (withdrawalPassword || '').trim();
   if (!/^\d{4}$/.test(cleanPin)) {
     throw new Error('Withdrawal PIN must be exactly 4 digits.');
   }
 
+  let selectedBank: any = null;
+
+  if (isUsdt) {
+    if (!network || (network !== 'TRC20' && network !== 'BEP20')) {
+      throw new Error('Please select a valid network (TRC20 or BEP20).');
+    }
+    const cleanAddr = (walletAddress || '').trim();
+    if (!cleanAddr) {
+      throw new Error('Please enter your USDT receiving wallet address.');
+    }
+    if (network === 'TRC20') {
+      if (cleanAddr.startsWith('0x') || cleanAddr.startsWith('0X')) {
+        throw new Error('Invalid TRC20 address: You entered an EVM/BEP20 address starting with 0x. TRC20 addresses start with "T".');
+      }
+      if (!/^T[1-9A-HJ-NP-za-km-z]{33}$/.test(cleanAddr)) {
+        throw new Error('Invalid TRC20 address: TRC20 addresses must start with "T" and be exactly 34 base58 characters.');
+      }
+    } else if (network === 'BEP20') {
+      if (cleanAddr.startsWith('T') || cleanAddr.startsWith('t')) {
+        throw new Error('Invalid BEP20 address: You entered a TRON/TRC20 address starting with T. BEP20 addresses start with "0x".');
+      }
+      if (!/^0x[a-fA-F0-9]{40}$/.test(cleanAddr)) {
+        throw new Error('Invalid BEP20 address: BEP20 addresses must start with "0x" and be 42 characters long.');
+      }
+    }
+  } else {
+    // 1. Verify Bank Account (Bank Only - No UPI)
+    const activeBanks = await fetchBankAccounts(userId);
+    if (activeBanks.length === 0) {
+      throw new Error('Please bind your Bank Account first to request a withdrawal.');
+    }
+
+    selectedBank = activeBanks.find((b) => b.id === bankAccountId);
+    if (!selectedBank) {
+      selectedBank = activeBanks.find((b) => b.isDefault) || activeBanks[0];
+    }
+
+    if (!selectedBank) {
+      throw new Error('Valid Bank Account is required for withdrawal.');
+    }
+  }
+
   // 2. Call server withdrawal verification endpoint
   try {
+    const payload: any = {
+      userId,
+      amount,
+      withdrawalPassword: cleanPin,
+      withdrawalMethod,
+    };
+    if (isUsdt) {
+      payload.network = network;
+      payload.walletAddress = (walletAddress || '').trim();
+    } else {
+      payload.bankAccountId = selectedBank.id;
+    }
+
     const resp = await fetch(apiUrl('/api/wallet/withdraw'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        userId,
-        amount,
-        bankAccountId: selectedBank.id,
-        withdrawalPassword: withdrawalPassword.trim(),
-      }),
+      body: JSON.stringify(payload),
     });
 
     const data = await resp.json();
@@ -4523,7 +4570,7 @@ export async function submitWithdrawalRequest(
     }
   }
 
-  if (isSupabaseConfigured && supabase) {
+  if (isSupabaseConfigured && supabase && !isUsdt) {
     try {
       const { data, error } = await supabase.rpc('request_withdrawal', {
         p_user_id: userId,
@@ -4569,8 +4616,11 @@ export async function submitWithdrawalRequest(
     amount,
     fee: 0,
     netAmount: amount,
-    bankAccountId: selectedBank.id,
-    bankDetails: selectedBank,
+    withdrawalMethod: isUsdt ? 'USDT' : 'BANK',
+    network: isUsdt ? network : undefined,
+    walletAddress: isUsdt ? (walletAddress || '').trim() : undefined,
+    bankAccountId: !isUsdt && selectedBank ? selectedBank.id : undefined,
+    bankDetails: !isUsdt ? selectedBank : undefined,
     status: 'PENDING',
     createdAt: new Date().toISOString(),
   };
@@ -4587,9 +4637,13 @@ export async function submitWithdrawalRequest(
     balanceAfter: wallet.withdrawBalance,
     balanceType: 'WITHDRAW_WALLET',
     referenceId: withdrawalId,
-    bankDetails: `${selectedBank.bankName} - A/C ${selectedBank.accountNumber} (${selectedBank.ifsc})`,
+    bankDetails: isUsdt
+      ? `USDT (${network}): ${(walletAddress || '').trim()}`
+      : `${selectedBank?.bankName || 'Bank'} - A/C ${selectedBank?.accountNumber || ''} (${selectedBank?.ifsc || ''})`,
     status: 'Pending',
-    description: `Bank Withdrawal: ₹${amount.toFixed(2)} to ${selectedBank.bankName} (${selectedBank.accountNumber.slice(-4)})`,
+    description: isUsdt
+      ? `USDT Withdrawal: ₹${amount.toFixed(2)} via ${network} to ${(walletAddress || '').trim()}`
+      : `Bank Withdrawal: ₹${amount.toFixed(2)} to ${selectedBank?.bankName || 'Bank'} (${selectedBank?.accountNumber?.slice(-4) || ''})`,
     createdAt: new Date().toISOString(),
   };
   const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
@@ -4599,13 +4653,33 @@ export async function submitWithdrawalRequest(
   // Trigger Notification
   createNotificationForUser({
     userId,
-    title: 'Withdrawal Pending',
-    description: `Your bank withdrawal of ₹${amount.toFixed(2)} to ${selectedBank.bankName} is pending approval.`,
+    title: isUsdt ? 'USDT Withdrawal Pending' : 'Withdrawal Pending',
+    description: isUsdt
+      ? `Your USDT withdrawal of ₹${amount.toFixed(2)} via ${network} is pending review.`
+      : `Your bank withdrawal of ₹${amount.toFixed(2)} to ${selectedBank?.bankName || 'bank'} is pending approval.`,
     type: 'WITHDRAWAL',
     isHomePopup: false,
   }).catch(() => {});
 
   return { success: true, withdrawalId };
+}
+
+export async function submitUsdtWithdrawalRequest(params: {
+  userId: string;
+  amount: number;
+  withdrawalPassword: string;
+  network: 'TRC20' | 'BEP20';
+  walletAddress: string;
+}) {
+  return submitWithdrawalRequest(
+    params.userId,
+    params.amount,
+    undefined,
+    params.withdrawalPassword,
+    'USDT',
+    params.network,
+    params.walletAddress
+  );
 }
 
 export async function fetchUserWithdrawals(userId: string): Promise<WithdrawalItem[]> {
@@ -5025,9 +5099,38 @@ export async function fetchAdminWithdrawals(): Promise<WithdrawalItem[]> {
         }
 
         return withdrawalsRes.data.map((w: any) => {
+          let isUsdt =
+            String(w.withdrawal_method || '').toUpperCase() === 'USDT' ||
+            Boolean(w.wallet_address) ||
+            Boolean(w.network);
+          let network = w.network;
+          let walletAddress = w.wallet_address;
+          let usdtAmount = w.usdt_amount ? Number(w.usdt_amount) : undefined;
+          let usdtRate = w.usdt_rate ? Number(w.usdt_rate) : undefined;
+
+          if (!isUsdt && typeof w.admin_note === 'string' && w.admin_note.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(w.admin_note);
+              if (parsed.withdrawal_method === 'USDT') {
+                isUsdt = true;
+                network = parsed.network;
+                walletAddress = parsed.wallet_address;
+                usdtAmount = parsed.usdt_amount;
+                usdtRate = parsed.usdt_rate;
+              }
+            } catch (_e) {}
+          }
+
+          if (!isUsdt && typeof w.upi_id === 'string' && w.upi_id.startsWith('USDT-')) {
+            isUsdt = true;
+            const parts = w.upi_id.replace('USDT-', '').split(':');
+            network = parts[0] as any;
+            walletAddress = parts[1];
+          }
+
           const prof = profileMap.get(w.user_id) || {};
           let bank = bankMap.get(w.bank_account_id) || {};
-          if (!bank.id && banksRes.data) {
+          if (!bank.id && banksRes.data && !isUsdt) {
             bank = banksRes.data.find((b: any) => b.user_id === w.user_id && b.is_default) ||
                    banksRes.data.find((b: any) => b.user_id === w.user_id) || {};
           }
@@ -5043,8 +5146,13 @@ export async function fetchAdminWithdrawals(): Promise<WithdrawalItem[]> {
             amount: Number(w.amount),
             fee: Number(w.fee || 0),
             netAmount: Number(w.net_amount || w.actual_amount || w.amount),
+            withdrawalMethod: isUsdt ? 'USDT' : 'BANK',
+            network: network || (isUsdt ? 'TRC20' : undefined),
+            walletAddress: walletAddress,
+            usdtAmount: usdtAmount,
+            usdtRate: usdtRate,
             bankAccountId: w.bank_account_id,
-            bankDetails: {
+            bankDetails: isUsdt ? undefined : {
               id: bank.id || w.bank_account_id,
               userId: bank.user_id || w.user_id,
               accountHolderName: actualHolderName,

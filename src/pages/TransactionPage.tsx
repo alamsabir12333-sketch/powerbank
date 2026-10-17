@@ -344,7 +344,10 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
       return 'Withdrawal Refund / Reversal';
     }
     if (typeUpper === 'WITHDRAWAL') {
-      return 'Withdrawal Request';
+      if (descLower.includes('usdt') || (tx.paymentMethod || '').includes('USDT')) {
+        return 'USDT Crypto Withdrawal';
+      }
+      return 'Bank Card Withdrawal';
     }
 
     // 10. Admin Adjustments
