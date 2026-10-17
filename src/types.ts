@@ -347,9 +347,6 @@ export interface BankAccount {
   updatedAt?: string;
 }
 
-export type WithdrawalMethod = 'BANK' | 'USDT';
-export type UsdtNetwork = 'TRC20' | 'BEP20';
-
 export type WithdrawalStatus =
   | 'PENDING'
   | 'PROCESSING'
@@ -366,11 +363,6 @@ export interface WithdrawalItem {
   amount: number;
   fee: number;
   netAmount: number;
-  withdrawalMethod?: WithdrawalMethod;
-  network?: UsdtNetwork;
-  walletAddress?: string;
-  usdtAmount?: number;
-  usdtRate?: number;
   bankAccountId?: string;
   bankDetails?: BankAccount;
   upiId?: string;

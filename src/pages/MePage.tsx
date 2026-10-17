@@ -10,7 +10,7 @@ import {
 } from '../components/FunctionModals';
 import { ClaimGiftCodeModal } from '../components/ClaimGiftCodeModal';
 import { TabType, UserProfile, Wallet, PurchaseItem, UserVipStatus } from '../types';
-import { fetchUserVipStatus, fetchClaimedDeviceEarnings } from '../services/api';
+import { fetchUserVipStatus, fetchUserTeamSummary, fetchClaimedDeviceEarnings } from '../services/api';
 import {
   ShieldCheck,
   Smartphone,
@@ -128,12 +128,52 @@ export const MePage: React.FC<MePageProps> = ({
     };
   }, [userId, userProfile?.userId, userProfile?.id, purchases, wallet?.withdrawBalance, wallet?.availableBalance]);
 
-  const teamEarnings = Number(
-    userProfile?.teamEarnings ??
-    (wallet as any)?.teamCommission ??
-    (wallet as any)?.team_commission ??
-    0
-  );
+  const [teamEarn, setTeamEarn] = useState<number | null>(null);
+  const [loadingTeamEarn, setLoadingTeamEarn] = useState<boolean>(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    const targetUserId = userId || userProfile?.userId || userProfile?.id;
+    if (!targetUserId) {
+      setTeamEarn(null);
+      setLoadingTeamEarn(false);
+      return;
+    }
+
+    setLoadingTeamEarn(true);
+    fetchUserTeamSummary(targetUserId)
+      .then((summary) => {
+        if (!isMounted) return;
+        const comm = Number(summary?.totalCommission ?? (summary as any)?.totalTeamCommission ?? (summary as any)?.teamCommission ?? (summary as any)?.teamEarn ?? 0);
+        setTeamEarn(comm);
+        setLoadingTeamEarn(false);
+      })
+      .catch((err) => {
+        console.warn('Failed to load team earn in MePage:', err);
+        if (!isMounted) return;
+        setTeamEarn(0);
+        setLoadingTeamEarn(false);
+      });
+
+    const handleCommissionUpdate = () => {
+      fetchUserTeamSummary(targetUserId)
+        .then((summary) => {
+          if (!isMounted) return;
+          const comm = Number(summary?.totalCommission ?? (summary as any)?.totalTeamCommission ?? (summary as any)?.teamCommission ?? (summary as any)?.teamEarn ?? 0);
+          setTeamEarn(comm);
+        })
+        .catch(() => {});
+    };
+
+    window.addEventListener('team_commission_updated', handleCommissionUpdate);
+    window.addEventListener('storage', handleCommissionUpdate);
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('team_commission_updated', handleCommissionUpdate);
+      window.removeEventListener('storage', handleCommissionUpdate);
+    };
+  }, [userId, userProfile?.userId, userProfile?.id]);
 
   useEffect(() => {
     let isMounted = true;
@@ -315,7 +355,11 @@ export const MePage: React.FC<MePageProps> = ({
           {/* Team Earnings */}
           <div className="flex flex-col items-center border-l border-white/20">
             <span className="text-white font-extrabold text-[15px] tracking-tight">
-              {teamEarnings}₹
+              {loadingTeamEarn || teamEarn === null ? (
+                <span className="opacity-60 font-medium">...</span>
+              ) : (
+                `${(Number(teamEarn) || 0).toFixed(2)}₹`
+              )}
             </span>
             <span className="text-white/75 text-[10px] font-medium mt-0.5 whitespace-nowrap">
               Team Earn
