@@ -171,9 +171,14 @@ function buildCanonicalClusters(inputs: RawTransactionInputs): Map<string, Clust
       descRef = hashMatch[1];
     }
 
+    const typeUpper = String(w.type || '').toUpperCase();
+    const isReversalOrRefund = typeUpper === 'WITHDRAWAL_REVERSAL' || typeUpper === 'REFUND';
+
     addEntityTokens(entityKey, wUserId, [
       w.id,
-      ref,
+      // For reversals and refunds, reference_id references the withdrawal/order being refunded.
+      // Do not use reference_id as a cluster token so the reversal remains an independent credit ledger item.
+      isReversalOrRefund ? null : ref,
       ord,
       utr,
       descRef,
@@ -458,12 +463,33 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
     }
 
     // 2. Authoritative Status Resolution
+    const wthItem = items.find(it => it.source === 'withdrawal')?.data;
     const allStatuses = items.map(it => String(it.data.status || '').toUpperCase());
     let canonicalStatus: WalletTransaction['status'] = 'Pending';
-    if (allStatuses.some(s => s === 'PAID' || s === 'SUCCESS' || s === 'COMPLETED' || s === 'APPROVED')) {
-      canonicalStatus = 'Completed';
-    } else if (allStatuses.some(s => s === 'FAILED' || s === 'REJECTED' || s === 'FAILED_GATEWAY_CREATION')) {
+
+    if (wthItem) {
+      const wStatus = String(wthItem.status || '').toUpperCase();
+      if (wStatus === 'REJECTED') {
+        canonicalStatus = 'Rejected';
+      } else if (wStatus === 'COMPLETED' || wStatus === 'APPROVED' || wStatus === 'PAID') {
+        canonicalStatus = 'Completed';
+      } else if (wStatus === 'CANCELLED') {
+        canonicalStatus = 'Cancelled';
+      } else if (wStatus === 'PROCESSING') {
+        canonicalStatus = 'Processing';
+      } else {
+        canonicalStatus = 'Pending';
+      }
+    } else if (txType === 'WITHDRAWAL' && allStatuses.includes('REJECTED')) {
+      canonicalStatus = 'Rejected';
+    } else if (allStatuses.includes('REJECTED')) {
+      canonicalStatus = 'Rejected';
+    } else if (allStatuses.some(s => s === 'FAILED' || s === 'FAILED_GATEWAY_CREATION')) {
       canonicalStatus = 'Failed';
+    } else if (allStatuses.some(s => s === 'PAID' || s === 'SUCCESS' || s === 'COMPLETED' || s === 'APPROVED')) {
+      canonicalStatus = 'Completed';
+    } else if (allStatuses.some(s => s === 'PROCESSING')) {
+      canonicalStatus = 'Processing';
     } else {
       canonicalStatus = 'Pending';
     }
@@ -544,6 +570,13 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
 
     if (!isUsdtWithdrawal && isUsdt && (!description || description.includes('ADMIN_ADJUSTMENT'))) {
       description = `USDT Deposit #${referenceId}`;
+    }
+
+    if (txType === 'WITHDRAWAL' && canonicalStatus === 'Rejected') {
+      const reason = wth?.rejection_reason || wth?.rejected_reason;
+      if (reason && (!description || !description.includes(reason))) {
+        description = `${description || 'Withdrawal Request'} (Rejected: ${reason})`;
+      }
     }
 
     const utr =

@@ -5,7 +5,6 @@ import { PlaceholderModal } from '../components/PlaceholderModal';
 import { CustomerSupportModal } from '../components/CustomerSupportModal';
 import {
   PersonalInfoModal,
-  BindBankCardModal,
   InviteFriendsModal,
 } from '../components/FunctionModals';
 import { ClaimGiftCodeModal } from '../components/ClaimGiftCodeModal';
@@ -67,7 +66,6 @@ export const MePage: React.FC<MePageProps> = ({
 
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [isPersonalInfoOpen, setIsPersonalInfoOpen] = useState(false);
-  const [isBankCardOpen, setIsBankCardOpen] = useState(false);
   const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [isGiftCodeOpen, setIsGiftCodeOpen] = useState(false);
   const [vipStatus, setVipStatus] = useState<UserVipStatus | null>(null);
@@ -183,14 +181,6 @@ export const MePage: React.FC<MePageProps> = ({
       bgColor: 'bg-[#FFEBEB]',
       iconColor: 'text-[#FF4D4D]',
       onClick: () => setIsPersonalInfoOpen(true),
-    },
-    {
-      id: 'bind_bank',
-      label: 'Bind Bank Card',
-      icon: CreditCard,
-      bgColor: 'bg-[#E6F4FF]',
-      iconColor: 'text-[#1890FF]',
-      onClick: () => onNavigateTab('bank_card'),
     },
     {
       id: 'invite_friends',
@@ -472,15 +462,6 @@ export const MePage: React.FC<MePageProps> = ({
         />
       )}
 
-      <BindBankCardModal
-        isOpen={isBankCardOpen}
-        onClose={() => setIsBankCardOpen(false)}
-        userId={userId}
-        onSuccess={() => {
-          onShowToast('Bank card bound successfully');
-          onRefreshData?.();
-        }}
-      />
 
       <InviteFriendsModal
         isOpen={isInviteOpen}

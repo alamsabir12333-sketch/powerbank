@@ -5312,6 +5312,11 @@ export async function rejectWithdrawal(withdrawalId: string, param2: string, par
     createdAt: new Date().toISOString(),
   };
   const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
+  const pendingTx = txs.find((t) => t.referenceId === wd.id && t.type === 'WITHDRAWAL');
+  if (pendingTx) {
+    pendingTx.status = 'Rejected';
+    pendingTx.description = `Withdrawal Rejected (${reason})`;
+  }
   txs.unshift(tx);
   saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
 

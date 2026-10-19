@@ -379,6 +379,12 @@ BEGIN
         updated_at = now()
     WHERE id = p_withdrawal_id;
 
+    UPDATE public.wallet_transactions
+    SET status = 'REJECTED'
+    WHERE user_id = v_w.user_id
+      AND reference_id = p_withdrawal_id::TEXT
+      AND type = 'WITHDRAWAL';
+
     INSERT INTO public.wallet_transactions (
         user_id, type, amount, balance_before, balance_after,
         wallet_type, status, reference_id, description, created_at
@@ -398,7 +404,7 @@ BEGIN
         'WARNING', false, now()
     );
 
-    RETURN jsonb_build_object('success', true, 'message', 'Withdrawal rejected and funds refunded to user wallet.');
+    RETURN jsonb_build_object('success', true, 'message', 'Withdrawal rejected and funds refunded to user wallet.', 'status', 'REJECTED');
 END;
 $$;
 

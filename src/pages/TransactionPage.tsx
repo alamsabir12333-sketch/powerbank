@@ -382,7 +382,7 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
   };
 
   const getStatusBadge = (status?: string, type?: TransactionType) => {
-    const s = (status || 'Completed').toLowerCase();
+    const s = (status || 'Pending').toLowerCase();
     if (s.includes('pending') || s.includes('processing')) {
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">

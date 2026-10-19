@@ -7046,6 +7046,14 @@ const handleRejectWithdrawal = async (req: express.Request, res: express.Respons
       updated_at: nowIso,
     }).eq('id', withdrawalId).eq('status', w.status);
 
+    // Synchronize the original withdrawal debit record status in wallet_transactions to REJECTED
+    try {
+      const matchRefs = [withdrawalId, w.id, w.bank_ref_no, w.order_id].filter(Boolean);
+      await supabase.from('wallet_transactions').update({
+        status: 'REJECTED',
+      }).eq('user_id', userId).in('reference_id', matchRefs).eq('type', 'WITHDRAWAL');
+    } catch (_txErr) {}
+
     await supabase.from('wallet_transactions').insert({
       user_id: userId,
       type: 'WITHDRAWAL_REVERSAL',
@@ -7080,7 +7088,12 @@ const handleRejectWithdrawal = async (req: express.Request, res: express.Respons
       });
     } catch (_e) {}
 
-    return res.json({ success: true, message: 'Withdrawal rejected and funds refunded to user wallet.' });
+    return res.json({
+      success: true,
+      message: 'Withdrawal rejected and funds refunded to user wallet.',
+      status: 'REJECTED',
+      withdrawalId,
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
