@@ -4473,6 +4473,61 @@ export async function setDefaultBankAccount(userId: string, bankId: string): Pro
   }
 }
 
+export async function submitUsdtWithdrawalRequest(params: {
+  userId: string;
+  amount: number;
+  network: 'TRC20' | 'BEP20';
+  usdtAddress: string;
+  withdrawalPassword: string;
+}) {
+  const { userId, amount, network, usdtAddress, withdrawalPassword } = params;
+
+  if (!userId) {
+    throw new Error('User authentication required.');
+  }
+
+  const cleanNetwork = (network || '').trim().toUpperCase();
+  if (cleanNetwork !== 'TRC20' && cleanNetwork !== 'BEP20') {
+    throw new Error('Invalid network. Only TRC20 and BEP20 are supported.');
+  }
+
+  const cleanAddress = (usdtAddress || '').trim();
+  if (cleanNetwork === 'TRC20' && !/^T[1-9A-HJ-NP-za-km-z]{33}$/.test(cleanAddress)) {
+    throw new Error('Invalid TRC20 address. TRC20 address must start with "T" and be exactly 34 characters.');
+  }
+  if (cleanNetwork === 'BEP20' && !/^0x[a-fA-F0-9]{40}$/.test(cleanAddress)) {
+    throw new Error('Invalid BEP20 address. BEP20 address must start with "0x" and be exactly 42 characters.');
+  }
+
+  const cleanPin = (withdrawalPassword || '').trim();
+  if (!/^\d{4}$/.test(cleanPin)) {
+    throw new Error('Withdrawal PIN must be exactly 4 digits.');
+  }
+
+  // Call server withdrawal endpoint with authentication headers
+  const authHeaders = await getAuthHeaders();
+  const resp = await fetch(apiUrl('/api/wallet/withdraw-usdt'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders,
+    },
+    body: JSON.stringify({
+      userId,
+      amount,
+      network: cleanNetwork,
+      usdtAddress: cleanAddress,
+      withdrawalPassword: cleanPin,
+    }),
+  });
+
+  const data = await resp.json();
+  if (!resp.ok || !data.success) {
+    throw new Error(data.error || 'USDT withdrawal request failed.');
+  }
+  return data;
+}
+
 export async function submitWithdrawalRequest(
   userId: string,
   amount: number,
@@ -5044,6 +5099,12 @@ export async function fetchAdminWithdrawals(): Promise<WithdrawalItem[]> {
             fee: Number(w.fee || 0),
             netAmount: Number(w.net_amount || w.actual_amount || w.amount),
             bankAccountId: w.bank_account_id,
+            network: w.network,
+            usdtAddress: w.usdt_address,
+            usdtAmount: Number(w.usdt_amount || 0),
+            usdtRate: Number(w.usdt_rate || 0),
+            txHash: w.tx_hash,
+            referenceId: w.tx_hash || w.bank_ref_no || w.id,
             bankDetails: {
               id: bank.id || w.bank_account_id,
               userId: bank.user_id || w.user_id,
@@ -5076,7 +5137,7 @@ export async function fetchAdminWithdrawals(): Promise<WithdrawalItem[]> {
 export async function approveWithdrawal(withdrawalId: string, bankRefNoOrAdminId: string, optionalAdminId?: string) {
   const isFirstAdmin = bankRefNoOrAdminId.startsWith('adm_') || bankRefNoOrAdminId.startsWith('admin_');
   const adminId = optionalAdminId || (isFirstAdmin ? bankRefNoOrAdminId : 'adm_master_01');
-  const bankRef = isFirstAdmin ? (optionalAdminId || '') : bankRefNoOrAdminId;
+  const txHash = isFirstAdmin ? (optionalAdminId || '') : bankRefNoOrAdminId;
 
   // 1. Call authoritative Server Endpoint
   try {
@@ -5086,8 +5147,10 @@ export async function approveWithdrawal(withdrawalId: string, bankRefNoOrAdminId
       body: JSON.stringify({
         withdrawalId,
         adminId,
-        bankRef,
-        bankRefNo: bankRef,
+        txHash,
+        tx_hash: txHash,
+        bankRef: txHash,
+        bankRefNo: txHash,
       }),
     });
     if (resp.ok) {
@@ -5102,15 +5165,13 @@ export async function approveWithdrawal(withdrawalId: string, bankRefNoOrAdminId
 
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase.rpc('complete_withdrawal', {
+      const { data, error } = await supabase.rpc('approve_usdt_withdrawal', {
         p_withdrawal_id: withdrawalId,
+        p_tx_hash: txHash || `REF-${Date.now()}`,
         p_admin_id: adminId,
       });
       if (!error && data) {
         return data;
-      }
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase approve withdrawal error:', error.message);
       }
     } catch {
       // Fall through to local
@@ -5124,8 +5185,9 @@ export async function approveWithdrawal(withdrawalId: string, bankRefNoOrAdminId
 
   wd.status = 'COMPLETED';
   wd.processedAt = new Date().toISOString();
-  if (bankRef) {
-    wd.adminNote = `UTR/Bank Ref: ${bankRef}`;
+  if (txHash) {
+    wd.adminNote = `TXID/Ref: ${txHash}`;
+    wd.txHash = txHash;
   }
   saveLocal(STORAGE_KEYS.WITHDRAWALS, list);
 
@@ -5138,7 +5200,7 @@ export async function approveWithdrawal(withdrawalId: string, bankRefNoOrAdminId
   const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
   const pendingTx = txs.find((t) => t.referenceId === wd.id && t.type === 'WITHDRAWAL');
   if (pendingTx) {
-    pendingTx.description = `Withdrawal Approved ${bankRef ? `(Ref: ${bankRef})` : ''}`;
+    pendingTx.description = `Withdrawal Approved ${txHash ? `(TXID/Ref: ${txHash})` : ''}`;
     pendingTx.status = 'Completed';
     saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
   }
@@ -5149,8 +5211,8 @@ export async function approveWithdrawal(withdrawalId: string, bankRefNoOrAdminId
     'APPROVE_WITHDRAWAL',
     'WITHDRAWAL',
     withdrawalId,
-    `Approved withdrawal of ₹${wd.amount.toFixed(2)} (Net: ₹${wd.netAmount.toFixed(2)}, Ref: ${bankRef || 'N/A'})`,
-    { amount: wd.amount, netAmount: wd.netAmount, bankRef, userId: wd.userId }
+    `Approved withdrawal of ₹${wd.amount.toFixed(2)} (Net: ₹${wd.netAmount.toFixed(2)}, TXID/Ref: ${txHash || 'N/A'})`,
+    { amount: wd.amount, netAmount: wd.netAmount, txHash, userId: wd.userId }
   ).catch(() => {});
 
   // Trigger Notification
@@ -5195,16 +5257,13 @@ export async function rejectWithdrawal(withdrawalId: string, param2: string, par
 
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data, error } = await supabase.rpc('reject_withdrawal', {
+      const { data, error } = await supabase.rpc('reject_usdt_withdrawal', {
         p_withdrawal_id: withdrawalId,
-        p_admin_id: adminId,
         p_reason: reason,
+        p_admin_id: adminId,
       });
       if (!error && data) {
         return data;
-      }
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase reject withdrawal error:', error.message);
       }
     } catch {
       // Fall through to local

@@ -75,10 +75,21 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
 
   const handleConfirmPayout = async () => {
     if (!payoutItem) return;
+    const isUsdt = Boolean(payoutItem.network || payoutItem.usdtAddress || Number(payoutItem.usdtAmount || 0) > 0);
+    const cleanRef = bankRefNo.trim();
+    if (isUsdt && (!cleanRef || cleanRef.length < 10)) {
+      onShowToast('Blockchain transaction hash (TXID) is mandatory (minimum 10 characters).');
+      return;
+    }
+
     setProcessingId(payoutItem.id);
     try {
-      await approveWithdrawal(payoutItem.id, bankRefNo, adminId);
-      onShowToast(`Withdrawal of ₹${payoutItem.amount} marked as COMPLETED.`);
+      await approveWithdrawal(payoutItem.id, cleanRef, adminId);
+      onShowToast(
+        isUsdt
+          ? `USDT withdrawal of ${payoutItem.usdtAmount || 0} USDT marked as COMPLETED.`
+          : `Withdrawal of ₹${payoutItem.amount} marked as COMPLETED.`
+      );
       setPayoutItem(null);
       setBankRefNo('');
       loadWithdrawals();
@@ -159,6 +170,9 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
         (w.userId || '').toLowerCase().includes(q) ||
         (w.username || '').toLowerCase().includes(q) ||
         (w.userMobile || '').toLowerCase().includes(q) ||
+        (w.network || '').toLowerCase().includes(q) ||
+        (w.usdtAddress || '').toLowerCase().includes(q) ||
+        (w.txHash || '').toLowerCase().includes(q) ||
         (w.bankDetails?.accountNumber || '').toLowerCase().includes(q) ||
         (w.bankDetails?.accountHolderName || w.bankDetails?.holderName || '').toLowerCase().includes(q) ||
         (w.bankDetails?.ifscCode || w.bankDetails?.ifsc || '').toLowerCase().includes(q) ||
@@ -300,7 +314,47 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
                       </td>
 
                       <td className="py-3 px-4 font-mono text-[11px]">
-                        {item.bankDetails?.upiId && !item.bankDetails?.accountNumber ? (
+                        {item.network || item.usdtAddress ? (
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="px-2 py-0.5 rounded-md bg-purple-950/80 border border-purple-800/80 text-purple-300 font-bold text-[10px]">
+                                USDT • {item.network || 'TRC20'}
+                              </span>
+                              {item.usdtAmount ? (
+                                <span className="text-emerald-400 font-extrabold text-[11px]">
+                                  {item.usdtAmount} USDT
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <span className="text-amber-400 font-bold truncate max-w-[200px]" title={item.usdtAddress}>
+                                {item.usdtAddress}
+                              </span>
+                              {item.usdtAddress && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopy(item.usdtAddress!)}
+                                  className="p-0.5 text-gray-400 hover:text-white"
+                                  title="Copy USDT Address"
+                                >
+                                  {copiedText === item.usdtAddress ? (
+                                    <Check className="w-3 h-3 text-emerald-400" />
+                                  ) : (
+                                    <Copy className="w-3 h-3" />
+                                  )}
+                                </button>
+                              )}
+                            </div>
+                            {item.txHash && (
+                              <div className="text-[10px] text-gray-400 flex items-center gap-1">
+                                <span>TXID:</span>
+                                <span className="text-cyan-400 truncate max-w-[140px]" title={item.txHash}>
+                                  {item.txHash.slice(0, 10)}...{item.txHash.slice(-8)}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        ) : item.bankDetails?.upiId && !item.bankDetails?.accountNumber ? (
                           <div>
                             <div className="text-white font-bold mb-0.5">UPI Payout</div>
                             <div className="flex items-center gap-1">
@@ -374,7 +428,7 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
                           {item.status}
                         </span>
                         {item.referenceId && (
-                          <div className="text-[9.5px] text-gray-400 font-mono mt-0.5">
+                          <div className="text-[9.5px] text-gray-400 font-mono mt-0.5 truncate max-w-[140px]" title={item.referenceId}>
                             Ref: {item.referenceId}
                           </div>
                         )}
@@ -400,23 +454,25 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
                               <span>Disburse Payout</span>
                             </button>
 
-                            <button
-                              onClick={() => handleGatewayPayout(item)}
-                              disabled={processingGatewayId === item.id || processingId === item.id}
-                              className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                            >
-                              {processingGatewayId === item.id ? (
-                                <>
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                  <span>Processing...</span>
-                                </>
-                              ) : (
-                                <>
-                                  <CreditCard className="w-3.5 h-3.5" />
-                                  <span>Gateway Payout</span>
-                                </>
-                              )}
-                            </button>
+                            {!item.network && !item.usdtAddress && (
+                              <button
+                                onClick={() => handleGatewayPayout(item)}
+                                disabled={processingGatewayId === item.id || processingId === item.id}
+                                className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[11px] inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                              >
+                                {processingGatewayId === item.id ? (
+                                  <>
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    <span>Processing...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <CreditCard className="w-3.5 h-3.5" />
+                                    <span>Gateway Payout</span>
+                                  </>
+                                )}
+                              </button>
+                            )}
 
                             <button
                               onClick={() => {
@@ -432,7 +488,7 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
                           </>
                         ) : (
                           <span className="text-[10px] text-gray-500 font-mono">
-                            {item.referenceId ? `Ref: ${item.referenceId}` : 'Finalized'}
+                            {item.referenceId ? `Ref: ${item.referenceId.slice(0, 16)}` : 'Finalized'}
                           </span>
                         )}
                       </td>
@@ -460,50 +516,97 @@ export const AdminWithdrawalsTab: React.FC<AdminWithdrawalsTabProps> = ({
             </div>
 
             <div className="bg-[#0d1117] p-3 rounded-xl border border-gray-800 mb-4 text-xs space-y-1.5 font-mono">
-              <div className="flex justify-between font-sans">
-                <span className="text-gray-400">Recipient Name:</span>
-                <span className="font-bold text-white">{payoutItem.bankDetails?.accountHolderName || payoutItem.bankDetails?.holderName || 'Account Holder'}</span>
-              </div>
-              {payoutItem.bankDetails?.accountNumber && (
-                <div className="flex justify-between">
-                  <span className="text-gray-400 font-sans">Bank Account:</span>
-                  <span className="text-amber-400 font-bold">{payoutItem.bankDetails?.accountNumber}</span>
-                </div>
+              {payoutItem.network || payoutItem.usdtAddress ? (
+                <>
+                  <div className="flex justify-between font-sans">
+                    <span className="text-gray-400">Network:</span>
+                    <span className="font-bold text-purple-400">USDT • {payoutItem.network || 'TRC20'}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400 font-sans">Recipient Address:</span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-amber-400 font-bold truncate max-w-[200px]" title={payoutItem.usdtAddress}>
+                        {payoutItem.usdtAddress}
+                      </span>
+                      {payoutItem.usdtAddress && (
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(payoutItem.usdtAddress!)}
+                          className="p-0.5 text-gray-400 hover:text-white"
+                          title="Copy Address"
+                        >
+                          {copiedText === payoutItem.usdtAddress ? (
+                            <Check className="w-3 h-3 text-emerald-400" />
+                          ) : (
+                            <Copy className="w-3 h-3" />
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex justify-between font-sans">
+                    <span className="text-gray-400">USDT Payout:</span>
+                    <span className="font-extrabold text-emerald-400 text-sm">{payoutItem.usdtAmount || 0} USDT</span>
+                  </div>
+                  <div className="flex justify-between font-sans border-t border-gray-800 pt-1.5">
+                    <span className="text-gray-400">Gross INR:</span>
+                    <span className="text-gray-200">₹{payoutItem.amount.toFixed(2)}</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex justify-between font-sans">
+                    <span className="text-gray-400">Recipient Name:</span>
+                    <span className="font-bold text-white">{payoutItem.bankDetails?.accountHolderName || payoutItem.bankDetails?.holderName || 'Account Holder'}</span>
+                  </div>
+                  {payoutItem.bankDetails?.accountNumber && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400 font-sans">Bank Account:</span>
+                      <span className="text-amber-400 font-bold">{payoutItem.bankDetails?.accountNumber}</span>
+                    </div>
+                  )}
+                  {(payoutItem.bankDetails?.ifscCode || payoutItem.bankDetails?.ifsc) && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400 font-sans">IFSC Code:</span>
+                      <span className="text-cyan-400 font-bold">{payoutItem.bankDetails?.ifscCode || payoutItem.bankDetails?.ifsc}</span>
+                    </div>
+                  )}
+                  {payoutItem.bankDetails?.bankName && (
+                    <div className="flex justify-between font-sans">
+                      <span className="text-gray-400">Bank Name:</span>
+                      <span className="text-gray-200">{payoutItem.bankDetails?.bankName}</span>
+                    </div>
+                  )}
+                  {payoutItem.bankDetails?.upiId && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400 font-sans">UPI ID:</span>
+                      <span className="text-emerald-400 font-bold">{payoutItem.bankDetails?.upiId}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between font-sans border-t border-gray-800 pt-1.5 font-bold">
+                    <span className="text-gray-300">Amount to Transfer:</span>
+                    <span className="text-emerald-400 text-sm">₹{payoutItem.amount.toFixed(2)}</span>
+                  </div>
+                </>
               )}
-              {(payoutItem.bankDetails?.ifscCode || payoutItem.bankDetails?.ifsc) && (
-                <div className="flex justify-between">
-                  <span className="text-gray-400 font-sans">IFSC Code:</span>
-                  <span className="text-cyan-400 font-bold">{payoutItem.bankDetails?.ifscCode || payoutItem.bankDetails?.ifsc}</span>
-                </div>
-              )}
-              {payoutItem.bankDetails?.bankName && (
-                <div className="flex justify-between font-sans">
-                  <span className="text-gray-400">Bank Name:</span>
-                  <span className="text-gray-200">{payoutItem.bankDetails?.bankName}</span>
-                </div>
-              )}
-              {payoutItem.bankDetails?.upiId && (
-                <div className="flex justify-between">
-                  <span className="text-gray-400 font-sans">UPI ID:</span>
-                  <span className="text-emerald-400 font-bold">{payoutItem.bankDetails?.upiId}</span>
-                </div>
-              )}
-              <div className="flex justify-between font-sans border-t border-gray-800 pt-1.5 font-bold">
-                <span className="text-gray-300">Amount to Transfer:</span>
-                <span className="text-emerald-400 text-sm">₹{payoutItem.amount.toFixed(2)}</span>
-              </div>
             </div>
 
             <div className="mb-4">
               <label className="block text-xs font-semibold text-gray-300 uppercase mb-1.5">
-                Bank IMPS RRN / UPI UTR / Reference No (Optional)
+                {payoutItem.network || payoutItem.usdtAddress
+                  ? 'Blockchain Transaction Hash (TXID / TxHash) *'
+                  : 'Bank IMPS RRN / UPI UTR / Reference No (Optional)'}
               </label>
               <input
                 type="text"
                 value={bankRefNo}
                 onChange={(e) => setBankRefNo(e.target.value)}
-                placeholder="e.g. IMPS-9827361829 or UPI-29837192"
-                className="w-full bg-[#0d1117] border border-gray-700 focus:border-emerald-500 rounded-xl p-2.5 text-xs text-white outline-none"
+                placeholder={
+                  payoutItem.network || payoutItem.usdtAddress
+                    ? 'Enter mandatory blockchain transaction hash (TXID)'
+                    : 'e.g. IMPS-9827361829 or UPI-29837192'
+                }
+                className="w-full bg-[#0d1117] border border-gray-700 focus:border-emerald-500 rounded-xl p-2.5 text-xs text-white outline-none font-mono"
               />
             </div>
 

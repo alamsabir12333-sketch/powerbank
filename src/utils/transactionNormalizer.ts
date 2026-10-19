@@ -512,21 +512,37 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
     }
 
     // 5. Payment Method & Description
+    const isUsdtWithdrawal =
+      txType === 'WITHDRAWAL' &&
+      (wth?.withdrawal_method === 'USDT' ||
+        Boolean(wth?.wallet_address) ||
+        Boolean(wth?.network) ||
+        String(wth?.admin_note || '').includes('USDT') ||
+        String(wtx?.description || '').includes('USDT'));
+
     const isUsdt =
+      isUsdtWithdrawal ||
       Boolean(pay) ||
       items.some(it =>
         String(it.data.channel || it.data.payment_method || it.data.method || it.data.reference_id || it.data.referenceId || '').toUpperCase().includes('USDT')
       );
-    const paymentMethod = isUsdt
+
+    const paymentMethod = isUsdtWithdrawal
+      ? `USDT (${wth?.network || 'TRC20'})`
+      : isUsdt
       ? (pay?.payment_method ? `USDT (${pay.payment_method})` : 'USDT (TRC20)')
       : (dep?.channel || wth ? 'Bank Transfer' : wtx?.paymentMethod || 'UPI Gateway');
 
     let description =
       wtx?.description ||
       ldg?.description ||
-      (txType === 'RECHARGE' ? `Recharge Order #${referenceId}` : undefined);
+      (isUsdtWithdrawal
+        ? `USDT Withdrawal: ₹${Math.abs(amount).toFixed(2)} (${wth?.usdt_amount || ''} USDT via ${wth?.network || 'TRC20'})`
+        : txType === 'RECHARGE'
+        ? `Recharge Order #${referenceId}`
+        : undefined);
 
-    if (isUsdt && (!description || description.includes('ADMIN_ADJUSTMENT'))) {
+    if (!isUsdtWithdrawal && isUsdt && (!description || description.includes('ADMIN_ADJUSTMENT'))) {
       description = `USDT Deposit #${referenceId}`;
     }
 

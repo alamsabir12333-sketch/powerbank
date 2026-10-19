@@ -370,6 +370,11 @@ export interface WithdrawalItem {
   adminNote?: string;
   rejectionReason?: string;
   referenceId?: string;
+  network?: string;
+  usdtAddress?: string;
+  usdtAmount?: number;
+  usdtRate?: number;
+  txHash?: string;
   createdAt: string;
   processedAt?: string;
 }

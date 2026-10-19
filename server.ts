@@ -3111,6 +3111,23 @@ app.post('/api/univepay/create-withdrawal', async (req, res) => {
 });
 
 // ==============================================================================
+// 4. AUTHENTICATION & WITHDRAWAL HELPERS
+// ==============================================================================
+async function getAuthenticatedUser(req: express.Request): Promise<{ id: string } | null> {
+  const authHeader = req.headers.authorization || '';
+  if (!authHeader.startsWith('Bearer ')) return null;
+  const token = authHeader.slice(7).trim();
+  if (!token || !supabase) return null;
+  try {
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error || !data?.user?.id) return null;
+    return { id: data.user.id };
+  } catch {
+    return null;
+  }
+}
+
+// ==============================================================================
 // 4.1 SECURE WITHDRAWAL REQUEST WITH WITHDRAWAL PASSWORD VERIFICATION
 // ==============================================================================
 app.post('/api/wallet/withdraw', async (req, res) => {
@@ -3121,10 +3138,18 @@ app.post('/api/wallet/withdraw', async (req, res) => {
     withdrawalPassword,
   } = req.body;
 
-  const numAmount = Number(amount);
-  if (!userId) {
-    return res.status(400).json({ success: false, error: 'User ID is required.' });
+  const authUser = await getAuthenticatedUser(req);
+  const effectiveUserId = authUser?.id || userId;
+  if (!effectiveUserId) {
+    return res.status(401).json({ success: false, error: 'Authentication required. User ID is missing.' });
   }
+
+  // Self-only security check: target user ID cannot mismatch authenticated user
+  if (authUser && userId && String(userId).trim() !== authUser.id) {
+    return res.status(403).json({ success: false, error: 'Access denied: Target user ID mismatch.' });
+  }
+
+  const numAmount = Number(amount);
 
   // Authoritative dynamic system withdrawal settings from database
   let configuredMinWithdrawal = 200;
@@ -3208,64 +3233,57 @@ app.post('/api/wallet/withdraw', async (req, res) => {
       });
     }
 
-    if (bankRecord.user_id !== userId) {
+    if (bankRecord.user_id !== effectiveUserId) {
       return res.status(403).json({
         success: false,
         error: 'Access denied. The specified bank account does not belong to your account.',
       });
     }
 
-    // 2. Verify withdrawal password hash from user_security table
+    // 2. Fail-Closed Verification of withdrawal password hash from user_security table
     const cleanPass = cleanPin;
 
-    const { data: secData } = await supabase
+    const { data: secData, error: secErr } = await supabase
       .from('user_security')
       .select('withdrawal_password_hash')
-      .eq('user_id', userId)
+      .eq('user_id', effectiveUserId)
       .maybeSingle();
 
-    if (secData && secData.withdrawal_password_hash) {
-      const storedHash = secData.withdrawal_password_hash;
-      let isValid = false;
+    if (secErr || !secData || !secData.withdrawal_password_hash) {
+      return res.status(400).json({
+        success: false,
+        error: 'Withdrawal PIN is not set. Please set your 4-digit PIN in Security Settings before requesting a withdrawal.',
+      });
+    }
 
-      if (storedHash.startsWith('$2a$') || storedHash.startsWith('$2b$') || storedHash.startsWith('$2y$')) {
-        isValid = bcrypt.compareSync(cleanPass, storedHash);
-      } else {
-        // Fallback for legacy SHA-256 hash
-        const inputSha256 = crypto.createHash('sha256').update(cleanPass).digest('hex');
-        if (inputSha256 === storedHash) {
-          isValid = true;
-          // Auto-upgrade to bcrypt
-          try {
-            const upgradedHash = bcrypt.hashSync(cleanPass, 10);
-            await supabase.from('user_security').update({
-              withdrawal_password_hash: upgradedHash,
-              updated_at: new Date().toISOString(),
-            }).eq('user_id', userId);
-          } catch (upgErr) {
-            console.warn('[SERVER WITHDRAW] Auto-upgrade hash note:', upgErr);
-          }
+    const storedHash = secData.withdrawal_password_hash;
+    let isValid = false;
+
+    if (storedHash.startsWith('$2a$') || storedHash.startsWith('$2b$') || storedHash.startsWith('$2y$')) {
+      isValid = bcrypt.compareSync(cleanPass, storedHash);
+    } else {
+      // Fallback for legacy SHA-256 hash
+      const inputSha256 = crypto.createHash('sha256').update(cleanPass).digest('hex');
+      if (inputSha256 === storedHash) {
+        isValid = true;
+        // Auto-upgrade to bcrypt
+        try {
+          const upgradedHash = bcrypt.hashSync(cleanPass, 10);
+          await supabase.from('user_security').update({
+            withdrawal_password_hash: upgradedHash,
+            updated_at: new Date().toISOString(),
+          }).eq('user_id', effectiveUserId);
+        } catch (upgErr) {
+          console.warn('[SERVER WITHDRAW] Auto-upgrade hash note:', upgErr);
         }
       }
+    }
 
-      if (!isValid) {
-        return res.status(401).json({
-          success: false,
-          error: 'Incorrect withdrawal PIN.',
-        });
-      }
-    } else {
-      // If no hash in user_security yet, backfill with bcrypt
-      try {
-        const newHash = bcrypt.hashSync(cleanPass, 10);
-        await supabase.from('user_security').upsert({
-          user_id: userId,
-          withdrawal_password_hash: newHash,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'user_id' });
-      } catch (e) {
-        console.warn('[SERVER WITHDRAW] Security backfill note:', e);
-      }
+    if (!isValid) {
+      return res.status(401).json({
+        success: false,
+        error: 'Incorrect withdrawal PIN.',
+      });
     }
 
     // 3. Execute atomic request_withdrawal RPC in Supabase
@@ -3436,6 +3454,243 @@ app.post('/api/wallet/withdraw', async (req, res) => {
     message: 'Local withdrawal processed.',
     amount: numAmount,
   });
+});
+
+// ==============================================================================
+// 4.2 SECURE MANUAL USDT WITHDRAWAL (TRC20 & BEP20)
+// ==============================================================================
+app.post('/api/wallet/withdraw-usdt', async (req, res) => {
+  // 1. Strict session authentication
+  const authUser = await getAuthenticatedUser(req);
+  if (!authUser) {
+    return res.status(401).json({
+      success: false,
+      error: 'UNAUTHENTICATED: Valid user session token required.',
+    });
+  }
+
+  const verifiedUserId = authUser.id;
+  const { userId, amount, network, usdtAddress, withdrawalPassword } = req.body;
+
+  // Strict self-only: User ID if passed must match authenticated user
+  if (userId && String(userId).trim() !== verifiedUserId) {
+    return res.status(403).json({
+      success: false,
+      error: 'FORBIDDEN: A withdrawal must always target the authenticated user\'s own ID.',
+    });
+  }
+
+  const numAmount = Number(amount);
+  if (!numAmount || isNaN(numAmount) || numAmount <= 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'Withdrawal amount must be a positive number.',
+    });
+  }
+
+  // Whitelisted Network Check
+  const cleanNetwork = String(network || '').trim().toUpperCase();
+  if (cleanNetwork !== 'TRC20' && cleanNetwork !== 'BEP20') {
+    return res.status(400).json({
+      success: false,
+      error: 'Unsupported network. Only TRC20 and BEP20 are supported.',
+    });
+  }
+
+  // Address Syntax Validation
+  const cleanAddress = String(usdtAddress || '').trim();
+  if (cleanNetwork === 'TRC20' && !/^T[1-9A-HJ-NP-za-km-z]{33}$/.test(cleanAddress)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid TRC20 address. TRC20 address must start with "T" and be exactly 34 characters.',
+    });
+  }
+  if (cleanNetwork === 'BEP20' && !/^0x[a-fA-F0-9]{40}$/.test(cleanAddress)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid BEP20 address. BEP20 address must start with "0x" and be exactly 42 characters.',
+    });
+  }
+
+  // 4-digit PIN format check
+  const cleanPin = String(withdrawalPassword || '').trim();
+  if (!/^\d{4}$/.test(cleanPin)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Withdrawal PIN must be exactly 4 digits.',
+    });
+  }
+
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: 'Database service unavailable.' });
+  }
+
+  // Fail-closed PIN check: query user_security
+  const { data: secData, error: secErr } = await supabase
+    .from('user_security')
+    .select('withdrawal_password_hash')
+    .eq('user_id', verifiedUserId)
+    .maybeSingle();
+
+  if (secErr || !secData || !secData.withdrawal_password_hash) {
+    return res.status(400).json({
+      success: false,
+      error: 'Withdrawal PIN is not set. Please set your 4-digit PIN in Security Settings before requesting a withdrawal.',
+    });
+  }
+
+  const storedHash = secData.withdrawal_password_hash;
+  let pinValid = false;
+  if (storedHash.startsWith('$2a$') || storedHash.startsWith('$2b$') || storedHash.startsWith('$2y$')) {
+    pinValid = bcrypt.compareSync(cleanPin, storedHash);
+  } else {
+    // Legacy SHA-256 fallback
+    const inputSha256 = crypto.createHash('sha256').update(cleanPin).digest('hex');
+    if (inputSha256 === storedHash) {
+      pinValid = true;
+      try {
+        const upgradedHash = bcrypt.hashSync(cleanPin, 10);
+        await supabase.from('user_security').update({
+          withdrawal_password_hash: upgradedHash,
+          updated_at: new Date().toISOString(),
+        }).eq('user_id', verifiedUserId);
+      } catch (_e) {}
+    }
+  }
+
+  if (!pinValid) {
+    return res.status(401).json({
+      success: false,
+      error: 'Incorrect withdrawal PIN.',
+    });
+  }
+
+  // Read dynamic system settings from admin_settings ('system')
+  let isWithdrawalEnabled: boolean | null = null;
+  let minWithdrawal: number | null = null;
+  let maxWithdrawal: number | null = null;
+  let withdrawalFeePercent: number | null = null;
+
+  try {
+    const { data: sysSet } = await supabase
+      .from('admin_settings')
+      .select('value')
+      .eq('id', 'system')
+      .maybeSingle();
+
+    if (sysSet?.value) {
+      if (typeof sysSet.value.isWithdrawalEnabled === 'boolean') isWithdrawalEnabled = sysSet.value.isWithdrawalEnabled;
+      if (typeof sysSet.value.minWithdrawal === 'number') minWithdrawal = sysSet.value.minWithdrawal;
+      if (typeof sysSet.value.maxWithdrawal === 'number') maxWithdrawal = sysSet.value.maxWithdrawal;
+      if (typeof sysSet.value.withdrawalFeePercent === 'number') withdrawalFeePercent = sysSet.value.withdrawalFeePercent;
+    }
+  } catch (_e) {}
+
+  if (isWithdrawalEnabled === false) {
+    return res.status(400).json({
+      success: false,
+      error: 'Withdrawals are currently disabled by the administrator.',
+    });
+  }
+
+  if (minWithdrawal === null || isNaN(minWithdrawal) || minWithdrawal <= 0) {
+    return res.status(500).json({
+      success: false,
+      error: 'Withdrawal configuration error: Minimum withdrawal limit is not configured in Admin Settings.',
+    });
+  }
+
+  if (withdrawalFeePercent === null || isNaN(withdrawalFeePercent) || withdrawalFeePercent < 0 || withdrawalFeePercent > 50) {
+    return res.status(500).json({
+      success: false,
+      error: 'Withdrawal configuration error: Withdrawal fee percentage must be between 0% and 50% in Admin Settings.',
+    });
+  }
+
+  if (numAmount < minWithdrawal) {
+    return res.status(400).json({
+      success: false,
+      error: `Minimum withdrawal amount is ₹${minWithdrawal.toLocaleString('en-IN')}.`,
+    });
+  }
+
+  if (maxWithdrawal && maxWithdrawal > 0 && numAmount > maxWithdrawal) {
+    return res.status(400).json({
+      success: false,
+      error: `Maximum withdrawal amount is ₹${maxWithdrawal.toLocaleString('en-IN')}.`,
+    });
+  }
+
+  // Read dynamic USDT settings from admin_settings ('usdt_settings')
+  let isUsdtEnabled = false;
+  let usdtRate: number | null = null;
+
+  try {
+    const { data: usdtSet } = await supabase
+      .from('admin_settings')
+      .select('value')
+      .eq('id', 'usdt_settings')
+      .maybeSingle();
+
+    if (usdtSet?.value) {
+      isUsdtEnabled = Boolean(usdtSet.value.isEnabled);
+      if (typeof usdtSet.value.usdtRate === 'number' && usdtSet.value.usdtRate > 0) {
+        usdtRate = usdtSet.value.usdtRate;
+      }
+    }
+  } catch (_e) {}
+
+  if (!isUsdtEnabled) {
+    return res.status(400).json({
+      success: false,
+      error: 'USDT withdrawals are currently disabled in Admin Settings.',
+    });
+  }
+
+  if (!usdtRate || usdtRate <= 0) {
+    return res.status(500).json({
+      success: false,
+      error: 'USDT conversion rate is not configured in Admin Settings. Please contact administrator.',
+    });
+  }
+
+  // Financial calculations
+  const feeInr = Math.round((numAmount * (withdrawalFeePercent / 100)) * 100) / 100;
+  const netInr = Math.round((numAmount - feeInr) * 100) / 100;
+  const usdtAmount = Math.round((netInr / usdtRate) * 10000) / 10000;
+
+  try {
+    // Attempt atomic RPC execution first
+    const { data: rpcData, error: rpcErr } = await supabase.rpc('request_usdt_withdrawal', {
+      p_user_id: verifiedUserId,
+      p_gross_amount: numAmount,
+      p_network: cleanNetwork,
+      p_usdt_address: cleanAddress,
+    });
+
+    if (rpcErr) {
+      console.error('[WITHDRAW USDT RPC ERROR]:', rpcErr);
+      return res.status(400).json({
+        success: false,
+        error: rpcErr.message || 'Database error occurred during withdrawal processing.',
+      });
+    }
+
+    if (!rpcData || !rpcData.success) {
+      return res.status(400).json({
+        success: false,
+        error: rpcData?.error || 'Failed to submit withdrawal request.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'USDT withdrawal request submitted successfully.',
+      data: rpcData,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message || 'Internal withdrawal error.' });
+  }
 });
 
 // ==============================================================================
@@ -6502,7 +6757,7 @@ app.get('/api/wallet/transactions', async (req, res) => {
   }
 });
 
-app.get('/api/admin/withdrawals', async (req, res) => {
+app.get('/api/admin/withdrawals', verifyAdminAuth, async (req, res) => {
   if (!supabase) return res.json({ success: true, data: [] });
   try {
     const [withdrawalsRes, profilesRes, banksRes] = await Promise.all([
@@ -6552,6 +6807,11 @@ app.get('/api/admin/withdrawals', async (req, res) => {
         netAmount: Number(w.net_amount || w.actual_amount || w.amount || 0),
         fee: Number(w.fee || 0),
         status: w.status,
+        network: w.network || '',
+        usdtAddress: w.usdt_address || '',
+        usdtAmount: Number(w.usdt_amount || 0),
+        usdtRate: Number(w.usdt_rate || 0),
+        txHash: w.tx_hash || '',
         accountNumber: actualAccountNumber,
         ifscCode: actualIfsc,
         ifsc: actualIfsc,
@@ -6559,7 +6819,7 @@ app.get('/api/admin/withdrawals', async (req, res) => {
         accountHolderName: actualHolderName,
         bankName: actualBankName,
         bankRefNo: w.bank_ref_no || '',
-        referenceId: w.bank_ref_no || w.id,
+        referenceId: w.tx_hash || w.bank_ref_no || w.id,
         rejectedReason: w.rejection_reason || w.rejected_reason || '',
         rejectionReason: w.rejection_reason || w.rejected_reason || '',
         createdAt: w.created_at,
@@ -6586,50 +6846,115 @@ app.get('/api/admin/withdrawals', async (req, res) => {
 });
 
 const handleApproveWithdrawal = async (req: express.Request, res: express.Response) => {
-  const { withdrawalId, bankRefNo = '', adminId = 'adm_root', bankRef } = req.body;
-  const effectiveRefNo = bankRef || bankRefNo || `REF-${Date.now()}`;
-  if (!withdrawalId || !supabase) return res.status(400).json({ success: false, error: 'Missing withdrawalId' });
+  const verifiedAdminId = (req as any).adminUser?.adminId || 'admin';
+  const { withdrawalId, bankRefNo = '', txHash = '', tx_hash = '', bankRef } = req.body;
+  const effectiveRefNo = String(txHash || tx_hash || bankRef || bankRefNo || '').trim();
+
+  if (!withdrawalId || !supabase) {
+    return res.status(400).json({ success: false, error: 'Missing withdrawalId' });
+  }
 
   try {
-    const { data: w, error: fetchErr } = await supabase.from('withdrawals').select('*').eq('id', withdrawalId).single();
+    const { data: w, error: fetchErr } = await supabase
+      .from('withdrawals')
+      .select('*')
+      .eq('id', withdrawalId)
+      .single();
+
     if (fetchErr || !w) return res.status(404).json({ success: false, error: 'Withdrawal not found' });
-    if (w.status === 'COMPLETED') return res.json({ success: true, message: 'Already approved' });
+    if (w.status === 'COMPLETED') return res.json({ success: true, message: 'Already completed', alreadyProcessed: true });
+    if (w.status === 'REJECTED') {
+      return res.status(400).json({ success: false, error: 'ILLEGAL_TRANSITION: Cannot complete a previously rejected withdrawal.' });
+    }
+    if (w.status !== 'PENDING' && w.status !== 'PROCESSING') {
+      return res.status(400).json({ success: false, error: 'INVALID_STATE: Withdrawal is not in PENDING or PROCESSING state.' });
+    }
+
+    const isUsdt = Boolean(w.network || w.usdt_address || Number(w.usdt_amount || 0) > 0);
+    if (isUsdt && (!effectiveRefNo || effectiveRefNo.length < 10)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Blockchain transaction hash (TXID) is mandatory for USDT withdrawals (minimum 10 characters).',
+      });
+    }
+
+    // Attempt atomic RPC execution first
+    try {
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('approve_usdt_withdrawal', {
+        p_withdrawal_id: withdrawalId,
+        p_tx_hash: effectiveRefNo || `REF-${Date.now()}`,
+        p_admin_id: verifiedAdminId,
+      });
+
+      if (!rpcErr && rpcData?.success) {
+        return res.json(rpcData);
+      }
+      if (!rpcErr && rpcData && !rpcData.success) {
+        return res.status(400).json(rpcData);
+      }
+    } catch (_rpcErr) {}
+
+    // Fallback: Atomic status-guarded update
+    const { data: wallet, error: walErr } = await supabase
+      .from('wallets')
+      .select('*')
+      .eq('user_id', w.user_id)
+      .single();
+
+    if (walErr || !wallet) {
+      return res.status(404).json({ success: false, error: 'User wallet not found' });
+    }
+
+    const curPending = Number(wallet.pending_balance || 0);
+    const amount = Number(w.amount || 0);
+    if (curPending < amount) {
+      return res.status(400).json({
+        success: false,
+        error: `ACCOUNTING_DISCREPANCY: pending_balance (${curPending}) is less than withdrawal amount (${amount})`,
+      });
+    }
+
+    const newPending = Math.max(0, +(curPending - amount).toFixed(2));
+    const newTotalWithdrawn = +(Number(wallet.total_withdrawn || 0) + amount).toFixed(2);
+
+    await supabase.from('wallets').update({
+      pending_balance: newPending,
+      total_withdrawn: newTotalWithdrawn,
+      updated_at: new Date().toISOString(),
+    }).eq('user_id', w.user_id);
 
     await supabase.from('withdrawals').update({
       status: 'COMPLETED',
+      tx_hash: isUsdt ? effectiveRefNo : w.tx_hash,
       bank_ref_no: effectiveRefNo,
       processed_at: new Date().toISOString(),
-      processed_by: adminId,
-    }).eq('id', withdrawalId);
-
-    // Update wallet total_withdrawn
-    const { data: wallet } = await supabase.from('wallets').select('*').eq('user_id', w.user_id).single();
-    if (wallet) {
-      await supabase.from('wallets').update({
-        total_withdrawn: Number(wallet.total_withdrawn || 0) + Number(w.amount),
-        updated_at: new Date().toISOString(),
-      }).eq('user_id', w.user_id);
-    }
+      processed_by: verifiedAdminId,
+      updated_at: new Date().toISOString(),
+    }).eq('id', withdrawalId).eq('status', w.status);
 
     // Insert wallet transaction
     await supabase.from('wallet_transactions').insert({
       user_id: w.user_id,
       type: 'WITHDRAWAL',
-      amount: Number(w.amount),
-      balance_before: Number(wallet?.available_balance || 0),
-      balance_after: Number(wallet?.available_balance || 0),
+      amount: amount,
+      balance_before: Number(wallet.withdraw_balance || 0),
+      balance_after: Number(wallet.withdraw_balance || 0),
       wallet_type: 'WITHDRAWABLE',
       status: 'COMPLETED',
       reference_id: effectiveRefNo || w.id,
-      description: `🏦 Withdrawal Paid: ₹${w.amount} to A/C ${w.account_number} (Ref: ${effectiveRefNo})`,
+      description: isUsdt
+        ? `USDT Payout Disbursed: ${w.usdt_amount || 0} USDT via ${w.network || 'USDT'} (TXID: ${effectiveRefNo})`
+        : `🏦 Withdrawal Paid: ₹${amount} to A/C ${w.account_number} (Ref: ${effectiveRefNo})`,
       created_at: new Date().toISOString(),
     });
 
     // Notify user
     await supabase.from('notifications').insert({
       user_id: w.user_id,
-      title: 'Withdrawal Processed! 🏦',
-      message: `Your withdrawal of ₹${w.amount} has been paid to your bank account (${w.account_number}).`,
+      title: isUsdt ? 'USDT Withdrawal Disbursed! 🚀' : 'Withdrawal Processed! 🏦',
+      message: isUsdt
+        ? `Your withdrawal of ${w.usdt_amount || 0} USDT has been disbursed via ${w.network || 'USDT'}. TXID: ${effectiveRefNo}`
+        : `Your withdrawal of ₹${amount} has been paid to your bank account (${w.account_number}).`,
       type: 'SUCCESS',
       read: false,
       created_at: new Date().toISOString(),
@@ -6641,85 +6966,116 @@ const handleApproveWithdrawal = async (req: express.Request, res: express.Respon
   }
 };
 
-app.post('/api/admin/approve-withdrawal', handleApproveWithdrawal);
-app.post('/api/admin/withdrawals/approve', handleApproveWithdrawal);
+app.post('/api/admin/approve-withdrawal', verifyAdminAuth, handleApproveWithdrawal);
+app.post('/api/admin/withdrawals/approve', verifyAdminAuth, handleApproveWithdrawal);
 
 const handleRejectWithdrawal = async (req: express.Request, res: express.Response) => {
-  const { withdrawalId, rejectionReason = 'Verification failed', adminId = 'adm_root', reason } = req.body;
-  const effectiveReason = reason || rejectionReason || 'Verification failed';
+  const verifiedAdminId = (req as any).adminUser?.adminId || 'admin';
+  const { withdrawalId, rejectionReason = '', reason = '' } = req.body;
+  const effectiveReason = String(reason || rejectionReason || '').trim();
+
   if (!withdrawalId || !supabase) return res.status(400).json({ success: false, error: 'Missing withdrawalId' });
+  if (!effectiveReason) {
+    return res.status(400).json({ success: false, error: 'Rejection reason is mandatory.' });
+  }
 
   try {
     const { data: w, error: fetchErr } = await supabase.from('withdrawals').select('*').eq('id', withdrawalId).single();
     if (fetchErr || !w) return res.status(404).json({ success: false, error: 'Withdrawal not found' });
-    if (w.status === 'REJECTED') return res.json({ success: true, message: 'Already rejected' });
+    if (w.status === 'REJECTED') return res.json({ success: true, message: 'Already rejected', alreadyProcessed: true });
     if (w.status === 'COMPLETED' || w.status === 'PAID') {
-      return res.status(400).json({ success: false, error: 'Cannot reject a completed withdrawal' });
+      return res.status(400).json({ success: false, error: 'ILLEGAL_TRANSITION: Cannot refund an already completed withdrawal.' });
+    }
+    if (w.status !== 'PENDING' && w.status !== 'PROCESSING') {
+      return res.status(400).json({ success: false, error: 'INVALID_STATE: Withdrawal is not in PENDING state.' });
     }
 
+    // Attempt atomic RPC execution first
+    try {
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('reject_usdt_withdrawal', {
+        p_withdrawal_id: withdrawalId,
+        p_reason: effectiveReason,
+        p_admin_id: verifiedAdminId,
+      });
+
+      if (!rpcErr && rpcData?.success) {
+        return res.json(rpcData);
+      }
+      if (!rpcErr && rpcData && !rpcData.success) {
+        return res.status(400).json(rpcData);
+      }
+    } catch (_rpcErr) {}
+
+    // Fallback: Atomic status-guarded refund
     const nowIso = new Date().toISOString();
-    const amount = Number(w.amount);
+    const amount = Number(w.amount || 0);
     const userId = w.user_id;
 
-    // Update withdrawal record
+    const { data: wallet, error: walErr } = await supabase.from('wallets').select('*').eq('user_id', userId).single();
+    if (walErr || !wallet) {
+      return res.status(404).json({ success: false, error: 'User wallet not found' });
+    }
+
+    const curPending = Number(wallet.pending_balance || 0);
+    if (curPending < amount) {
+      return res.status(400).json({
+        success: false,
+        error: `ACCOUNTING_DISCREPANCY: pending_balance (${curPending}) is less than withdrawal amount (${amount})`,
+      });
+    }
+
+    const newPending = Math.max(0, +(curPending - amount).toFixed(2));
+    const curWithdraw = Number(wallet.withdraw_balance || 0);
+    const newWithdraw = +(curWithdraw + amount).toFixed(2);
+    const curRecharge = Number(wallet.recharge_balance || 0);
+    const newAvailable = +(curRecharge + newWithdraw).toFixed(2);
+
+    await supabase.from('wallets').update({
+      pending_balance: newPending,
+      withdraw_balance: newWithdraw,
+      available_balance: newAvailable,
+      updated_at: nowIso,
+    }).eq('user_id', userId);
+
     await supabase.from('withdrawals').update({
       status: 'REJECTED',
       rejection_reason: effectiveReason,
+      rejected_reason: effectiveReason,
       processed_at: nowIso,
-      processed_by: adminId,
-    }).eq('id', withdrawalId);
+      processed_by: verifiedAdminId,
+      updated_at: nowIso,
+    }).eq('id', withdrawalId).eq('status', w.status);
 
-    // Atomically refund held withdrawal balance to user's wallet
-    const { data: wallet } = await supabase.from('wallets').select('*').eq('user_id', userId).single();
-    if (wallet) {
-      const curWithdraw = Number(wallet.withdraw_balance !== undefined ? wallet.withdraw_balance : (wallet.earned_balance || wallet.available_balance || 0));
-      const curPending = Number(wallet.pending_balance || 0);
-      const newPending = Math.max(0, +(curPending - amount).toFixed(2));
-      const newWithdraw = +(curWithdraw + amount).toFixed(2);
-      const curRecharge = Number(wallet.recharge_balance || 0);
-      const newAvailable = +(curRecharge + newWithdraw).toFixed(2);
-
-      await supabase.from('wallets').update({
-        withdraw_balance: newWithdraw,
-        available_balance: newAvailable,
-        pending_balance: newPending,
-        updated_at: nowIso,
-      }).eq('user_id', userId);
-    }
-
-    // Insert reversal wallet transaction
     await supabase.from('wallet_transactions').insert({
       user_id: userId,
       type: 'WITHDRAWAL_REVERSAL',
       amount: amount,
-      balance_before: Number(wallet?.available_balance || 0),
-      balance_after: Number(wallet?.available_balance || 0) + amount,
+      balance_before: curWithdraw,
+      balance_after: newWithdraw,
       wallet_type: 'WITHDRAWABLE',
-      status: 'Completed',
+      status: 'COMPLETED',
       reference_id: w.id,
-      description: `Withdrawal Reversal: ${rejectionReason}`,
+      description: `Withdrawal Reversal (Refund): ${effectiveReason}`,
       created_at: nowIso,
     });
 
-    // Notify user
     await supabase.from('notifications').insert({
       user_id: userId,
-      title: 'Withdrawal Rejected',
-      message: `Your withdrawal request of ₹${amount} was not approved (${rejectionReason}). Funds have been refunded to your Withdraw Wallet.`,
+      title: 'Withdrawal Rejected & Refunded',
+      message: `Your withdrawal request of ₹${amount} was not approved (${effectiveReason}). Funds have been refunded to your Withdraw Wallet.`,
       type: 'WARNING',
       read: false,
       created_at: nowIso,
     });
 
-    // Record audit log
     try {
       await supabase.from('admin_audit_logs').insert({
-        admin_user_id: adminId,
+        admin_user_id: verifiedAdminId,
         action: 'REJECT_WITHDRAWAL',
         target_type: 'withdrawal',
         target_id: withdrawalId,
-        description: `Rejected withdrawal of ₹${amount} for user ${userId}: ${rejectionReason}`,
-        details: { withdrawalId, amount, rejectionReason, userId },
+        description: `Rejected withdrawal of ₹${amount} for user ${userId}: ${effectiveReason}`,
+        details: { withdrawalId, amount, rejectionReason: effectiveReason, userId },
         created_at: nowIso,
       });
     } catch (_e) {}
@@ -6730,8 +7086,8 @@ const handleRejectWithdrawal = async (req: express.Request, res: express.Respons
   }
 };
 
-app.post('/api/admin/reject-withdrawal', handleRejectWithdrawal);
-app.post('/api/admin/withdrawals/reject', handleRejectWithdrawal);
+app.post('/api/admin/reject-withdrawal', verifyAdminAuth, handleRejectWithdrawal);
+app.post('/api/admin/withdrawals/reject', verifyAdminAuth, handleRejectWithdrawal);
 
 // ==============================================================================
 // 20-MINUTE AUTOMATIC TOPUP ORDER EXPIRATION SERVICE
