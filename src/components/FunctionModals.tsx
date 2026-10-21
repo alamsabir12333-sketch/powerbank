@@ -303,15 +303,15 @@ export const InviteFriendsModal: React.FC<{
           <h5 className="font-bold text-gray-800">Tiered Referral Commissions:</h5>
           <div className="flex justify-between text-gray-600">
             <span>Tier 1 Direct Invite:</span>
-            <span className="font-bold text-[#FF6200]">10% Commission</span>
-          </div>
-          <div className="flex justify-between text-gray-600">
-            <span>Tier 2 Secondary:</span>
             <span className="font-bold text-[#FF6200]">5% Commission</span>
           </div>
           <div className="flex justify-between text-gray-600">
-            <span>Tier 3 Tertiary:</span>
+            <span>Tier 2 Secondary:</span>
             <span className="font-bold text-[#FF6200]">2% Commission</span>
+          </div>
+          <div className="flex justify-between text-gray-600">
+            <span>Tier 3 Tertiary:</span>
+            <span className="font-bold text-[#FF6200]">0.5% Commission</span>
           </div>
         </div>
       </div>
