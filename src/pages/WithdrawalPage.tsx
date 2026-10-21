@@ -282,7 +282,7 @@ export const WithdrawalPage: React.FC<WithdrawalPageProps> = ({
               <label className="text-xs font-bold text-gray-700 uppercase tracking-wider">
                 Select USDT Network
               </label>
-              <span className="text-[11px] font-semibold text-emerald-600">Manual Payout</span>
+              <span className="text-[11px] font-semibold text-emerald-600">Auto</span>
             </div>
 
             <div className="grid grid-cols-2 gap-2.5">
