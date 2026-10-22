@@ -2275,7 +2275,37 @@ async function checkAndUpdateDepositVip(userId: string): Promise<{ upgraded: boo
   }
 }
 
+// In-flight concurrency mutex to serialize simultaneous settlement requests per order reference
+const inFlightDepositSettlements = new Map<string, Promise<{ success: boolean; alreadyProcessed?: boolean; error?: string; order?: any }>>();
+
 async function settleDepositSuccess(
+  traceno: string,
+  serialNo?: string,
+  rawPayload?: any,
+  utr?: string
+): Promise<{ success: boolean; alreadyProcessed?: boolean; error?: string; order?: any }> {
+  const normTrace = String(traceno || '').trim();
+  if (!normTrace) return { success: false, error: 'Missing traceno' };
+
+  const existingPromise = inFlightDepositSettlements.get(normTrace);
+  if (existingPromise) {
+    console.log(`[SETTLEMENT][CONCURRENCY] Simultaneous settlement active for ${normTrace}. Awaiting in-flight execution.`);
+    return await existingPromise;
+  }
+
+  const settlementPromise = (async () => {
+    try {
+      return await executeSettleDepositSuccess(normTrace, serialNo, rawPayload, utr);
+    } finally {
+      inFlightDepositSettlements.delete(normTrace);
+    }
+  })();
+
+  inFlightDepositSettlements.set(normTrace, settlementPromise);
+  return await settlementPromise;
+}
+
+async function executeSettleDepositSuccess(
   traceno: string,
   serialNo?: string,
   rawPayload?: any,
@@ -2291,16 +2321,32 @@ async function settleDepositSuccess(
     .maybeSingle();
 
   if (fetchErr || !order) {
-    console.error(`[SETTLEMENT] Order not found for traceno: ${traceno}`);
+    console.error(`[SETTLEMENT][ORDER_NOT_FOUND] Order not found for traceno: ${traceno}`);
     return { success: false, error: 'ORDER_NOT_FOUND' };
   }
 
-  // 2. Idempotency check: if order is already SUCCESS / PAID / COMPLETED, verify referral commissions then return
+  const effectiveTrace = String(order.order_id || order.traceno || order.merchant_order_id || traceno).trim();
+
+  // 2. Idempotency Check 1: If order is already SUCCESS / PAID / COMPLETED, do not duplicate credit
   const statusUpper = (order.status || '').toUpperCase();
   if (statusUpper === 'SUCCESS' || statusUpper === 'PAID' || statusUpper === 'COMPLETED') {
-    console.log(`[SETTLEMENT] Order ${traceno} already settled (${order.status}). Ensuring referral commissions are settled.`);
-    const effectiveTrace = order.order_id || order.traceno || order.merchant_order_id || traceno;
-    await processReferralCommissionsServer(supabase, order.user_id, Number(order.amount), String(effectiveTrace));
+    console.log(`[SETTLEMENT][IDEMPOTENT] Order ${traceno} is already settled (${order.status}). Ensuring referral commissions.`);
+    await processReferralCommissionsServer(supabase, order.user_id, Number(order.amount), effectiveTrace);
+    return { success: true, alreadyProcessed: true, order };
+  }
+
+  // 3. Idempotency Check 2: Check wallet_ledger to ensure financial ledger entry does not already exist
+  const { data: existingLed } = await supabase
+    .from('wallet_ledger')
+    .select('id')
+    .or(`reference_id.eq.${effectiveTrace},reference_id.eq.${traceno}`)
+    .eq('direction', 'CREDIT')
+    .eq('transaction_type', 'DEPOSIT_SUCCESS')
+    .maybeSingle();
+
+  if (existingLed) {
+    console.log(`[SETTLEMENT][IDEMPOTENT] Financial ledger entry already exists for order ${effectiveTrace}. Marking deposit SUCCESS without duplicate credit.`);
+    await supabase.from('deposit_transactions').update({ status: 'SUCCESS', updated_at: new Date().toISOString() }).eq('id', order.id);
     return { success: true, alreadyProcessed: true, order };
   }
 
@@ -2310,24 +2356,11 @@ async function settleDepositSuccess(
     return { success: false, error: 'INVALID_ORDER_DATA' };
   }
 
-  // 3. Fetch user wallet
-  const { data: wallet } = await supabase
-    .from('wallets')
-    .select('*')
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  const currentRechargeBalance = Number(wallet?.recharge_balance || 0);
-  const currentWithdrawBalance = Number(wallet?.withdraw_balance || 0);
-  const newRechargeBalance = +(currentRechargeBalance + depositAmount).toFixed(2);
-  const newAvailableBalance = +(newRechargeBalance + currentWithdrawBalance).toFixed(2);
-  const newTotalRecharge = +(Number(wallet?.total_recharge || 0) + depositAmount).toFixed(2);
   const nowIso = new Date().toISOString();
 
-  const effectiveTrace = String(order.order_id || order.traceno || order.merchant_order_id || traceno).trim();
-
-  // 4. Update deposit_transactions record to SUCCESS
-  const { error: updateOrderErr } = await supabase
+  // 4. Atomic compare-and-swap database state transition:
+  // Only the first concurrent database execution can update status from 'PENDING' to 'SUCCESS'
+  const { data: claimedRows, error: claimErr } = await supabase
     .from('deposit_transactions')
     .update({
       status: 'SUCCESS',
@@ -2344,129 +2377,156 @@ async function settleDepositSuccess(
       completed_at: nowIso,
       updated_at: nowIso,
     })
-    .eq('id', order.id);
+    .eq('id', order.id)
+    .eq('status', 'PENDING')
+    .select('id, status');
 
-  if (updateOrderErr) {
-    console.error(`[SETTLEMENT] Failed to update deposit_transactions for ${traceno}:`, updateOrderErr);
-    return { success: false, error: updateOrderErr.message };
+  if (claimErr) {
+    console.error(`[SETTLEMENT][DB_ERROR] Failed to transition deposit status for ${traceno}:`, claimErr.message);
+    return { success: false, error: claimErr.message };
   }
 
-  // 5. Update wallet (Credit Topup Wallet only; withdraw_balance unchanged)
-  if (wallet) {
-    await supabase
+  if (!claimedRows || claimedRows.length === 0) {
+    console.log(`[SETTLEMENT][CONCURRENCY] Order ${traceno} was already claimed or updated by a concurrent process. Skipping credit.`);
+    return { success: true, alreadyProcessed: true, order };
+  }
+
+  console.log(`[SETTLEMENT][START] Atomic settlement lock acquired for order ${effectiveTrace}, user ${userId}, amount ₹${depositAmount}.`);
+
+  try {
+    // 5. Fetch user wallet and atomically credit Topup Wallet
+    const { data: wallet, error: walFetchErr } = await supabase
       .from('wallets')
-      .update({
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (walFetchErr) {
+      throw new Error(`Failed to fetch wallet for user ${userId}: ${walFetchErr.message}`);
+    }
+
+    const currentRechargeBalance = Number(wallet?.recharge_balance || 0);
+    const currentWithdrawBalance = Number(wallet?.withdraw_balance || 0);
+    const newRechargeBalance = +(currentRechargeBalance + depositAmount).toFixed(2);
+    const newAvailableBalance = +(newRechargeBalance + currentWithdrawBalance).toFixed(2);
+    const newTotalRecharge = +(Number(wallet?.total_recharge || 0) + depositAmount).toFixed(2);
+
+    if (wallet) {
+      const { error: walUpdateErr } = await supabase
+        .from('wallets')
+        .update({
+          recharge_balance: newRechargeBalance,
+          available_balance: newAvailableBalance,
+          total_recharge: newTotalRecharge,
+          updated_at: nowIso,
+        })
+        .eq('user_id', userId);
+
+      if (walUpdateErr) {
+        throw new Error(`Failed to credit wallet for user ${userId}: ${walUpdateErr.message}`);
+      }
+    } else {
+      const { error: walInsertErr } = await supabase.from('wallets').insert({
+        user_id: userId,
         recharge_balance: newRechargeBalance,
-        available_balance: newAvailableBalance,
+        withdraw_balance: 0,
+        available_balance: newRechargeBalance,
+        pending_balance: 0,
+        total_earned: 0,
+        total_withdrawn: 0,
         total_recharge: newTotalRecharge,
-        updated_at: nowIso,
-      })
-      .eq('user_id', userId);
-  } else {
-    await supabase.from('wallets').insert({
-      user_id: userId,
-      recharge_balance: newRechargeBalance,
-      withdraw_balance: 0,
-      available_balance: newRechargeBalance,
-      pending_balance: 0,
-      total_earned: 0,
-      total_withdrawn: 0,
-      total_recharge: newTotalRecharge,
-    });
-  }
+      });
 
-  // 6. Update or insert wallet_transactions record
-  let existingTx: any = null;
-  const { data: txExact } = await supabase
-    .from('wallet_transactions')
-    .select('id, reference_id')
-    .or(`reference_id.eq.${effectiveTrace},reference_id.eq.${traceno}`)
-    .maybeSingle();
-  existingTx = txExact;
+      if (walInsertErr) {
+        throw new Error(`Failed to create wallet for user ${userId}: ${walInsertErr.message}`);
+      }
+    }
 
-  if (!existingTx) {
-    const { data: txPending } = await supabase
+    // 6. Update or insert wallet_transactions record
+    let existingTx: any = null;
+    const { data: txExact } = await supabase
       .from('wallet_transactions')
       .select('id, reference_id')
-      .eq('user_id', userId)
-      .eq('type', 'RECHARGE')
-      .eq('amount', depositAmount)
-      .eq('status', 'Pending')
-      .order('created_at', { ascending: false })
-      .limit(1)
+      .or(`reference_id.eq.${effectiveTrace},reference_id.eq.${traceno}`)
       .maybeSingle();
-    if (txPending) {
-      existingTx = txPending;
-    }
-  }
+    existingTx = txExact;
 
-  if (existingTx) {
-    await supabase
-      .from('wallet_transactions')
-      .update({
-        status: 'Completed',
+    if (!existingTx) {
+      const { data: txPending } = await supabase
+        .from('wallet_transactions')
+        .select('id, reference_id')
+        .eq('user_id', userId)
+        .eq('type', 'RECHARGE')
+        .eq('amount', depositAmount)
+        .eq('status', 'Pending')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (txPending) {
+        existingTx = txPending;
+      }
+    }
+
+    if (existingTx) {
+      await supabase
+        .from('wallet_transactions')
+        .update({
+          status: 'Completed',
+          balance_before: currentRechargeBalance,
+          balance_after: newRechargeBalance,
+          reference_id: effectiveTrace,
+          description: `Topup Recharge of ₹${depositAmount} Credited to Recharge Wallet`,
+        })
+        .eq('id', existingTx.id);
+    } else {
+      await supabase.from('wallet_transactions').insert({
+        user_id: userId,
+        type: 'RECHARGE',
+        amount: depositAmount,
         balance_before: currentRechargeBalance,
         balance_after: newRechargeBalance,
         reference_id: effectiveTrace,
         description: `Topup Recharge of ₹${depositAmount} Credited to Recharge Wallet`,
-      })
-      .eq('id', existingTx.id);
-  } else {
-    await supabase.from('wallet_transactions').insert({
-      user_id: userId,
-      type: 'RECHARGE',
-      amount: depositAmount,
-      balance_before: currentRechargeBalance,
-      balance_after: newRechargeBalance,
-      reference_id: effectiveTrace,
-      description: `Topup Recharge of ₹${depositAmount} Credited to Recharge Wallet`,
-      wallet_type: 'TOPUP',
-      status: 'Completed',
-      created_at: nowIso,
-    });
-  }
-
-  // 6b. Reconcile companion pending deposit_transactions created for the user
-  try {
-    const { data: companionDeposits } = await supabase
-      .from('deposit_transactions')
-      .select('id, traceno')
-      .eq('user_id', userId)
-      .eq('amount', depositAmount)
-      .eq('status', 'PENDING')
-      .neq('id', order.id);
-
-    if (companionDeposits && companionDeposits.length > 0) {
-      for (const comp of companionDeposits) {
-        await supabase
-          .from('deposit_transactions')
-          .update({
-            status: 'SUCCESS',
-            gateway_status: 'SUCCESS',
-            gateway_order_id: order.gateway_order_id || null,
-            gateway_serial_no: serialNo || order.gateway_serial_no || null,
-            serial_no: serialNo || order.serial_no || null,
-            callback_received: true,
-            signature_verified: true,
-            completed_at: nowIso,
-            updated_at: nowIso,
-          })
-          .eq('id', comp.id);
-      }
+        wallet_type: 'TOPUP',
+        status: 'Completed',
+        created_at: nowIso,
+      });
     }
-  } catch (compErr) {
-    console.warn('[SETTLEMENT] Companion deposit reconciliation warning:', compErr);
-  }
 
-  // 7. Insert into wallet_ledger (Financial Audit Trail)
-  try {
-    const { data: existingLed } = await supabase
-      .from('wallet_ledger')
-      .select('id')
-      .or(`reference_id.eq.${effectiveTrace},reference_id.eq.${traceno}`)
-      .maybeSingle();
+    // 6b. Reconcile companion pending deposit_transactions created for the user
+    try {
+      const { data: companionDeposits } = await supabase
+        .from('deposit_transactions')
+        .select('id, traceno')
+        .eq('user_id', userId)
+        .eq('amount', depositAmount)
+        .eq('status', 'PENDING')
+        .neq('id', order.id);
 
-    if (!existingLed) {
+      if (companionDeposits && companionDeposits.length > 0) {
+        for (const comp of companionDeposits) {
+          await supabase
+            .from('deposit_transactions')
+            .update({
+              status: 'SUCCESS',
+              gateway_status: 'SUCCESS',
+              gateway_order_id: order.gateway_order_id || null,
+              gateway_serial_no: serialNo || order.gateway_serial_no || null,
+              serial_no: serialNo || order.serial_no || null,
+              callback_received: true,
+              signature_verified: true,
+              completed_at: nowIso,
+              updated_at: nowIso,
+            })
+            .eq('id', comp.id);
+        }
+      }
+    } catch (compErr) {
+      console.warn('[SETTLEMENT] Companion deposit reconciliation warning:', compErr);
+    }
+
+    // 7. Insert into wallet_ledger (Immutable Financial Audit Trail)
+    try {
       await supabase.from('wallet_ledger').insert({
         user_id: userId,
         wallet_type: 'RECHARGE',
@@ -2480,33 +2540,38 @@ async function settleDepositSuccess(
         description: `Topup Recharge of ₹${depositAmount} Credited to Recharge Wallet`,
         created_at: nowIso,
       });
+    } catch (ledErr) {
+      console.warn('[SETTLEMENT] wallet_ledger insert warning:', ledErr);
     }
-  } catch (ledErr) {
-    console.warn('[SETTLEMENT] Failed to insert wallet_ledger:', ledErr);
+
+    // 8. Insert In-App User Notification in notifications table
+    try {
+      await supabase.from('notifications').insert({
+        user_id: userId,
+        title: 'Recharge Successful',
+        message: `₹${depositAmount} has been added to your Topup Wallet.`,
+        type: 'RECHARGE',
+        read: false,
+        created_at: nowIso,
+      });
+    } catch (notifErr) {
+      console.warn('[SETTLEMENT] User notification insert warning:', notifErr);
+    }
+
+    // 9. Process Referral Commission for referrers
+    await processReferralCommissionsServer(supabase, userId, depositAmount, effectiveTrace);
+
+    // 10. Check & update deposit-based VIP upgrades (VIP 3, 4, 5, 6)
+    await checkAndUpdateDepositVip(userId);
+
+    console.log(`[SETTLEMENT][COMPLETED] Success: ₹${depositAmount} credited to user ${userId} for order ${traceno}.`);
+    return { success: true, order: { ...order, status: 'SUCCESS' } };
+  } catch (fatalErr: any) {
+    console.error(`[SETTLEMENT][FATAL_ERROR] Error updating wallet for order ${effectiveTrace}:`, fatalErr.message);
+    // Roll back status to PENDING so that reconciliation or next callback can retry safely
+    await supabase.from('deposit_transactions').update({ status: 'PENDING' }).eq('id', order.id);
+    return { success: false, error: fatalErr.message };
   }
-
-  // 8. Insert In-App User Notification in notifications table
-  try {
-    await supabase.from('notifications').insert({
-      user_id: userId,
-      title: 'Recharge Successful',
-      message: `₹${depositAmount} has been added to your Topup Wallet.`,
-      type: 'RECHARGE',
-      read: false,
-      created_at: nowIso,
-    });
-  } catch (notifErr) {
-    console.warn('[SETTLEMENT] Failed to insert user notification:', notifErr);
-  }
-
-  // 9. Process Referral Commission for referrers
-  await processReferralCommissionsServer(supabase, userId, depositAmount, effectiveTrace);
-
-  // 10. Check & update deposit-based VIP upgrades (VIP 3, 4, 5, 6)
-  await checkAndUpdateDepositVip(userId);
-
-  console.log(`[SETTLEMENT] Success: ₹${depositAmount} credited to user ${userId} for order ${traceno}.`);
-  return { success: true, order: { ...order, status: 'SUCCESS' } };
 }
 
 // ==============================================================================
@@ -2524,7 +2589,7 @@ async function handlePaymentCallback(req: express.Request, res: express.Response
   const signature = body.Signature || body.signature || '';
   const remark = body.Remark || body.remark || '';
 
-  console.log(`[UNIVEPAY][CALLBACK] Received callback: Traceno=${traceno}, Status=${status}, Amount=${amount}, Merchno=${merchno}, SerialNo=${serialNo}`);
+  console.log(`[UNIVEPAY][CALLBACK][RECEIVED] Traceno=${traceno}, Status=${status}, Amount=${amount}, Merchno=${merchno}, SerialNo=${serialNo}`);
 
   await recordGatewayLog({
     endpoint: '/api/univepay/payment-callback',
@@ -2548,15 +2613,14 @@ async function handlePaymentCallback(req: express.Request, res: express.Response
     } catch (_e) {}
   }
 
-  // PART 15: MERCHANT NUMBER VERIFICATION
+  // MERCHANT NUMBER VERIFICATION
   if (merchantNo && merchno && merchno !== merchantNo) {
-    console.warn(`[UNIVEPAY][CALLBACK] Merchant mismatch warning! Expected: ${merchantNo}, Received: ${merchno}`);
+    console.warn(`[UNIVEPAY][CALLBACK][MERCHANT_WARN] Expected: ${merchantNo}, Received: ${merchno}`);
   }
 
-  // PART 17: SIGNATURE VERIFICATION (Dual support: Sorted params formula & Positional string formula)
-  // Strict Enforcement: Missing or invalid signature MUST immediately return 400 SIGNATURE_ERROR
+  // SIGNATURE VERIFICATION (Dual support: Sorted params formula & Positional string formula)
   if (!signature) {
-    console.error(`[UNIVEPAY][CALLBACK] Missing signature in callback for traceno: ${traceno}`);
+    console.error(`[UNIVEPAY][CALLBACK][SIG_FAIL] Missing signature for traceno: ${traceno}`);
     return res.status(400).send('SIGNATURE_ERROR');
   }
 
@@ -2570,17 +2634,19 @@ async function handlePaymentCallback(req: express.Request, res: express.Response
     signature.toUpperCase() === positionalFullSig;
 
   if (!isSigValid) {
-    console.error(`[UNIVEPAY][CALLBACK] Signature verification failed for traceno: ${traceno}`);
+    console.error(`[UNIVEPAY][CALLBACK][SIG_FAIL] Signature verification failed for traceno: ${traceno}`);
     return res.status(400).send('SIGNATURE_ERROR');
   }
 
-  // PART 14: REQUIRED FIELDS CHECK
+  console.log(`[UNIVEPAY][CALLBACK][SIG_OK] Valid signature verified for traceno: ${traceno}`);
+
+  // REQUIRED FIELDS CHECK
   if (!status || !traceno) {
-    console.error('[UNIVEPAY][CALLBACK] Missing required fields in callback (Status or Traceno).');
+    console.error('[UNIVEPAY][CALLBACK][MISSING_FIELDS] Missing required fields (Status or Traceno).');
     return res.status(400).send('MISSING_REQUIRED_FIELDS');
   }
 
-  // PART 19: TRACENO VERIFICATION (ORDER MUST EXIST)
+  // TRACENO VERIFICATION (ORDER MUST EXIST)
   let dbOrder: any = null;
   if (supabase) {
     const { data, error: fetchErr } = await supabase
@@ -2590,33 +2656,38 @@ async function handlePaymentCallback(req: express.Request, res: express.Response
       .maybeSingle();
 
     if (fetchErr || !data) {
-      console.error(`[UNIVEPAY][CALLBACK] Order not found for Traceno: ${traceno}`);
+      console.error(`[UNIVEPAY][CALLBACK][ORDER_NOT_FOUND] Order not found for Traceno: ${traceno}`);
       return res.status(400).send('ORDER_NOT_FOUND');
     }
     dbOrder = data;
+    console.log(`[UNIVEPAY][CALLBACK][ORDER_MATCH] Matched DB Order ID: ${dbOrder.id}, Amount: ₹${dbOrder.amount}, Status: ${dbOrder.status}`);
   }
 
-  // PART 18: AMOUNT VERIFICATION
+  // AMOUNT VERIFICATION (Reject on mismatch exceeding 0.05)
   if (dbOrder && amount) {
     const callbackAmountNum = parseFloat(amount);
     const dbAmountNum = parseFloat(dbOrder.amount);
-    if (!isNaN(callbackAmountNum) && !isNaN(dbAmountNum) && Math.abs(callbackAmountNum - dbAmountNum) > 0.01) {
-      console.warn(`[UNIVEPAY][CALLBACK] Amount mismatch notice! DB: ${dbAmountNum}, Callback: ${callbackAmountNum}`);
+    if (!isNaN(callbackAmountNum) && !isNaN(dbAmountNum) && Math.abs(callbackAmountNum - dbAmountNum) > 0.05) {
+      console.error(`[UNIVEPAY][CALLBACK][AMOUNT_MISMATCH] DB: ${dbAmountNum}, Callback: ${callbackAmountNum}. Rejecting.`);
+      return res.status(400).send('AMOUNT_MISMATCH');
     }
   }
 
-  console.log('[UNIVEPAY][VERIFY] Merchant verified: OK, Order verified: OK, Amount verified: OK, Signature verified: OK');
-
-  // PART 20 & 21: ATOMIC & IDEMPOTENT SETTLEMENT
+  // ATOMIC & IDEMPOTENT SETTLEMENT
   if ((status === 'SUCCESS' || status === '00' || status === 'PAID') && traceno) {
+    console.log(`[UNIVEPAY][CALLBACK][SETTLEMENT_START] Initiating settlement for ${traceno}`);
     const settlementRes = await settleDepositSuccess(traceno, serialNo, body, remark);
-    if (!settlementRes.success && !settlementRes.alreadyProcessed) {
-      console.error('[GATEWAY][SETTLEMENT] Error crediting deposit:', settlementRes.error);
+    if (settlementRes.alreadyProcessed) {
+      console.log(`[UNIVEPAY][CALLBACK][DUPLICATE_IGNORED] Order ${traceno} was already credited. Ignored duplicate.`);
+    } else if (!settlementRes.success) {
+      console.error('[UNIVEPAY][CALLBACK][SETTLEMENT_ERROR] Error crediting deposit:', settlementRes.error);
       return res.status(500).send('SETTLEMENT_ERROR');
     }
+  } else {
+    console.log(`[UNIVEPAY][CALLBACK][NON_SUCCESS_STATUS] Status ${status} received for order ${traceno}. No credit.`);
   }
 
-  // PART 40: RETURN PLAIN TEXT SUCCESS
+  // RETURN PLAIN TEXT SUCCESS ACKNOWLEDGEMENT
   return res.send('SUCCESS');
 }
 
