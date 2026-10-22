@@ -216,10 +216,15 @@ serve(async (req) => {
     // Log the callback safely for audit
     try {
       await supabase.from("gateway_logs").insert({
+        endpoint: "/functions/v1/payment-callback",
+        direction: "INBOUND",
+        traceno: orderId,
         action: "WEBHOOK_CALLBACK",
         order_id: orderId,
         request_payload: { raw: bodyText, parsed: params },
         status: status || "RECEIVED",
+        gateway_status: status || null,
+        created_at: new Date().toISOString(),
       });
     } catch (_e) {}
 
@@ -306,13 +311,16 @@ serve(async (req) => {
         return new Response("DATABASE_UPDATE_ERROR", { status: 500 });
       }
 
-      // 5. Update wallet (Credit Topup Wallet only; withdraw_balance unchanged)
+      const newTotalRecharge = +(Number(wallet?.total_recharge || 0) + depositAmount).toFixed(2);
+
+      // 5. Update wallet (Credit Topup Wallet and total_recharge; withdraw_balance unchanged)
       if (wallet) {
         await supabase
           .from("wallets")
           .update({
             recharge_balance: newRechargeBalance,
             available_balance: newAvailableBalance,
+            total_recharge: newTotalRecharge,
             updated_at: nowIso,
           })
           .eq("user_id", userId);
@@ -325,15 +333,34 @@ serve(async (req) => {
           pending_balance: 0,
           total_earned: 0,
           total_withdrawn: 0,
+          total_recharge: newTotalRecharge,
         });
       }
 
       // 6. Update or insert wallet_transactions record
-      const { data: existingTx } = await supabase
+      let existingTx: any = null;
+      const { data: txExact } = await supabase
         .from("wallet_transactions")
-        .select("id")
-        .eq("reference_id", effectiveTrace)
+        .select("id, reference_id")
+        .or(`reference_id.eq.${effectiveTrace},reference_id.eq.${orderId}`)
         .maybeSingle();
+      existingTx = txExact;
+
+      if (!existingTx) {
+        const { data: txPending } = await supabase
+          .from("wallet_transactions")
+          .select("id, reference_id")
+          .eq("user_id", userId)
+          .eq("type", "RECHARGE")
+          .eq("amount", depositAmount)
+          .eq("status", "Pending")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (txPending) {
+          existingTx = txPending;
+        }
+      }
 
       if (existingTx) {
         await supabase
@@ -342,6 +369,7 @@ serve(async (req) => {
             status: "Completed",
             balance_before: currentRechargeBalance,
             balance_after: newRechargeBalance,
+            reference_id: effectiveTrace,
             description: `Topup Recharge of ₹${depositAmount} Credited to Recharge Wallet`,
           })
           .eq("id", existingTx.id);
@@ -359,6 +387,36 @@ serve(async (req) => {
           created_at: nowIso,
         });
       }
+
+      // Reconcile companion pending deposit_transactions created for the user
+      try {
+        const { data: companionDeposits } = await supabase
+          .from("deposit_transactions")
+          .select("id, traceno")
+          .eq("user_id", userId)
+          .eq("amount", depositAmount)
+          .eq("status", "PENDING")
+          .neq("id", order.id);
+
+        if (companionDeposits && companionDeposits.length > 0) {
+          for (const comp of companionDeposits) {
+            await supabase
+              .from("deposit_transactions")
+              .update({
+                status: "SUCCESS",
+                gateway_status: "SUCCESS",
+                gateway_order_id: order.gateway_order_id || null,
+                gateway_serial_no: serialNo || order.gateway_serial_no || null,
+                serial_no: serialNo || order.serial_no || null,
+                callback_received: true,
+                signature_verified: true,
+                completed_at: nowIso,
+                updated_at: nowIso,
+              })
+              .eq("id", comp.id);
+          }
+        }
+      } catch (_compErr) {}
 
       // 7. Insert Immutable Financial Ledger Record (wallet_ledger)
       await supabase.from("wallet_ledger").insert({

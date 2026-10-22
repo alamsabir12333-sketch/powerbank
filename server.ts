@@ -79,7 +79,7 @@ const UNIVEPAY_SECRET = process.env.UNIVEPAY_SECRET || '';
 const UNIVEPAY_CREATE_DEPOSIT_URL =
   process.env.UNIVEPAY_CREATE_DEPOSIT_URL || 'https://ydpay.univepay.com/Payment/GlobalPay';
 const UNIVEPAY_QUERY_DEPOSIT_URL =
-  process.env.UNIVEPAY_QUERY_DEPOSIT_URL || 'https://ydpay.univepay.com/Payment/OrderQuery';
+  process.env.UNIVEPAY_QUERY_DEPOSIT_URL || 'https://ydss.univepay.com/api/Collect/OrderQueryV2';
 const UNIVEPAY_WITHDRAWAL_URL =
   process.env.UNIVEPAY_WITHDRAWAL_URL || 'https://ydpay.univepay.com/Payment/Cashout';
 const UNIVEPAY_QUERY_WITHDRAWAL_URL =
@@ -1081,7 +1081,11 @@ const handleCreatePayment = async (req: express.Request, res: express.Response) 
   let merchNo = UNIVEPAY_MERCHANT_NO || process.env.GATEWAY_MERCH_NO || 'C26854';
   let secretKey = UNIVEPAY_SECRET || process.env.GATEWAY_SECRET_KEY || 'secret';
   let baseUrl = UNIVEPAY_CREATE_DEPOSIT_URL ? UNIVEPAY_CREATE_DEPOSIT_URL.replace(/\/Payment\/GlobalPay.*$/, '') : 'https://ydpay.univepay.com';
-  let notifyUrl = process.env.GATEWAY_NOTIFY_URL || 'https://evhwqlnymvoduclmzshz.supabase.co/functions/v1/payment-callback';
+  let defaultAppUrl = getAppUrl(req);
+  if (defaultAppUrl.includes('localhost') || defaultAppUrl.includes('127.0.0.1')) {
+    defaultAppUrl = 'https://gainpower-top-1.com';
+  }
+  let notifyUrl = process.env.GATEWAY_NOTIFY_URL || `${defaultAppUrl}/api/univepay/payment-callback`;
   const callbackUrl = process.env.GATEWAY_CALLBACK_URL || 'https://gainpower-top-1.com/wallet?status=success';
 
   if (supabase) {
@@ -1091,7 +1095,7 @@ const handleCreatePayment = async (req: express.Request, res: express.Response) 
         if (config.merchant_no && !UNIVEPAY_MERCHANT_NO) merchNo = config.merchant_no;
         if (config.secret_key && !UNIVEPAY_SECRET) secretKey = config.secret_key;
         if (config.base_url) baseUrl = config.base_url;
-        if (config.notify_url) notifyUrl = config.notify_url;
+        if (config.notify_url && config.notify_url.trim() !== '') notifyUrl = config.notify_url;
       }
     } catch (_e) {}
   }
@@ -1102,20 +1106,41 @@ const handleCreatePayment = async (req: express.Request, res: express.Response) 
   const traceno = req.body.orderId || req.body.traceno || `DEP${timestamp}${randomSuffix}`;
   const formattedAmount = numAmount.toFixed(2);
 
-  // Initialize canonical deposit transaction record and pending wallet transaction record
+  // Initialize canonical deposit transaction record and pending wallet transaction record (idempotent upsert)
   if (supabase) {
     try {
-      await supabase.from('deposit_transactions').insert({
-        order_id: traceno,
-        traceno: traceno,
-        merchant_order_id: traceno,
-        user_id: authenticatedUserId,
-        amount: numAmount,
-        currency: 'INR',
-        pay_code: payCode,
-        status: 'PENDING',
-        channel: 'UNIVEPAY',
-      });
+      const { data: existingDep } = await supabase
+        .from('deposit_transactions')
+        .select('id')
+        .or(`traceno.eq.${traceno},merchant_order_id.eq.${traceno},order_id.eq.${traceno}`)
+        .maybeSingle();
+
+      if (existingDep) {
+        await supabase
+          .from('deposit_transactions')
+          .update({
+            user_id: authenticatedUserId,
+            amount: numAmount,
+            currency: 'INR',
+            pay_code: payCode,
+            status: 'PENDING',
+            channel: 'UNIVEPAY',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', existingDep.id);
+      } else {
+        await supabase.from('deposit_transactions').insert({
+          order_id: traceno,
+          traceno: traceno,
+          merchant_order_id: traceno,
+          user_id: authenticatedUserId,
+          amount: numAmount,
+          currency: 'INR',
+          pay_code: payCode,
+          status: 'PENDING',
+          channel: 'UNIVEPAY',
+        });
+      }
     } catch (e: any) {
       console.warn('[GATEWAY][CREATE] Insert deposit_transactions warning:', e.message);
     }
@@ -1123,17 +1148,26 @@ const handleCreatePayment = async (req: express.Request, res: express.Response) 
     try {
       const { data: curWallet } = await supabase.from('wallets').select('recharge_balance').eq('user_id', authenticatedUserId).maybeSingle();
       const curBal = Number(curWallet?.recharge_balance || 0);
-      await supabase.from('wallet_transactions').insert({
-        user_id: authenticatedUserId,
-        type: 'RECHARGE',
-        amount: numAmount,
-        balance_before: curBal,
-        balance_after: curBal,
-        reference_id: traceno,
-        description: `Recharge Order #${traceno}`,
-        wallet_type: 'TOPUP',
-        status: 'Pending',
-      });
+
+      const { data: existingWtx } = await supabase
+        .from('wallet_transactions')
+        .select('id')
+        .eq('reference_id', traceno)
+        .maybeSingle();
+
+      if (!existingWtx) {
+        await supabase.from('wallet_transactions').insert({
+          user_id: authenticatedUserId,
+          type: 'RECHARGE',
+          amount: numAmount,
+          balance_before: curBal,
+          balance_after: curBal,
+          reference_id: traceno,
+          description: `Recharge Order #${traceno}`,
+          wallet_type: 'TOPUP',
+          status: 'Pending',
+        });
+      }
     } catch (wErr: any) {
       console.warn('[GATEWAY][CREATE] Insert pending wallet_transactions warning:', wErr.message);
     }
@@ -2287,6 +2321,7 @@ async function settleDepositSuccess(
   const currentWithdrawBalance = Number(wallet?.withdraw_balance || 0);
   const newRechargeBalance = +(currentRechargeBalance + depositAmount).toFixed(2);
   const newAvailableBalance = +(newRechargeBalance + currentWithdrawBalance).toFixed(2);
+  const newTotalRecharge = +(Number(wallet?.total_recharge || 0) + depositAmount).toFixed(2);
   const nowIso = new Date().toISOString();
 
   const effectiveTrace = String(order.order_id || order.traceno || order.merchant_order_id || traceno).trim();
@@ -2323,6 +2358,7 @@ async function settleDepositSuccess(
       .update({
         recharge_balance: newRechargeBalance,
         available_balance: newAvailableBalance,
+        total_recharge: newTotalRecharge,
         updated_at: nowIso,
       })
       .eq('user_id', userId);
@@ -2335,15 +2371,34 @@ async function settleDepositSuccess(
       pending_balance: 0,
       total_earned: 0,
       total_withdrawn: 0,
+      total_recharge: newTotalRecharge,
     });
   }
 
   // 6. Update or insert wallet_transactions record
-  const { data: existingTx } = await supabase
+  let existingTx: any = null;
+  const { data: txExact } = await supabase
     .from('wallet_transactions')
-    .select('id')
+    .select('id, reference_id')
     .or(`reference_id.eq.${effectiveTrace},reference_id.eq.${traceno}`)
     .maybeSingle();
+  existingTx = txExact;
+
+  if (!existingTx) {
+    const { data: txPending } = await supabase
+      .from('wallet_transactions')
+      .select('id, reference_id')
+      .eq('user_id', userId)
+      .eq('type', 'RECHARGE')
+      .eq('amount', depositAmount)
+      .eq('status', 'Pending')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (txPending) {
+      existingTx = txPending;
+    }
+  }
 
   if (existingTx) {
     await supabase
@@ -2352,6 +2407,7 @@ async function settleDepositSuccess(
         status: 'Completed',
         balance_before: currentRechargeBalance,
         balance_after: newRechargeBalance,
+        reference_id: effectiveTrace,
         description: `Topup Recharge of ₹${depositAmount} Credited to Recharge Wallet`,
       })
       .eq('id', existingTx.id);
@@ -2368,6 +2424,38 @@ async function settleDepositSuccess(
       status: 'Completed',
       created_at: nowIso,
     });
+  }
+
+  // 6b. Reconcile companion pending deposit_transactions created for the user
+  try {
+    const { data: companionDeposits } = await supabase
+      .from('deposit_transactions')
+      .select('id, traceno')
+      .eq('user_id', userId)
+      .eq('amount', depositAmount)
+      .eq('status', 'PENDING')
+      .neq('id', order.id);
+
+    if (companionDeposits && companionDeposits.length > 0) {
+      for (const comp of companionDeposits) {
+        await supabase
+          .from('deposit_transactions')
+          .update({
+            status: 'SUCCESS',
+            gateway_status: 'SUCCESS',
+            gateway_order_id: order.gateway_order_id || null,
+            gateway_serial_no: serialNo || order.gateway_serial_no || null,
+            serial_no: serialNo || order.serial_no || null,
+            callback_received: true,
+            signature_verified: true,
+            completed_at: nowIso,
+            updated_at: nowIso,
+          })
+          .eq('id', comp.id);
+      }
+    }
+  } catch (compErr) {
+    console.warn('[SETTLEMENT] Companion deposit reconciliation warning:', compErr);
   }
 
   // 7. Insert into wallet_ledger (Financial Audit Trail)
@@ -2546,8 +2634,18 @@ const handleOrderQuery = async (req: express.Request, res: express.Response) => 
     return res.status(400).json({ success: false, error: 'Traceno / OrderId is required' });
   }
 
-  const merchantNo = UNIVEPAY_MERCHANT_NO;
-  const secretKey = UNIVEPAY_SECRET;
+  let merchantNo = UNIVEPAY_MERCHANT_NO || 'C26854';
+  let secretKey = UNIVEPAY_SECRET || '';
+
+  if (supabase) {
+    try {
+      const { data: config } = await supabase.from('gateway_settings').select('*').eq('is_active', true).maybeSingle();
+      if (config) {
+        if (config.merchant_no && !UNIVEPAY_MERCHANT_NO) merchantNo = config.merchant_no;
+        if (config.secret_key && !UNIVEPAY_SECRET) secretKey = config.secret_key;
+      }
+    } catch (_e) {}
+  }
 
   // First check database state
   let dbOrder: any = null;
@@ -2558,6 +2656,23 @@ const handleOrderQuery = async (req: express.Request, res: express.Response) => 
       .or(`traceno.eq.${traceno},merchant_order_id.eq.${traceno},order_id.eq.${traceno},id.eq.${traceno}`)
       .maybeSingle();
     dbOrder = data;
+
+    // If order was created via dual placeholder flow, check if there's a companion order that already succeeded
+    if (dbOrder && dbOrder.status === 'PENDING' && dbOrder.user_id) {
+      const { data: compOrder } = await supabase
+        .from('deposit_transactions')
+        .select('*')
+        .eq('user_id', dbOrder.user_id)
+        .eq('amount', dbOrder.amount)
+        .neq('id', dbOrder.id)
+        .in('status', ['SUCCESS', 'PAID', 'COMPLETED'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (compOrder) {
+        dbOrder = compOrder;
+      }
+    }
   }
 
   if (dbOrder && (dbOrder.status === 'SUCCESS' || dbOrder.status === 'PAID' || dbOrder.status === 'COMPLETED')) {
@@ -2584,47 +2699,95 @@ const handleOrderQuery = async (req: express.Request, res: express.Response) => 
     });
   }
 
-  // Signature: Merchno + Traceno + secretKey -> MD5 -> Uppercase
-  const signString = `${merchantNo}${traceno}${secretKey}`;
-  const signature = md5(signString);
+  const formattedAmount = (Number(req.body?.amount || dbOrder?.amount || 0)).toFixed(2);
+  const targetTraceno = String(dbOrder?.traceno || traceno).trim();
 
-  const requestBody = new URLSearchParams({
+  // 1. Authoritative V2 Query (JSON POST with Merchno, Traceno, Amount, sorted Signature)
+  const v2Payload: Record<string, string> = {
     Merchno: merchantNo,
-    Traceno: traceno,
-    Signature: signature,
-  });
+    Traceno: targetTraceno,
+    Amount: formattedAmount,
+  };
+  v2Payload.Signature = generateSortedSignature(v2Payload, secretKey);
 
   try {
-    const response = await fetch(UNIVEPAY_QUERY_DEPOSIT_URL, {
+    const v2Url = UNIVEPAY_QUERY_DEPOSIT_URL.includes('OrderQueryV2')
+      ? UNIVEPAY_QUERY_DEPOSIT_URL
+      : 'https://ydss.univepay.com/api/Collect/OrderQueryV2';
+
+    const response = await fetch(v2Url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: requestBody.toString(),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(v2Payload),
+      signal: AbortSignal.timeout(8000),
     });
 
     const result = await response.json().catch(() => null);
 
-    if (result && (result.data?.status === 'SUCCESS' || result.status === '00' || result.status === 'SUCCESS')) {
-      // Settle deposit atomically & idempotently
-      await settleDepositSuccess(
-        traceno,
-        result.data?.serialNo || result.serialNo || '',
-        result,
-        result.data?.remark || result.remark
-      );
+    if (result && (result.code === 200 || result.status === '00' || result.status === 'SUCCESS')) {
+      const data = result.data || result;
+      const gatewayStatus = String(data.status || result.status || '').toUpperCase();
+      if (gatewayStatus === 'SUCCESS' || gatewayStatus === '00' || gatewayStatus === 'PAID') {
+        await settleDepositSuccess(
+          targetTraceno,
+          data.serialNo || result.serialNo || '',
+          result,
+          data.remark || result.remark || ''
+        );
 
-      return res.json({
-        success: true,
-        status: 'SUCCESS',
-        orderId: traceno,
-        amount: Number(result.data?.amount || result.amount || dbOrder?.amount || 0),
-        data: result.data || result,
+        return res.json({
+          success: true,
+          status: 'SUCCESS',
+          orderId: targetTraceno,
+          amount: Number(data.amount || dbOrder?.amount || formattedAmount),
+          data: data,
+        });
+      }
+    }
+
+    // Fallback: If V2 did not succeed, try legacy URL-encoded endpoint
+    if (!result || (result.code !== 200 && result.status !== '00')) {
+      const legacyUrl = 'https://ydpay.univepay.com/Payment/OrderQuery';
+      const signString = `${merchantNo}${targetTraceno}${secretKey}`;
+      const signature = md5(signString);
+      const legacyBody = new URLSearchParams({
+        Merchno: merchantNo,
+        Traceno: targetTraceno,
+        Signature: signature,
       });
+
+      const legacyRes = await fetch(legacyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: legacyBody.toString(),
+        signal: AbortSignal.timeout(5000),
+      }).catch(() => null);
+
+      if (legacyRes && legacyRes.ok) {
+        const legacyResult = await legacyRes.json().catch(() => null);
+        if (legacyResult && (legacyResult.data?.status === 'SUCCESS' || legacyResult.status === '00' || legacyResult.status === 'SUCCESS')) {
+          await settleDepositSuccess(
+            targetTraceno,
+            legacyResult.data?.serialNo || legacyResult.serialNo || '',
+            legacyResult,
+            legacyResult.data?.remark || legacyResult.remark
+          );
+
+          return res.json({
+            success: true,
+            status: 'SUCCESS',
+            orderId: targetTraceno,
+            amount: Number(legacyResult.data?.amount || legacyResult.amount || dbOrder?.amount || 0),
+            data: legacyResult.data || legacyResult,
+          });
+        }
+      }
     }
 
     return res.json({
       success: true,
       status: result?.data?.status || result?.status || (dbOrder ? dbOrder.status : 'PENDING'),
-      orderId: traceno,
+      orderId: targetTraceno,
       data: result,
     });
   } catch (err: any) {
