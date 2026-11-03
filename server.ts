@@ -7155,280 +7155,83 @@ app.post('/api/admin/approve-recharge', verifyAdminAuth, async (req, res) => {
 
   const safeAdminId = verifiedAdminId;
   const { paymentId } = req.body;
-  if (!paymentId || !supabase) return res.status(400).json({ success: false, error: 'Missing paymentId' });
+  if (!paymentId || !isValidUUID(paymentId)) {
+    return res.status(400).json({ success: false, error: 'Valid paymentId UUID is required.' });
+  }
+  if (!supabase) {
+    return res.status(503).json({ success: false, error: 'Database service unavailable.' });
+  }
 
   try {
-    // 1. Primary: Atomic Database-Side Settlement RPC with Exclusive Row Locks
-    let rpcSuccess = false;
-    let rpcOutput: any = null;
+    // ATOMIC SETTLEMENT ONLY: Call database RPC with row locks and fail-closed transaction
+    const { data: rpcOutput, error: rpcErr } = await supabase.rpc('settle_manual_upi_deposit', {
+      p_payment_id: paymentId,
+      p_admin_id: safeAdminId,
+    });
 
-    try {
-      const { data: rpcRes, error: rpcErr } = await supabase.rpc('settle_manual_upi_deposit', {
-        p_payment_id: paymentId,
-        p_admin_id: safeAdminId,
+    // FAIL CLOSED: If RPC is missing (PGRST202/42883), errored, timed out, or returned null, return 503 without manual fallback
+    if (rpcErr || !rpcOutput) {
+      console.error('[APPROVE-RECHARGE] settle_manual_upi_deposit RPC failure:', rpcErr);
+      return res.status(503).json({
+        success: false,
+        error: 'Database settlement service unavailable. The required atomic settlement RPC failed, timed out, or is missing. No balance was modified.',
+        code: rpcErr?.code || 'RPC_UNAVAILABLE',
+        details: rpcErr?.message || 'Empty or invalid response from settlement RPC',
       });
-
-      if (!rpcErr && rpcRes) {
-        rpcOutput = rpcRes;
-        rpcSuccess = true;
-      } else if (rpcErr) {
-        console.warn('[APPROVE-RECHARGE] settle_manual_upi_deposit RPC notice:', rpcErr.message);
-      }
-    } catch (rpcCallErr: any) {
-      console.warn('[APPROVE-RECHARGE] RPC invocation notice:', rpcCallErr.message);
     }
 
-    if (rpcSuccess && rpcOutput) {
-      if (!rpcOutput.success) {
-        return res.status(400).json({ success: false, error: rpcOutput.message || rpcOutput.error || 'Approval failed' });
+    if (!rpcOutput.success) {
+      const errCode = rpcOutput.error || '';
+      if (errCode === 'PAYMENT_NOT_FOUND') {
+        return res.status(404).json({ success: false, error: rpcOutput.message || 'Payment record not found.' });
       }
-
-      if (rpcOutput.already_processed || rpcOutput.already_approved || rpcOutput.already_credited) {
-        return res.json({
-          success: true,
-          message: 'Recharge was already approved previously.',
-          already_approved: true,
-          already_credited: true,
-        });
+      if (errCode === 'PAYMENT_ALREADY_TERMINATED') {
+        return res.status(400).json({ success: false, error: rpcOutput.message || 'Cannot approve a deposit that has already been rejected, cancelled, or failed.' });
       }
-
-      const settledUserId = rpcOutput.user_id;
-      const settledAmount = Number(rpcOutput.amount);
-      const settledOrderRef = rpcOutput.order_id || paymentId;
-
-      // Check & update deposit-based VIP upgrades (VIP 3, 4, 5, 6)
-      try {
-        await checkAndUpdateDepositVip(settledUserId);
-      } catch {}
-
-      // Process L1/L2/L3 referral commissions for valid topup
-      try {
-        await processReferralCommissionsServer(supabase, settledUserId, settledAmount, String(settledOrderRef));
-      } catch (_refCommErr: any) {
-        console.warn('[APPROVE-RECHARGE] Referral commission notice:', _refCommErr.message);
+      if (errCode === 'UNAUTHORIZED_ADMIN_ROLE') {
+        return res.status(403).json({ success: false, error: rpcOutput.message || 'Unauthorized admin role.' });
       }
+      return res.status(400).json({ success: false, error: rpcOutput.message || rpcOutput.error || 'Approval failed.' });
+    }
 
+    if (rpcOutput.already_processed || rpcOutput.already_approved || rpcOutput.already_credited) {
       return res.json({
         success: true,
-        message: `Recharge of ₹${settledAmount.toFixed(2)} approved successfully and credited to user's recharge balance.`,
-        newRechargeBalance: rpcOutput.recharge_balance,
-        newAvailableBalance: rpcOutput.available_balance,
+        message: 'Recharge was already approved previously.',
+        already_approved: true,
+        already_credited: true,
       });
     }
 
-    // 2. Fallback: Sequential reconciliation (if RPC not yet applied to database)
-    const adminId = safeAdminId;
-    let { data: payment, error: fetchErr } = await supabase.from('payments').select('*').eq('id', paymentId).maybeSingle();
-    let isGateway = false;
-
-    if (!payment) {
-      const { data: dep } = await supabase.from('deposit_transactions').select('*').eq('id', paymentId).maybeSingle();
-      if (dep) {
-        payment = {
-          id: dep.id,
-          user_id: dep.user_id,
-          amount: dep.amount,
-          status: dep.status,
-          utr_number: dep.utr || dep.serial_no || dep.gateway_serial_no || dep.order_id,
-          utr: dep.utr || dep.serial_no || dep.gateway_serial_no || dep.order_id,
-          order_id: dep.order_id || dep.traceno,
-        };
-        isGateway = true;
-      }
-    }
-
-    if (!payment) return res.status(404).json({ success: false, error: 'Payment record not found' });
-    const statusUpper = (payment.status || '').toUpperCase();
-    if (statusUpper === 'PAID' || statusUpper === 'SUCCESS' || statusUpper === 'COMPLETED') {
-      return res.json({ success: true, message: 'Recharge was already approved previously.', already_approved: true });
-    }
-    if (statusUpper === 'REJECTED' || statusUpper === 'CANCELLED' || statusUpper === 'FAILED') {
-      return res.status(400).json({ success: false, error: `Cannot approve deposit with terminal status: ${statusUpper}` });
-    }
-
-    const numAmount = Number(payment.amount);
-    if (!numAmount || isNaN(numAmount) || numAmount <= 0) {
-      return res.status(400).json({ success: false, error: 'Invalid payment amount.' });
-    }
-
-    const orderRef = payment.order_id || payment.utr_number || payment.id;
-    const utrRef = payment.utr || payment.utr_number || orderRef;
-    const nowIso = new Date().toISOString();
-
-    // Rigorous Ledger Idempotency Check: Prevent duplicate credit if ledger entry already exists
-    const { data: existingLedger } = await supabase
-      .from('wallet_ledger')
-      .select('id')
-      .eq('user_id', payment.user_id)
-      .eq('direction', 'CREDIT')
-      .eq('transaction_type', 'DEPOSIT_SUCCESS')
-      .or(`reference_id.eq.${orderRef},reference_id.eq.${utrRef}`)
-      .maybeSingle();
-
-    if (existingLedger) {
-      // Status catch-up without double crediting
-      if (isGateway) {
-        await supabase.from('deposit_transactions').update({ status: 'SUCCESS', updated_at: nowIso }).eq('id', paymentId);
-      } else {
-        await supabase.from('payments').update({ status: 'PAID', verified_at: nowIso, verified_by: adminId, updated_at: nowIso }).eq('id', paymentId);
-      }
-      return res.json({ success: true, message: 'Already processed and reconciled with existing ledger entry.', already_credited: true });
-    }
-
-    // Lock & Read User Wallet
-    const { data: wallet } = await supabase.from('wallets').select('*').eq('user_id', payment.user_id).maybeSingle();
-    const curRecharge = Number(wallet?.recharge_balance || 0);
-    const curWithdraw = Number(wallet?.withdraw_balance || 0);
-
-    // Accounting Invariants:
-    // available_balance = recharge_balance + withdraw_balance
-    // withdraw_balance is strictly preserved and never modified for a deposit!
-    const newRecharge = +(curRecharge + numAmount).toFixed(2);
-    const newAvailable = +(newRecharge + curWithdraw).toFixed(2);
-    const newTotalRecharge = +(Number(wallet?.total_recharge || 0) + numAmount).toFixed(2);
-
-    if (!wallet) {
-      await supabase.from('wallets').insert({
-        user_id: payment.user_id,
-        recharge_balance: newRecharge,
-        withdraw_balance: 0.00,
-        available_balance: newRecharge,
-        total_recharge: newTotalRecharge,
-        pending_balance: 0.00,
-        total_earned: 0.00,
-        total_withdrawn: 0.00,
-        created_at: nowIso,
-        updated_at: nowIso,
-      });
-    } else {
-      await supabase.from('wallets').update({
-        recharge_balance: newRecharge,
-        available_balance: newAvailable,
-        total_recharge: newTotalRecharge,
-        updated_at: nowIso,
-      }).eq('user_id', payment.user_id);
-    }
-
-    // Update payment record status in both payments and deposit_transactions
-    if (isGateway) {
-      await supabase.from('deposit_transactions').update({
-        status: 'SUCCESS',
-        gateway_status: 'SUCCESS',
-        completed_at: nowIso,
-        updated_at: nowIso,
-        verified_by: adminId,
-        verified_at: nowIso,
-      }).eq('id', paymentId);
-    } else {
-      await supabase.from('payments').update({
-        status: 'PAID',
-        verified_at: nowIso,
-        verified_by: adminId,
-        updated_at: nowIso,
-      }).eq('id', paymentId);
-
-      try {
-        await supabase.from('deposit_transactions').update({
-          status: 'SUCCESS',
-          gateway_status: 'SUCCESS',
-          completed_at: nowIso,
-          updated_at: nowIso,
-          verified_by: adminId,
-          verified_at: nowIso,
-        }).or(`order_id.eq.${payment.order_id},traceno.eq.${payment.order_id},utr.eq.${payment.utr}`);
-      } catch {}
-    }
-
-    // Update or insert wallet_transactions
-    let txUpdated = false;
-    try {
-      const { data: pendingTx } = await supabase
-        .from('wallet_transactions')
-        .select('id')
-        .eq('user_id', payment.user_id)
-        .or(`reference_id.eq.${payment.order_id},reference_id.eq.${payment.utr}`)
-        .eq('status', 'Pending')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (pendingTx?.id) {
-        await supabase.from('wallet_transactions').update({
-          status: 'Completed',
-          balance_before: curRecharge,
-          balance_after: newRecharge,
-          description: `⚡ Admin Approved Topup: ₹${numAmount.toFixed(2)} (UTR: ${payment.utr_number || payment.utr || 'N/A'})`,
-        }).eq('id', pendingTx.id);
-        txUpdated = true;
-      }
-    } catch {}
-
-    if (!txUpdated) {
-      await supabase.from('wallet_transactions').insert({
-        user_id: payment.user_id,
-        type: 'RECHARGE',
-        amount: numAmount,
-        balance_before: curRecharge,
-        balance_after: newRecharge,
-        wallet_type: 'TOPUP',
-        status: 'Completed',
-        reference_id: orderRef,
-        description: `⚡ Admin Approved Topup: ₹${numAmount.toFixed(2)} (UTR: ${payment.utr_number || payment.utr || 'N/A'})`,
-        created_at: nowIso,
-      });
-    }
-
-    // Insert immutable audit record into wallet_ledger
-    try {
-      await supabase.from('wallet_ledger').insert({
-        user_id: payment.user_id,
-        wallet_type: 'RECHARGE',
-        transaction_type: 'DEPOSIT_SUCCESS',
-        amount: numAmount,
-        direction: 'CREDIT',
-        reference_type: 'MANUAL_UPI_DEPOSIT',
-        reference_id: orderRef,
-        balance_before: curRecharge,
-        balance_after: newRecharge,
-        description: `Admin Approved Manual UPI Recharge: ₹${numAmount.toFixed(2)} (UTR: ${payment.utr_number || payment.utr || 'N/A'})`,
-        created_at: nowIso,
-      });
-    } catch (ledErr: any) {
-      console.warn('[APPROVE-RECHARGE] wallet_ledger insert notice:', ledErr?.message);
-    }
-
-    // Notify user of approved recharge
-    try {
-      await supabase.from('notifications').insert({
-        user_id: payment.user_id,
-        title: 'Topup Approved! ⚡',
-        message: `Your recharge of ₹${numAmount.toFixed(2)} has been verified and added to your Recharge Wallet.`,
-        type: 'SUCCESS',
-        read: false,
-        created_at: nowIso,
-      });
-    } catch {}
+    const settledUserId = rpcOutput.user_id;
+    const settledAmount = Number(rpcOutput.amount);
+    const settledOrderRef = rpcOutput.order_id || paymentId;
 
     // Check & update deposit-based VIP upgrades (VIP 3, 4, 5, 6)
     try {
-      await checkAndUpdateDepositVip(payment.user_id);
+      await checkAndUpdateDepositVip(settledUserId);
     } catch {}
 
     // Process L1/L2/L3 referral commissions for valid topup
     try {
-      await processReferralCommissionsServer(supabase, payment.user_id, numAmount, String(orderRef));
+      await processReferralCommissionsServer(supabase, settledUserId, settledAmount, String(settledOrderRef));
     } catch (_refCommErr: any) {
       console.warn('[APPROVE-RECHARGE] Referral commission notice:', _refCommErr.message);
     }
 
     return res.json({
       success: true,
-      message: `Recharge of ₹${numAmount.toFixed(2)} approved successfully and credited to user's recharge balance.`,
-      newRechargeBalance: newRecharge,
-      newAvailableBalance: newAvailable,
+      message: `Recharge of ₹${settledAmount.toFixed(2)} approved successfully and credited to user's recharge balance.`,
+      newRechargeBalance: rpcOutput.recharge_balance,
+      newAvailableBalance: rpcOutput.available_balance,
     });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    console.error('[APPROVE-RECHARGE] Unexpected error:', err);
+    return res.status(503).json({
+      success: false,
+      error: 'Settlement service error: transaction aborted fail-closed without modifying balances.',
+      details: err.message,
+    });
   }
 });
 
@@ -7446,88 +7249,68 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
 
   const safeAdminId = verifiedAdminId;
   const { paymentId, reason = 'Verification Failed' } = req.body;
-  if (!paymentId || !supabase) return res.status(400).json({ success: false, error: 'Missing paymentId' });
+  if (!paymentId || !isValidUUID(paymentId)) {
+    return res.status(400).json({ success: false, error: 'Valid paymentId UUID is required.' });
+  }
+  if (!supabase) {
+    return res.status(503).json({ success: false, error: 'Database service unavailable.' });
+  }
 
   try {
-    const nowIso = new Date().toISOString();
-    let targetUserId = '';
-    let targetAmount = 0;
-    let targetOrderRef = '';
+    const cleanReason = String(reason || 'Verification Failed').trim().substring(0, 255);
 
-    const { data: payment } = await supabase.from('payments').select('*').eq('id', paymentId).maybeSingle();
-    const { data: dep } = await supabase.from('deposit_transactions').select('*').eq('id', paymentId).maybeSingle();
+    // ATOMIC REJECTION ONLY: Call database RPC with row locks and fail-closed state validation
+    const { data: rpcRes, error: rpcErr } = await supabase.rpc('reject_manual_upi_deposit', {
+      p_payment_id: paymentId,
+      p_admin_id: safeAdminId,
+      p_reason: cleanReason,
+    });
 
-    if (!payment && !dep) {
-      return res.status(404).json({ success: false, error: 'Payment record not found' });
+    // FAIL CLOSED: If RPC is missing (PGRST202/42883), errored, timed out, or returned null, return 503 without manual fallback
+    if (rpcErr || !rpcRes) {
+      console.error('[REJECT-RECHARGE] reject_manual_upi_deposit RPC failure:', rpcErr);
+      return res.status(503).json({
+        success: false,
+        error: 'Database rejection service unavailable. The required atomic rejection RPC failed, timed out, or is missing. No records were modified.',
+        code: rpcErr?.code || 'RPC_UNAVAILABLE',
+        details: rpcErr?.message || 'Empty or invalid response from rejection RPC',
+      });
     }
 
-    const currentStatus = (payment?.status || dep?.status || '').toUpperCase();
-    if (currentStatus === 'PAID' || currentStatus === 'SUCCESS' || currentStatus === 'COMPLETED') {
-      return res.status(400).json({ success: false, error: 'Cannot reject an already approved/completed deposit.' });
-    }
-    if (currentStatus === 'REJECTED') {
-      return res.json({ success: true, message: 'Recharge request was already rejected.', already_rejected: true });
-    }
-
-    if (payment) {
-      targetUserId = payment.user_id;
-      targetAmount = Number(payment.amount);
-      targetOrderRef = payment.order_id || payment.utr || payment.id;
-
-      await supabase.from('payments').update({
-        status: 'REJECTED',
-        rejection_reason: reason,
-        admin_note: reason,
-        verified_by: safeAdminId,
-        verified_at: nowIso,
-        updated_at: nowIso,
-      }).eq('id', paymentId);
+    if (!rpcRes.success) {
+      const errCode = rpcRes.error || '';
+      if (errCode === 'PAYMENT_NOT_FOUND') {
+        return res.status(404).json({ success: false, error: rpcRes.message || 'Payment record not found.' });
+      }
+      if (errCode === 'PAYMENT_ALREADY_APPROVED') {
+        return res.status(400).json({ success: false, error: rpcRes.message || 'Cannot reject an already approved deposit.' });
+      }
+      if (errCode === 'UNAUTHORIZED_ADMIN_ROLE') {
+        return res.status(403).json({ success: false, error: rpcRes.message || 'Unauthorized admin role.' });
+      }
+      return res.status(400).json({ success: false, error: rpcRes.message || rpcRes.error || 'Rejection failed.' });
     }
 
-    if (dep) {
-      if (!targetUserId) targetUserId = dep.user_id;
-      if (!targetAmount) targetAmount = Number(dep.amount);
-      if (!targetOrderRef) targetOrderRef = dep.order_id || dep.traceno || dep.id;
-
-      await supabase.from('deposit_transactions').update({
-        status: 'REJECTED',
-        failure_reason: reason,
-        verified_by: safeAdminId,
-        verified_at: nowIso,
-        updated_at: nowIso,
-      }).eq('id', paymentId);
+    if (rpcRes.already_rejected) {
+      return res.json({
+        success: true,
+        message: 'Recharge request was already rejected previously.',
+        already_rejected: true,
+      });
     }
 
-    // Cancel pending transaction in wallet_transactions
-    if (targetUserId) {
-      try {
-        await supabase
-          .from('wallet_transactions')
-          .update({
-            status: 'Cancelled',
-            description: `Manual UPI Recharge Rejected: ${reason}`,
-          })
-          .eq('user_id', targetUserId)
-          .or(`reference_id.eq.${targetOrderRef},reference_id.eq.${paymentId}`)
-          .eq('status', 'Pending');
-      } catch {}
-
-      // Notify user of rejection with admin reason
-      try {
-        await supabase.from('notifications').insert({
-          user_id: targetUserId,
-          title: 'Recharge Request Rejected',
-          message: `Your recharge request of ₹${targetAmount.toFixed(2)} was rejected by Admin. Reason: ${reason}`,
-          type: 'ALERT',
-          read: false,
-          created_at: nowIso,
-        });
-      } catch {}
-    }
-
-    return res.json({ success: true, message: 'Recharge request rejected successfully.' });
+    return res.json({
+      success: true,
+      message: 'Recharge request rejected successfully.',
+      payment_id: rpcRes.payment_id || paymentId,
+    });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    console.error('[REJECT-RECHARGE] Unexpected error:', err);
+    return res.status(503).json({
+      success: false,
+      error: 'Rejection service error: transaction aborted fail-closed without modifying database.',
+      details: err.message,
+    });
   }
 });
 
