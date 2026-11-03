@@ -1,0 +1,6 @@
+{
+  "summary":  "Critical Wallet Settlement Safety Revision: Database-side atomic RPC (settle_gateway_deposit) eliminating REST non-atomicity and rollback loop re-credit risks, single authoritative order-creation endpoint (/api/univepay/create-payment), direct Cloud Run webhook routing, comprehensive failure/retry safety matrix, and isolated non-destructive test plan.",
+  "updatedAt":  "2026-10-30T09:34:30.071709845Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

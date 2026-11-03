@@ -107,7 +107,7 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
     const refLower = (tx.referenceId || '').toLowerCase();
 
     if (activeCategory === 'RECHARGE') {
-      matchesCategory = typeUpper === 'RECHARGE';
+      matchesCategory = typeUpper === 'RECHARGE' || typeUpper === 'USDT_DEPOSIT';
     } else if (activeCategory === 'PURCHASE') {
       matchesCategory = typeUpper === 'PLAN_PURCHASE' || typeUpper === 'PRO_PLAN_PURCHASE';
     } else if (activeCategory === 'EARNINGS') {
@@ -170,6 +170,7 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
   const getTransactionIcon = (type: TransactionType) => {
     switch (type) {
       case 'RECHARGE':
+      case 'USDT_DEPOSIT' as any:
         return {
           icon: <ArrowDownLeft className="w-5 h-5 text-emerald-600" />,
           bg: 'bg-emerald-50 border-emerald-200',
@@ -322,21 +323,26 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
 
     // 8. Recharges & USDT Deposits
     if (typeUpper === 'RECHARGE' || typeUpper === 'USDT_DEPOSIT') {
-      const isUsdt = descLower.includes('usdt') || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('usdt'));
+      const isUsdt =
+        (tx.currency && tx.currency.toUpperCase() === 'USDT') ||
+        typeUpper === 'USDT_DEPOSIT' ||
+        descLower.includes('usdt') ||
+        (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('usdt'));
+
+      const s = (tx.status || '').toLowerCase();
+      const isApproved = s === 'completed' || s === 'approved' || s === 'paid' || s === 'success';
+      const isRejected = s === 'failed' || s === 'rejected' || s === 'cancelled';
+
       if (isUsdt) {
-        const s = (tx.status || '').toLowerCase();
-        if (s === 'completed' || s === 'approved' || s === 'paid' || s === 'success') return 'USDT Deposit Approved';
-        if (s === 'failed' || s === 'rejected') return 'USDT Deposit Rejected';
+        if (isApproved) return 'USDT Deposit Approved';
+        if (isRejected) return 'USDT Deposit Rejected';
         return 'USDT Deposit (Pending Verification)';
       }
-      const isManual = descLower.includes('manual') || (tx.paymentMethod && tx.paymentMethod.toLowerCase().includes('manual'));
-      if (isManual) {
-        const s = (tx.status || '').toLowerCase();
-        if (s === 'completed' || s === 'approved') return 'Recharge Approved';
-        if (s === 'failed' || s === 'rejected') return 'Recharge Rejected';
-        return 'Recharge Request (Pending Approval)';
-      }
-      return 'Recharge (Online Payment)';
+
+      // INR Deposits (Manual UPI, UPI Gateway, Bank Transfer)
+      if (isApproved) return 'INR Deposit Approved';
+      if (isRejected) return 'INR Deposit Rejected';
+      return 'INR Deposit (Pending Verification)';
     }
 
     // 9. Withdrawals & Reversals

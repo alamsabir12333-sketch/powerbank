@@ -94,15 +94,21 @@ function buildCanonicalClusters(inputs: RawTransactionInputs): Map<string, Clust
   for (const p of payments) {
     const entityKey = `PAYMENT_${p.id}`;
     const pUserId = p.user_id || inputs.userId || '';
+    const isUsdtPayment =
+      String(p.payment_type || '').toUpperCase() === 'USDT_DEPOSIT' ||
+      String(p.payment_method || '').toUpperCase().includes('USDT') ||
+      String(p.reference_id || '').toUpperCase().startsWith('USDT:') ||
+      String(p.order_id || '').toUpperCase().startsWith('USDT');
+
     addEntityTokens(entityKey, pUserId, [
       p.id,
       p.order_id,
       p.utr,
-      `USDT-${p.id}`,
-      `USDT_DEP-${p.id}`,
+      isUsdtPayment ? `USDT-${p.id}` : null,
+      isUsdtPayment ? `USDT_DEP-${p.id}` : null,
       `DEP-${p.id}`,
-      p.order_id ? `USDT-${p.order_id}` : null,
-      p.order_id ? `USDT_DEP-${p.order_id}` : null,
+      (isUsdtPayment && p.order_id) ? `USDT-${p.order_id}` : null,
+      (isUsdtPayment && p.order_id) ? `USDT_DEP-${p.order_id}` : null,
       // If p.reference_id is a UUID or order number (not address template)
       p.reference_id && !p.reference_id.startsWith('USDT:') ? p.reference_id : null,
     ]);
@@ -352,14 +358,43 @@ export function normalizeDepositTransactions(inputs: RawTransactionInputs): Depo
     }
 
     // 5. Payment Channel & Method
-    const isUsdt =
-      Boolean(payItem) ||
-      items.some(it =>
-        String(it.data.channel || it.data.payment_method || it.data.method || it.data.reference_id || '').toUpperCase().includes('USDT')
+    const isUsdt = items.some(it => {
+      const d = it.data || {};
+      const typeStr = String(d.payment_type || d.type || '').toUpperCase();
+      const methodStr = String(d.payment_method || d.method || '').toUpperCase();
+      const channelStr = String(d.channel || '').toUpperCase();
+      const refStr = String(d.reference_id || d.referenceId || '').toUpperCase();
+      const currStr = String(d.currency || '').toUpperCase();
+      return (
+        typeStr === 'USDT_DEPOSIT' ||
+        channelStr.includes('USDT') ||
+        methodStr.includes('USDT') ||
+        (it.source === 'payment' && (methodStr === 'TRC20' || methodStr === 'BEP20')) ||
+        refStr.startsWith('USDT:') ||
+        refStr.startsWith('USDT-') ||
+        currStr === 'USDT'
       );
+    });
+
+    const isManualUpi = items.some(it => {
+      const d = it.data || {};
+      const typeStr = String(d.payment_type || d.type || '').toUpperCase();
+      const methodStr = String(d.payment_method || d.method || '').toUpperCase();
+      const channelStr = String(d.channel || '').toUpperCase();
+      const orderStr = String(d.order_id || d.traceno || '').toUpperCase();
+      return (
+        typeStr === 'MANUAL_UPI' ||
+        channelStr === 'MANUAL_UPI' ||
+        methodStr === 'UPI' ||
+        orderStr.startsWith('UPI_')
+      );
+    });
+
     const channel = isUsdt
       ? (payItem?.payment_method ? `USDT (${payItem.payment_method})` : 'USDT (TRC20)')
-      : (depItem?.channel || depItem?.payment_method || 'UniVePay UPI Gateway');
+      : isManualUpi
+      ? 'Manual UPI'
+      : (depItem?.channel || depItem?.payment_method || 'UPI Gateway');
 
     // 6. UTR / Serial / Bank Ref
     const utr =
@@ -526,7 +561,7 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
     const cleanCandidates = candidates.filter(c => isValidIdentifierToken(c));
 
     // Prefer human-readable identifiers that don't start with raw prefix
-    const preferred = cleanCandidates.find(c => !c.startsWith('USDT_DEP-') && !c.startsWith('USDT-') && (!c.includes('-') || c.startsWith('DEP') || c.startsWith('CHECKIN') || c.startsWith('SIGNUP')));
+    const preferred = cleanCandidates.find(c => !c.startsWith('USDT_DEP-') && !c.startsWith('USDT-') && (!c.includes('-') || c.startsWith('DEP') || c.startsWith('CHECKIN') || c.startsWith('SIGNUP') || c.startsWith('UPI')));
     if (preferred) {
       referenceId = preferred;
     } else if (cleanCandidates.length > 0) {
@@ -546,17 +581,56 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
         String(wth?.admin_note || '').includes('USDT') ||
         String(wtx?.description || '').includes('USDT'));
 
-    const isUsdt =
-      isUsdtWithdrawal ||
-      Boolean(pay) ||
-      items.some(it =>
-        String(it.data.channel || it.data.payment_method || it.data.method || it.data.reference_id || it.data.referenceId || '').toUpperCase().includes('USDT')
-      );
+    const isUsdtDeposit =
+      (txType === 'RECHARGE' || txType === 'USDT_DEPOSIT' || items.some(it => it.source === 'payment' || it.source === 'deposit')) &&
+      items.some(it => {
+        const d = it.data || {};
+        const typeStr = String(d.payment_type || d.type || '').toUpperCase();
+        const methodStr = String(d.payment_method || d.method || d.withdrawal_method || '').toUpperCase();
+        const channelStr = String(d.channel || '').toUpperCase();
+        const refStr = String(d.reference_id || d.referenceId || '').toUpperCase();
+        const currStr = String(d.currency || '').toUpperCase();
+        const descStr = String(d.description || '').toUpperCase();
+        return (
+          typeStr === 'USDT_DEPOSIT' ||
+          channelStr.includes('USDT') ||
+          methodStr.includes('USDT') ||
+          (it.source === 'payment' && (methodStr === 'TRC20' || methodStr === 'BEP20')) ||
+          refStr.startsWith('USDT:') ||
+          refStr.startsWith('USDT-') ||
+          currStr === 'USDT' ||
+          descStr.includes('USDT RECHARGE') ||
+          descStr.includes('USDT DEPOSIT')
+        );
+      });
+
+    const isUsdt = isUsdtWithdrawal || isUsdtDeposit;
+
+    const isManualUpi =
+      !isUsdt &&
+      (txType === 'RECHARGE' || items.some(it => it.source === 'payment' || it.source === 'deposit')) &&
+      items.some(it => {
+        const d = it.data || {};
+        const typeStr = String(d.payment_type || d.type || '').toUpperCase();
+        const methodStr = String(d.payment_method || d.method || '').toUpperCase();
+        const channelStr = String(d.channel || '').toUpperCase();
+        const descStr = String(d.description || '').toUpperCase();
+        const ordStr = String(d.order_id || d.traceno || '').toUpperCase();
+        return (
+          typeStr === 'MANUAL_UPI' ||
+          channelStr === 'MANUAL_UPI' ||
+          methodStr === 'UPI' ||
+          ordStr.startsWith('UPI_') ||
+          descStr.includes('MANUAL UPI')
+        );
+      });
 
     const paymentMethod = isUsdtWithdrawal
       ? `USDT (${wth?.network || 'TRC20'})`
       : isUsdt
       ? (pay?.payment_method ? `USDT (${pay.payment_method})` : 'USDT (TRC20)')
+      : isManualUpi
+      ? 'Manual UPI'
       : (dep?.channel || wth ? 'Bank Transfer' : wtx?.paymentMethod || 'UPI Gateway');
 
     let description =
@@ -565,11 +639,13 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
       (isUsdtWithdrawal
         ? `USDT Withdrawal: ₹${Math.abs(amount).toFixed(2)} (${wth?.usdt_amount || ''} USDT via ${wth?.network || 'TRC20'})`
         : txType === 'RECHARGE'
-        ? `Recharge Order #${referenceId}`
+        ? (isUsdt ? `USDT Deposit #${referenceId}` : `INR Deposit #${referenceId}`)
         : undefined);
 
     if (!isUsdtWithdrawal && isUsdt && (!description || description.includes('ADMIN_ADJUSTMENT'))) {
       description = `USDT Deposit #${referenceId}`;
+    } else if (txType === 'RECHARGE' && !isUsdt && (!description || description.includes('ADMIN_ADJUSTMENT'))) {
+      description = `INR Deposit #${referenceId}`;
     }
 
     if (txType === 'WITHDRAWAL' && canonicalStatus === 'Rejected') {
@@ -607,11 +683,12 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
       referenceId,
       description,
       paymentMethod,
+      currency: isUsdt ? 'USDT' : (dep?.currency || pay?.currency || wtx?.currency || 'INR'),
       utr,
       orderId: pay?.order_id || pay?.orderId || dep?.order_id || dep?.orderId || wtx?.order_id || wtx?.orderId || referenceId,
       planName: pur?.plan_name || wtx?.plan_name || wtx?.planName,
       createdAt,
-      usdtAmount: pay?.usdt_amount || wtx?.usdt_amount || wtx?.usdtAmount,
+      usdtAmount: isUsdt ? (pay?.usdt_amount || wtx?.usdt_amount || wtx?.usdtAmount) : undefined,
     });
   }
 

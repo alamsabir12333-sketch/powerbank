@@ -35,9 +35,9 @@ serve(async (req) => {
     const merchNo = config?.merchant_no || Deno.env.get("GATEWAY_MERCH_NO") || Deno.env.get("UNIVEPAY_MERCHANT_NO") || "C26854";
     const secretKey = config?.secret_key || Deno.env.get("GATEWAY_SECRET_KEY") || Deno.env.get("UNIVEPAY_SECRET") || "secret";
     const baseUrl = config?.base_url || Deno.env.get("GATEWAY_BASE_URL") || "https://ydpay.univepay.com";
-    const notifyUrl = config?.notify_url && config.notify_url.trim() !== ""
+    const notifyUrl = config?.notify_url && config.notify_url.trim() !== "" && !config.notify_url.includes("gainpower-top-1.com")
       ? config.notify_url
-      : (Deno.env.get("GATEWAY_NOTIFY_URL") || "https://gainpower-top-1.com/api/univepay/payment-callback");
+      : (Deno.env.get("GATEWAY_NOTIFY_URL") || "https://power-bank-3ib3vyvgja-as.a.run.app/api/univepay/payment-callback");
 
     const requestedOrderId = body.orderId || body.traceno;
     const orderId = requestedOrderId || `DEP${Date.now()}${Math.floor(1000 + Math.random() * 9000)}`;

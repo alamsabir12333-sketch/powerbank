@@ -30,6 +30,7 @@ import {
   updateSystemSettings,
   fetchPaymentSettings,
   updatePaymentSettings,
+  uploadQrImage,
   fetchWebsitePopup,
   saveWebsitePopup,
   fetchSiteSettings,
@@ -93,6 +94,7 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [uploadingFavicon, setUploadingFavicon] = useState(false);
   const [uploadingPopupImg, setUploadingPopupImg] = useState(false);
+  const [uploadingQr, setUploadingQr] = useState(false);
   const popupFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const loadData = async () => {
@@ -189,6 +191,22 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
     }
   };
 
+  const handleQrUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingQr(true);
+    try {
+      const url = await uploadQrImage(file);
+      setPaymentSettings((prev: any) => ({ ...(prev || {}), qrImageUrl: url }));
+      onShowToast('UPI QR code uploaded successfully! Click "Save Settings" to apply.');
+    } catch (err: any) {
+      onShowToast(err.message || 'Failed to upload QR code.');
+    } finally {
+      setUploadingQr(false);
+      e.target.value = '';
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -210,6 +228,10 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
         saveUsdtSettings(usdtSettings, adminId),
       ];
 
+      if (paymentSettings) {
+        promises.push(updatePaymentSettings(paymentSettings, adminId));
+      }
+
       if (settings) {
         promises.push(updateSystemSettings(settings, adminId));
       }
@@ -227,7 +249,7 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
 
       await Promise.all(promises);
       await refreshSiteSettings();
-      onShowToast('All Settings (Site Branding, Recharge, USDT, Popup, Rules) saved successfully!');
+      onShowToast('All Settings (Branding, Manual UPI, Recharge, USDT, Popup, Rules) saved successfully!');
       onRefreshGlobalStats();
     } catch (e: any) {
       onShowToast(e.message || 'Failed to save settings');
@@ -433,6 +455,120 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
                 className="w-full bg-[#0d1117] border border-gray-700 focus:border-[#FF6000] rounded-xl p-2.5 text-xs text-white outline-none"
               />
             </div>
+          </div>
+        </div>
+
+        {/* Section 2b: Manual UPI Gateway & QR Code Configuration */}
+        <div className="bg-[#161b22] border border-gray-800 rounded-2xl p-5 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-gray-800">
+            <h3 className="font-bold text-sm text-white flex items-center gap-2">
+              <CreditCard className="w-4 h-4 text-emerald-400" />
+              Manual UPI Deposit Gateway & QR Code
+            </h3>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <span className="text-xs font-bold text-gray-300">Enable UPI Recharge:</span>
+              <input
+                type="checkbox"
+                checked={paymentSettings?.isRechargeEnabled !== false}
+                onChange={(e) =>
+                  setPaymentSettings((prev: any) => ({
+                    ...(prev || {}),
+                    isRechargeEnabled: e.target.checked,
+                  }))
+                }
+                className="w-4 h-4 accent-emerald-500 cursor-pointer"
+              />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Receiver UPI ID */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
+                Receiver UPI ID (VPA) <span className="text-red-400">*</span>
+              </label>
+              <input
+                type="text"
+                value={paymentSettings?.upiId || ''}
+                onChange={(e) =>
+                  setPaymentSettings((prev: any) => ({
+                    ...(prev || {}),
+                    upiId: e.target.value,
+                  }))
+                }
+                placeholder="e.g. powerbank.pay@upi or merchant@okaxis"
+                className="w-full bg-[#0d1117] border border-gray-700 focus:border-emerald-500 rounded-xl p-2.5 text-xs text-white font-mono outline-none"
+              />
+              <p className="text-[10.5px] text-gray-500 mt-1">
+                Displayed to users with 1-click Copy button on the deposit page.
+              </p>
+            </div>
+
+            {/* QR Code Upload / URL */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-300 mb-1.5">
+                Admin UPI QR Code Image
+              </label>
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={paymentSettings?.qrImageUrl || ''}
+                  onChange={(e) =>
+                    setPaymentSettings((prev: any) => ({
+                      ...(prev || {}),
+                      qrImageUrl: e.target.value,
+                    }))
+                  }
+                  placeholder="https://... or upload QR image below"
+                  className="w-full bg-[#0d1117] border border-gray-700 focus:border-emerald-500 rounded-xl p-2 text-xs text-white outline-none"
+                />
+                <div className="flex items-center gap-3">
+                  <label className="border border-dashed border-gray-700 hover:border-emerald-500 rounded-xl p-2 flex-1 flex items-center justify-center gap-2 cursor-pointer bg-[#0d1117] transition-colors">
+                    {uploadingQr ? (
+                      <Loader2 className="w-3.5 h-3.5 text-emerald-400 animate-spin" />
+                    ) : (
+                      <Upload className="w-3.5 h-3.5 text-gray-400" />
+                    )}
+                    <span className="text-[11px] text-gray-300 font-semibold">
+                      {uploadingQr ? 'Uploading QR...' : 'Upload QR Image'}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleQrUpload}
+                      disabled={uploadingQr}
+                      className="hidden"
+                    />
+                  </label>
+                  {paymentSettings?.qrImageUrl && (
+                    <img
+                      src={paymentSettings.qrImageUrl}
+                      alt="QR Preview"
+                      className="w-9 h-9 object-contain rounded-lg border border-gray-700 bg-white p-0.5"
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Payment Instructions */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-300 mb-1.5">
+              Payment Instructions (Shown step-by-step to users)
+            </label>
+            <textarea
+              rows={3}
+              value={paymentSettings?.instructions || ''}
+              onChange={(e) =>
+                setPaymentSettings((prev: any) => ({
+                  ...(prev || {}),
+                  instructions: e.target.value,
+                }))
+              }
+              placeholder="1. Open PhonePe, Google Pay or Paytm.&#10;2. Scan QR or transfer to UPI ID.&#10;3. Copy the 12-digit UTR/Ref number and submit."
+              className="w-full bg-[#0d1117] border border-gray-700 focus:border-emerald-500 rounded-xl p-2.5 text-xs text-white outline-none leading-relaxed"
+            />
           </div>
         </div>
 

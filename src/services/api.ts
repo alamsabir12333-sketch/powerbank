@@ -3448,8 +3448,52 @@ export async function submitRechargeRequest(
   userId: string,
   amount: number,
   utr: string,
-  proofUrl?: string
+  proofUrl?: string,
+  notes?: string
 ) {
+  // 1. Primary: Server-side API endpoint with validation and duplicate prevention
+  try {
+    const authHeaders = await getAuthHeaders();
+    if (!authHeaders['Authorization'] && supabase) {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (sessionData?.session?.access_token) {
+          authHeaders['Authorization'] = `Bearer ${sessionData.session.access_token}`;
+        }
+      } catch {}
+    }
+
+    const res = await fetch(apiUrl('/api/recharge/manual-submit'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
+      body: JSON.stringify({ userId, amount, utr: utr.trim(), proofUrl, notes }),
+    });
+    const json = await res.json();
+    if (res.ok && json.success) {
+      return json;
+    }
+    if (!res.ok && json.error) {
+      throw new Error(json.error);
+    }
+  } catch (err: any) {
+    if (
+      err.message &&
+      (err.message.includes('already') ||
+        err.message.includes('valid') ||
+        err.message.includes('limit') ||
+        err.message.includes('Minimum') ||
+        err.message.includes('Maximum') ||
+        err.message.includes('disabled'))
+    ) {
+      throw err;
+    }
+    console.warn('[submitRechargeRequest] API endpoint call failed, attempting fallback:', err);
+  }
+
+  // 2. Secondary fallback: direct Supabase RPC / insert
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase.rpc('submit_recharge', {
@@ -4832,11 +4876,13 @@ export async function approveRecharge(paymentId: string, adminId: string) {
       headers: getAdminAuthHeaders(),
       body: JSON.stringify({ paymentId, adminId }),
     });
-    if (res.ok) {
-      const json = await res.json();
-      if (json.success) return json;
+    const json = await res.json().catch(() => ({}));
+    if (res.ok && json.success) return json;
+    if (json.error) throw new Error(json.error);
+  } catch (e: any) {
+    if (e.message && !e.message.includes('fetch')) {
+      throw e;
     }
-  } catch (e) {
     console.warn('[APPROVE RECHARGE] API call failed:', e);
   }
 
@@ -4952,11 +4998,13 @@ export async function rejectRecharge(paymentId: string, param2: string, param3?:
       headers: getAdminAuthHeaders(),
       body: JSON.stringify({ paymentId, adminId, reason }),
     });
-    if (res.ok) {
-      const json = await res.json();
-      if (json.success) return json;
+    const json = await res.json().catch(() => ({}));
+    if (res.ok && json.success) return json;
+    if (json.error) throw new Error(json.error);
+  } catch (e: any) {
+    if (e.message && !e.message.includes('fetch')) {
+      throw e;
     }
-  } catch (e) {
     console.warn('[REJECT RECHARGE] API call failed:', e);
   }
 

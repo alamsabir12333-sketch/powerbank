@@ -88,6 +88,7 @@ export interface Wallet {
 
 export type TransactionType =
   | 'RECHARGE'
+  | 'USDT_DEPOSIT'
   | 'PLAN_PURCHASE'
   | 'PRO_PLAN_PURCHASE'
   | 'EVENT_PLAN_PURCHASE'
@@ -140,6 +141,7 @@ export interface WalletTransaction {
   username?: string;
   bankDetails?: string;
   usdtAmount?: number;
+  currency?: string;
   createdAt: string;
 }
 

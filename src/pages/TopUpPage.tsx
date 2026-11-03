@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { Wallet, DepositTransaction, RechargeSettings, UsdtSettings } from '../types';
-import { apiUrl } from '../services/apiClient';
+import { apiUrl, apiFetchJson } from '../services/apiClient';
 import {
   fetchDepositTransactions,
   submitDepositComplaint,
@@ -30,7 +30,9 @@ import {
   X,
   ShieldAlert,
   Coins,
+  QrCode,
 } from 'lucide-react';
+import { PaymentCheckoutPage } from './PaymentCheckoutPage';
 
 interface TopUpPageProps {
   userId?: string;
@@ -60,6 +62,8 @@ export default function TopUpPage({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [userProfile, setUserProfile] = useState<any>(null);
   const [currentAuthUserId, setCurrentAuthUserId] = useState<string>(propUserId || '');
+  const [showManualCheckout, setShowManualCheckout] = useState<boolean>(false);
+  const [checkoutAmount, setCheckoutAmount] = useState<number>(500);
   
   // Dynamic Settings
   const [settingsLoading, setSettingsLoading] = useState<boolean>(true);
@@ -281,6 +285,33 @@ export default function TopUpPage({
                   if (onRefreshData) onRefreshData();
                 }
               )
+              .on(
+                'postgres_changes',
+                {
+                  event: '*',
+                  schema: 'public',
+                  table: 'payments',
+                  filter: `user_id=eq.${effectiveId}`,
+                },
+                () => {
+                  loadHistory(effectiveId!);
+                  fetchWallet(effectiveId!);
+                  if (onRefreshData) onRefreshData();
+                }
+              )
+              .on(
+                'postgres_changes',
+                {
+                  event: '*',
+                  schema: 'public',
+                  table: 'wallets',
+                  filter: `user_id=eq.${effectiveId}`,
+                },
+                () => {
+                  fetchWallet(effectiveId!);
+                  if (onRefreshData) onRefreshData();
+                }
+              )
               .subscribe();
           }
         }
@@ -342,178 +373,28 @@ export default function TopUpPage({
       return;
     }
 
-    setLoading(true);
-
-    try {
-      // 1. Authenticate user
-      let effectiveUserId = currentAuthUserId || propUserId;
-      let currentUserEmail = '';
-      let currentUserPhone = userProfile?.phone || userProfile?.whatsapp_no || userProfile?.mobile || '';
-
-      if (supabase) {
+    // Authenticate user
+    let effectiveUserId = currentAuthUserId || propUserId;
+    if (supabase) {
+      try {
         const { data: { user } } = await supabase.auth.getUser();
         if (user?.id) {
           effectiveUserId = user.id;
-          currentUserEmail = user.email || '';
-          if (!currentUserPhone && user.user_metadata?.phone) {
-            currentUserPhone = user.user_metadata.phone;
-          }
+          setCurrentAuthUserId(user.id);
         }
-      }
-
-      if (!effectiveUserId) {
-        throw new Error('Please log in first to proceed with recharge.');
-      }
-
-      const effectivePhone = currentUserPhone || userProfile?.phone || userProfile?.whatsapp_no || '9999999999';
-      const effectiveEmail = currentUserEmail || `${effectivePhone}@gainpower.internal`;
-
-      // 2. Generate unique application order ID
-      const timestamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
-      const randomSuffix = Math.floor(100000 + Math.random() * 900000);
-      const traceno = `DEP${timestamp}${randomSuffix}`;
-
-      // 3. Create PENDING order in Supabase BEFORE opening gateway
-      if (supabase) {
-        const { error: insertErr } = await supabase.from('deposit_transactions').insert({
-          traceno: traceno,
-          merchant_order_id: traceno,
-          user_id: effectiveUserId,
-          amount: numAmount,
-          currency: 'INR',
-          pay_code: '印度UPI-银台',
-          status: 'PENDING',
-          channel: 'UNIVEPAY',
-        });
-
-        if (insertErr) {
-          console.error('[TOPUP] Insert deposit_transactions failed:', insertErr);
-          throw new Error('Unable to create recharge order. Please try again.');
-        }
-
-        // 4. Verify database insert succeeded
-        const { data: verifiedOrder, error: verifyErr } = await supabase
-          .from('deposit_transactions')
-          .select('id, traceno, status, amount, user_id')
-          .eq('traceno', traceno)
-          .maybeSingle();
-
-        if (verifyErr || !verifiedOrder || verifiedOrder.status !== 'PENDING') {
-          console.error('[TOPUP] Order verification failed:', verifyErr);
-          throw new Error('Unable to create recharge order. Please try again.');
-        }
-
-        // Create pending record in wallet_transactions
-        try {
-          await supabase.from('wallet_transactions').insert({
-            user_id: effectiveUserId,
-            type: 'RECHARGE',
-            amount: numAmount,
-            balance_before: balance,
-            balance_after: balance,
-            reference_id: traceno,
-            description: `Recharge Order #${traceno}`,
-            wallet_type: 'TOPUP',
-            status: 'Pending',
-          });
-        } catch (wErr) {
-          console.warn('[TOPUP] Pending wallet_transaction insert warning:', wErr);
-        }
-
-        // Refresh recharge history in UI immediately so PENDING order appears below button
-        loadHistory(effectiveUserId);
-      }
-
-      // 5. ONLY AFTER PENDING order exists: invoke the existing payment gateway
-      let response: any = null;
-      if (supabase) {
-        try {
-          response = await supabase.functions.invoke('create-payin-order', {
-            body: {
-              amount: numAmount,
-              userId: effectiveUserId,
-              orderId: traceno,
-              traceno: traceno,
-              customerName: userProfile?.full_name || userProfile?.username || userProfile?.name || 'Customer',
-              customerEmail: effectiveEmail,
-              customerPhone: effectivePhone,
-            },
-          });
-        } catch (_fnErr) {
-          response = null;
-        }
-      }
-
-      if (!response || response?.error || !response?.data?.success) {
-        const res = await fetch(apiUrl('/api/create-payin-order'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            amount: numAmount,
-            userId: effectiveUserId,
-            orderId: traceno,
-            traceno: traceno,
-            customerName: userProfile?.full_name || userProfile?.username || userProfile?.name || 'Customer',
-            customerEmail: effectiveEmail,
-            customerPhone: effectivePhone,
-          }),
-        });
-        const contentType = res.headers.get('content-type') || '';
-        if (contentType.includes('text/html')) {
-          throw new Error('Payment gateway backend returned an invalid response (HTML). Please verify backend status.');
-        }
-        const backendData = await res.json().catch(() => null);
-        response = { data: backendData, error: null };
-      }
-
-      if (response?.error || !response?.data?.success || !response?.data?.payUrl) {
-        const errorDetail = response?.data?.error || response?.error?.message || 'Payment initiation failed';
-        throw new Error(errorDetail);
-      }
-
-      const { payUrl } = response.data;
-
-      // Start status polling in background
-      if (supabase && traceno) {
-        let attempts = 0;
-        pollingRef.current = setInterval(async () => {
-          attempts++;
-          try {
-            const { data: order } = await supabase
-              .from('deposit_transactions')
-              .select('status')
-              .eq('traceno', traceno)
-              .maybeSingle();
-
-            if (order?.status === 'SUCCESS' || order?.status === 'PAID' || order?.status === 'COMPLETED') {
-              clearInterval(pollingRef.current);
-              await fetchWallet(effectiveUserId!);
-              await loadHistory(effectiveUserId!);
-              if (onRefreshData) onRefreshData();
-              const successMsg = 'Deposit successful! Recharge wallet credited.';
-              if (onShowToast) onShowToast(successMsg);
-            }
-          } catch (_err) {}
-
-          if (attempts > 40) {
-            clearInterval(pollingRef.current);
-          }
-        }, 3000);
-      }
-
-      if (onShowToast) {
-        onShowToast(`Redirecting to payment gateway for ₹${numAmount}...`);
-      }
-
-      // Open existing gateway payment page
-      window.location.href = payUrl;
-    } catch (err: any) {
-      const errText = err.message || 'Unable to create recharge order. Please try again.';
-      setErrorMsg(errText);
-      if (onShowToast) onShowToast(errText);
-    } finally {
-      setLoading(false);
+      } catch {}
     }
+
+    if (!effectiveUserId) {
+      const err = 'Please log in first to proceed with recharge.';
+      setErrorMsg(err);
+      if (onShowToast) onShowToast(err);
+      return;
+    }
+
+    // Open dedicated Manual UPI Payment page
+    setCheckoutAmount(numAmount);
+    setShowManualCheckout(true);
   };
 
   const getStatusBadge = (status?: string) => {
@@ -551,6 +432,28 @@ export default function TopUpPage({
   };
 
   const currentDisplayAmount = amount ? Number(amount).toLocaleString('en-IN') : '0';
+
+  if (showManualCheckout) {
+    return (
+      <PaymentCheckoutPage
+        initialAmount={checkoutAmount}
+        userId={currentAuthUserId || propUserId}
+        userProfile={userProfile}
+        onBack={() => setShowManualCheckout(false)}
+        onSuccess={() => {
+          setShowManualCheckout(false);
+          const effectiveId = currentAuthUserId || propUserId;
+          if (effectiveId) {
+            loadHistory(effectiveId);
+            fetchWallet(effectiveId);
+          }
+          if (onRefreshData) onRefreshData();
+        }}
+        onNavigateHome={onBack}
+        onShowToast={onShowToast}
+      />
+    );
+  }
 
   return (
     <div className="flex flex-col min-h-screen bg-[#F8F9FA] text-[#1A202C]">
