@@ -192,7 +192,7 @@ export const PaymentCheckoutPage: React.FC<PaymentCheckoutPageProps> = ({
               <QrCode className="w-5 h-5" />
             </div>
             <div>
-              <h1 className="font-bold text-sm sm:text-base text-white">Manual UPI Deposit</h1>
+              <h1 className="font-bold text-sm sm:text-base text-white">Auto UPI Deposit</h1>
               <span className="text-[11px] text-emerald-400 font-medium flex items-center gap-1">
                 <ShieldCheck className="w-3.5 h-3.5" />
                 Official GAINPOWER Gateway
