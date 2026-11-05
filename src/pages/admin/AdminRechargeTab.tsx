@@ -42,7 +42,17 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
   const [copiedUtr, setCopiedUtr] = useState<string | null>(null);
 
   // Screenshot preview modal
+  const [previewItem, setPreviewItem] = useState<PaymentItem | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState(false);
+
+  const openPreview = (item: PaymentItem) => {
+    setPreviewItem(item);
+    setPreviewImage(item.proofUrl || item.screenshotUrl || null);
+    setPreviewLoading(true);
+    setPreviewError(false);
+  };
 
   // Reject modal
   const [rejectItem, setRejectItem] = useState<PaymentItem | null>(null);
@@ -53,7 +63,37 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
     setLoading(true);
     try {
       const data = await fetchAdminPayments();
-      setPayments(data);
+      // Bulletproof deduplication: single authoritative row per transaction
+      const seenOrderIds = new Set<string>();
+      const seenUtrs = new Set<string>();
+      const deduped: PaymentItem[] = [];
+
+      // Sort with priority: Manual UPI payments from 'payments' table first, preserving authoritative status
+      const prioritized = [...data].sort((a, b) => {
+        const aIsManual = a.paymentType === 'MANUAL_UPI' || a.paymentMethod === 'UPI' || a.status === 'PENDING_VERIFICATION';
+        const bIsManual = b.paymentType === 'MANUAL_UPI' || b.paymentMethod === 'UPI' || b.status === 'PENDING_VERIFICATION';
+        if (aIsManual && !bIsManual) return -1;
+        if (!aIsManual && bIsManual) return 1;
+        return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+      });
+
+      for (const item of prioritized) {
+        const orderKey = String(item.orderId || (item as any).order_id || (item as any).traceno || item.referenceId || '').trim().toLowerCase();
+        const utrKey = String(item.utr || item.utrNumber || (item as any).utr_number || '').trim().toLowerCase();
+
+        // If this transaction was already included via orderId or UTR, skip companion duplicate
+        if (orderKey && seenOrderIds.has(orderKey)) {
+          continue;
+        }
+        if (utrKey && utrKey.length >= 6 && seenUtrs.has(utrKey)) {
+          continue;
+        }
+
+        if (orderKey) seenOrderIds.add(orderKey);
+        if (utrKey && utrKey.length >= 6) seenUtrs.add(utrKey);
+        deduped.push(item);
+      }
+      setPayments(deduped);
     } catch (e: any) {
       onShowToast(e.message || 'Error loading recharge requests');
     } finally {
@@ -323,7 +363,7 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
                           ) : (
                             <button
                               type="button"
-                              onClick={() => setPreviewImage(item.proofUrl!)}
+                              onClick={() => openPreview(item)}
                               className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-cyan-300 font-semibold text-[11px] cursor-pointer"
                             >
                               <ImageIcon className="w-3.5 h-3.5" />
@@ -401,33 +441,148 @@ export const AdminRechargeTab: React.FC<AdminRechargeTabProps> = ({
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <ImageIcon className="w-4 h-4 text-[#FF6000]" />
                 <span>Payment Screenshot Proof</span>
+                {previewItem && (
+                  <span className="text-xs font-mono text-emerald-400 bg-emerald-950/50 px-2 py-0.5 rounded border border-emerald-800/40">
+                    ₹{previewItem.amount.toFixed(2)}
+                  </span>
+                )}
               </h3>
               <div className="flex items-center gap-2">
-                <a
-                  href={previewImage}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="p-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs flex items-center gap-1 px-2"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Open Full Size</span>
-                </a>
+                {previewImage.startsWith('data:image') ? (
+                  <span className="text-[10px] bg-emerald-900/60 text-emerald-300 px-2 py-0.5 rounded-full font-mono">
+                    Direct Image
+                  </span>
+                ) : (
+                  <a
+                    href={previewImage}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="p-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs flex items-center gap-1 px-2"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Open Full Size</span>
+                  </a>
+                )}
                 <button
-                  onClick={() => setPreviewImage(null)}
-                  className="p-1 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800"
+                  onClick={() => {
+                    setPreviewImage(null);
+                    setPreviewItem(null);
+                  }}
+                  className="p-1 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 cursor-pointer"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
-            <div className="max-h-[70vh] overflow-auto flex items-center justify-center bg-[#090d16] rounded-xl p-2">
-              <img
-                src={previewImage}
-                alt="Payment proof screenshot"
-                className="max-h-[65vh] object-contain rounded-lg shadow-lg"
-                referrerPolicy="no-referrer"
-              />
+            {/* Transaction metadata bar */}
+            {previewItem && (
+              <div className="bg-[#0d1117] border border-gray-800/80 rounded-xl p-3 mb-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                <div>
+                  <div className="text-[10px] text-gray-500 uppercase font-semibold">Order ID</div>
+                  <div className="font-mono text-gray-200 truncate">{previewItem.orderId || previewItem.id}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-gray-500 uppercase font-semibold">User</div>
+                  <div className="text-gray-200 truncate">{previewItem.username || 'User'} ({previewItem.userMobile || 'N/A'})</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-gray-500 uppercase font-semibold">12-Digit UTR</div>
+                  <div className="font-mono font-bold text-amber-400 flex items-center gap-1">
+                    <span>{previewItem.utr || 'N/A'}</span>
+                    {previewItem.utr && (
+                      <button
+                        type="button"
+                        onClick={() => handleCopyUtr(previewItem.utr!)}
+                        className="text-gray-400 hover:text-white"
+                        title="Copy UTR"
+                      >
+                        {copiedUtr === previewItem.utr ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-gray-500 uppercase font-semibold">Status</div>
+                  <div className="font-bold text-amber-400">{previewItem.status}</div>
+                </div>
+              </div>
+            )}
+
+            <div className="min-h-[220px] max-h-[60vh] overflow-auto flex flex-col items-center justify-center bg-[#090d16] rounded-xl p-4 relative">
+              {previewLoading && !previewError && (
+                <div className="flex flex-col items-center justify-center py-8 text-gray-400 gap-2">
+                  <Loader2 className="w-6 h-6 animate-spin text-[#FF6000]" />
+                  <span className="text-xs">Loading screenshot proof...</span>
+                </div>
+              )}
+
+              {previewError ? (
+                <div className="flex flex-col items-center justify-center text-center p-6 space-y-3 max-w-md">
+                  <div className="w-12 h-12 rounded-full bg-amber-950/60 border border-amber-800/60 text-amber-400 flex items-center justify-center">
+                    <ShieldCheck className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-white mb-1">Payment Reference Verification</h4>
+                    <p className="text-xs text-gray-400">
+                      The image was submitted via an external storage link. You can verify this payment using the 12-digit UTR number in your UPI merchant statement:
+                    </p>
+                    {previewItem?.utr && (
+                      <div className="mt-2 inline-flex items-center gap-2 bg-[#161b22] border border-amber-800/50 px-3 py-1.5 rounded-lg font-mono text-sm font-bold text-amber-400">
+                        <span>UTR: {previewItem.utr}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyUtr(previewItem.utr!)}
+                          className="p-1 hover:bg-gray-800 rounded cursor-pointer"
+                        >
+                          {copiedUtr === previewItem.utr ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {previewItem && (previewItem.status === 'PENDING_VERIFICATION' || previewItem.status === 'PAYMENT_PENDING') && (
+                    <div className="flex items-center gap-2 pt-2">
+                      <button
+                        onClick={() => {
+                          const it = previewItem;
+                          setPreviewImage(null);
+                          setPreviewItem(null);
+                          handleApprove(it);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Approve Recharge</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          const it = previewItem;
+                          setPreviewImage(null);
+                          setPreviewItem(null);
+                          setRejectItem(it);
+                          setRejectReason('');
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-red-950/60 border border-red-800 hover:bg-red-900 text-red-400 font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <XCircle className="w-3.5 h-3.5" />
+                        <span>Reject</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <img
+                  src={previewImage}
+                  alt="Payment proof screenshot"
+                  className={`max-h-[55vh] object-contain rounded-lg shadow-lg ${previewLoading ? 'hidden' : 'block'}`}
+                  referrerPolicy="no-referrer"
+                  onLoad={() => setPreviewLoading(false)}
+                  onError={() => {
+                    setPreviewLoading(false);
+                    setPreviewError(true);
+                  }}
+                />
+              )}
             </div>
           </div>
         </div>

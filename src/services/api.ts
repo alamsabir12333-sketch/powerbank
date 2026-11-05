@@ -3407,23 +3407,49 @@ export async function updatePaymentSettings(settings: Partial<PaymentSettings>, 
 }
 
 export async function uploadPaymentProof(file: File, userId: string): Promise<string> {
-  if (isSupabaseConfigured && supabase) {
-    const ext = file.name.split('.').pop() || 'jpg';
-    const filePath = `${userId}/${Date.now()}_proof.${ext}`;
-    const { error } = await supabase.storage.from('payment-proofs').upload(filePath, file, {
-      upsert: true,
-    });
-    if (error) throw new Error(error.message);
-    const { data } = supabase.storage.from('payment-proofs').getPublicUrl(filePath);
-    return data.publicUrl;
-  } else {
-    // Return base64 preview for local mode
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.readAsDataURL(file);
-    });
+  // 1. Always compress image first to keep payload lightweight (~40-80KB) and crisp
+  let compressedBase64 = '';
+  try {
+    compressedBase64 = await compressImageFile(file, 1200, 1200, 0.8);
+  } catch {
+    // fallback
   }
+
+  // 2. Try server-side upload endpoint
+  try {
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(apiUrl('/api/upload-payment-proof'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
+      body: JSON.stringify({
+        userId,
+        base64: compressedBase64,
+        fileName: file.name,
+      }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.url) {
+        return json.url;
+      }
+    }
+  } catch (servErr) {
+    console.warn('[UPLOAD PROOF] Server endpoint notice:', servErr);
+  }
+
+  // 3. Bulletproof self-contained Data URL fallback (never 404s, renders in all browsers)
+  if (compressedBase64) {
+    return compressedBase64;
+  }
+
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.readAsDataURL(file);
+  });
 }
 
 export async function uploadQrImage(file: File): Promise<string> {
@@ -4815,8 +4841,40 @@ export async function fetchAdminPayments(): Promise<PaymentItem[]> {
           })
         : [];
 
+      const manualOrderIds = new Set(
+        manualPayments
+          .map((p) => String(p.orderId || p.referenceId || p.id || '').trim().toLowerCase())
+          .filter(Boolean)
+      );
+      const manualUtrs = new Set(
+        manualPayments
+          .map((p) => String(p.utr || p.utrNumber || '').trim().toLowerCase())
+          .filter((u) => u.length >= 6)
+      );
+
       const gatewayDeposits: PaymentItem[] = (!gatewayRes.error && gatewayRes.data)
-        ? gatewayRes.data.map((d: any) => {
+        ? gatewayRes.data
+            .filter((d: any) => {
+              const chan = String(d.channel || '').toUpperCase();
+              const pType = String(d.payment_type || '').toUpperCase();
+              const pMethod = String(d.payment_method || '').toUpperCase();
+              if (chan === 'MANUAL_UPI' || pType === 'MANUAL_UPI' || pMethod === 'MANUAL_UPI' || chan === 'UPI' || pType === 'UPI') {
+                return false;
+              }
+              const orderId = String(d.order_id || '').trim().toLowerCase();
+              const traceno = String(d.traceno || '').trim().toLowerCase();
+              const merchantOrderId = String(d.merchant_order_id || '').trim().toLowerCase();
+              const dId = String(d.id || '').trim().toLowerCase();
+              const utr = String(d.utr || d.serial_no || d.gateway_serial_no || '').trim().toLowerCase();
+
+              if (orderId && manualOrderIds.has(orderId)) return false;
+              if (traceno && manualOrderIds.has(traceno)) return false;
+              if (merchantOrderId && manualOrderIds.has(merchantOrderId)) return false;
+              if (dId && manualOrderIds.has(dId)) return false;
+              if (utr && utr.length >= 6 && manualUtrs.has(utr)) return false;
+              return true;
+            })
+            .map((d: any) => {
             const prof = profileMap.get(d.user_id) || {};
             const rawStatus = (d.status || '').toUpperCase();
             let mappedStatus: PaymentStatus = 'PAYMENT_PENDING';
@@ -4857,8 +4915,22 @@ export async function fetchAdminPayments(): Promise<PaymentItem[]> {
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
 
-      if (combined.length > 0) {
-        return combined;
+      // Single authoritative deduplication pass across combined list
+      const seenOrderKeys = new Set<string>();
+      const seenUtrKeys = new Set<string>();
+      const dedupedCombined: PaymentItem[] = [];
+      for (const item of combined) {
+        const oKey = String(item.orderId || item.referenceId || '').trim().toLowerCase();
+        const uKey = String(item.utr || item.utrNumber || '').trim().toLowerCase();
+        if (oKey && seenOrderKeys.has(oKey)) continue;
+        if (uKey && uKey.length >= 6 && seenUtrKeys.has(uKey)) continue;
+        if (oKey) seenOrderKeys.add(oKey);
+        if (uKey && uKey.length >= 6) seenUtrKeys.add(uKey);
+        dedupedCombined.push(item);
+      }
+
+      if (dedupedCombined.length > 0) {
+        return dedupedCombined;
       }
     } catch {
       // Fall through to local
@@ -4869,120 +4941,15 @@ export async function fetchAdminPayments(): Promise<PaymentItem[]> {
 }
 
 export async function approveRecharge(paymentId: string, adminId: string) {
-  // 1. Primary: Server endpoint
-  try {
-    const res = await fetch(apiUrl('/api/admin/approve-recharge'), {
-      method: 'POST',
-      headers: getAdminAuthHeaders(),
-      body: JSON.stringify({ paymentId, adminId }),
-    });
-    const json = await res.json().catch(() => ({}));
-    if (res.ok && json.success) return json;
-    if (json.error) throw new Error(json.error);
-  } catch (e: any) {
-    if (e.message && !e.message.includes('fetch')) {
-      throw e;
-    }
-    console.warn('[APPROVE RECHARGE] API call failed:', e);
-  }
-
-  // 2. Secondary RPC fallback
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const { data, error } = await supabase.rpc('approve_recharge', {
-        p_payment_id: paymentId,
-        p_admin_id: adminId,
-      });
-      if (!error && data?.success) {
-        return data;
-      }
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase approve recharge error:', error.message);
-      }
-    } catch {
-      // Fall through to local
-    }
-  }
-
-  const list = getLocal<PaymentItem[]>(STORAGE_KEYS.PAYMENTS, []);
-  const payment = list.find((p) => p.id === paymentId);
-  if (!payment) throw new Error('Payment not found');
-  if (payment.status === 'PAID') throw new Error('Payment already approved');
-
-  payment.status = 'PAID';
-  payment.adminId = adminId;
-  payment.processedAt = new Date().toISOString();
-  saveLocal(STORAGE_KEYS.PAYMENTS, list);
-
-  // Credit user Topup Wallet (topupBalance & rechargeBalance)
-  const wallet = getLocal<Wallet>(STORAGE_KEYS.WALLET, {
-    topupBalance: 0,
-    withdrawBalance: 0,
-    availableBalance: 0,
-    rechargeBalance: 0,
-    earnedBalance: 0,
-  } as Wallet);
-  const curTopup = wallet.topupBalance !== undefined ? wallet.topupBalance : (wallet.rechargeBalance || 0);
-  const balBefore = curTopup;
-  wallet.topupBalance = +(curTopup + payment.amount).toFixed(2);
-  wallet.rechargeBalance = wallet.topupBalance;
-  saveLocal(STORAGE_KEYS.WALLET, wallet);
-
-  // Record or update wallet transaction
-  const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
-  const pendingTx = txs.find((t) => t.referenceId === payment.orderId && t.type === 'RECHARGE');
-  if (pendingTx) {
-    pendingTx.balanceBefore = balBefore;
-    pendingTx.balanceAfter = wallet.topupBalance;
-    pendingTx.balanceType = 'TOPUP_WALLET';
-    pendingTx.description = `Recharge Approved (UTR: ${payment.utr})`;
-    pendingTx.status = 'Completed';
-  } else {
-    const tx: WalletTransaction = {
-      id: 'tx_rec_' + Date.now(),
-      userId: payment.userId,
-      type: 'RECHARGE',
-      amount: payment.amount,
-      balanceBefore: balBefore,
-      balanceAfter: wallet.topupBalance,
-      balanceType: 'TOPUP_WALLET',
-      referenceId: payment.orderId,
-      utr: payment.utr,
-      status: 'Completed',
-      description: `Recharge Approved (UTR: ${payment.utr})`,
-      createdAt: new Date().toISOString(),
-    };
-    txs.unshift(tx);
-  }
-  saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
-
-  // Audit Log
-  logAdminAction(
-    adminId,
-    'APPROVE_RECHARGE',
-    'PAYMENT',
-    paymentId,
-    `Approved recharge ₹${payment.amount.toFixed(2)} (UTR: ${payment.utr}) for user ${payment.userId}`,
-    { amount: payment.amount, utr: payment.utr, userId: payment.userId }
-  ).catch(() => {});
-
-  // Trigger Notification
-  createNotificationForUser({
-    userId: payment.userId,
-    title: 'Recharge Successful',
-    description: `Your ₹${payment.amount.toFixed(2)} recharge has been approved and added to your wallet.`,
-    type: 'RECHARGE',
-    isHomePopup: false,
-    actionUrl: '/purchase',
-    actionText: 'Rent Power Bank',
-  }).catch(() => {});
-
-  // Trigger Dynamic Multi-Tier Top-Up Referral Commission (T1, T2, T3)
-  processTopupReferralRewards(paymentId, payment.userId, payment.amount).catch((e) => {
-    console.warn('Topup referral reward error:', e);
+  const res = await fetch(apiUrl('/api/admin/approve-recharge'), {
+    method: 'POST',
+    headers: getAdminAuthHeaders(),
+    body: JSON.stringify({ paymentId, adminId }),
   });
-
-  return { success: true };
+  const json = await res.json().catch(() => ({}));
+  if (res.ok && json.success) return json;
+  if (json.error) throw new Error(json.error);
+  throw new Error(`Approval failed (HTTP ${res.status}): ${json.message || res.statusText || 'Unknown error'}`);
 }
 
 export async function rejectRecharge(paymentId: string, param2: string, param3?: string) {
@@ -4991,80 +4958,15 @@ export async function rejectRecharge(paymentId: string, param2: string, param3?:
   const adminId = isParam2Admin ? param2 : (param3 || 'adm_master_01');
   const reason = isParam2Admin ? (param3 || 'Verification Failed') : param2;
 
-  // 1. Primary: Server endpoint
-  try {
-    const res = await fetch(apiUrl('/api/admin/reject-recharge'), {
-      method: 'POST',
-      headers: getAdminAuthHeaders(),
-      body: JSON.stringify({ paymentId, adminId, reason }),
-    });
-    const json = await res.json().catch(() => ({}));
-    if (res.ok && json.success) return json;
-    if (json.error) throw new Error(json.error);
-  } catch (e: any) {
-    if (e.message && !e.message.includes('fetch')) {
-      throw e;
-    }
-    console.warn('[REJECT RECHARGE] API call failed:', e);
-  }
-
-  // 2. Secondary RPC fallback
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const { data, error } = await supabase.rpc('reject_recharge', {
-        p_payment_id: paymentId,
-        p_admin_id: adminId,
-        p_reason: reason,
-      });
-      if (!error && data?.success) {
-        return data;
-      }
-      if (error && !isTableMissingError(error)) {
-        console.warn('Supabase reject recharge error:', error.message);
-      }
-    } catch {
-      // Fall through to local
-    }
-  }
-
-  const list = getLocal<PaymentItem[]>(STORAGE_KEYS.PAYMENTS, []);
-  const payment = list.find((p) => p.id === paymentId);
-  if (!payment) throw new Error('Payment not found');
-  payment.status = 'REJECTED';
-  payment.adminId = adminId;
-  payment.rejectionReason = reason;
-  payment.processedAt = new Date().toISOString();
-  saveLocal(STORAGE_KEYS.PAYMENTS, list);
-
-  // Update pending transaction status if present
-  const txs = getLocal<WalletTransaction[]>(STORAGE_KEYS.TRANSACTIONS, []);
-  const pendingTx = txs.find((t) => t.referenceId === payment.orderId && t.type === 'RECHARGE');
-  if (pendingTx) {
-    pendingTx.description = `Recharge Rejected: ${reason}`;
-    pendingTx.status = 'Rejected';
-    saveLocal(STORAGE_KEYS.TRANSACTIONS, txs);
-  }
-
-  // Audit Log
-  logAdminAction(
-    adminId,
-    'REJECT_RECHARGE',
-    'PAYMENT',
-    paymentId,
-    `Rejected recharge ₹${payment.amount.toFixed(2)} (Reason: ${reason})`,
-    { amount: payment.amount, reason, userId: payment.userId }
-  ).catch(() => {});
-
-  // Trigger Notification
-  createNotificationForUser({
-    userId: payment.userId,
-    title: 'Recharge Rejected',
-    description: `Your ₹${payment.amount.toFixed(2)} recharge was rejected.\nReason: ${reason}`,
-    type: 'RECHARGE',
-    isHomePopup: false,
-  }).catch(() => {});
-
-  return { success: true };
+  const res = await fetch(apiUrl('/api/admin/reject-recharge'), {
+    method: 'POST',
+    headers: getAdminAuthHeaders(),
+    body: JSON.stringify({ paymentId, adminId, reason }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (res.ok && json.success) return json;
+  if (json.error) throw new Error(json.error);
+  throw new Error(`Rejection failed (HTTP ${res.status}): ${json.message || res.statusText || 'Unknown error'}`);
 }
 
 export async function fetchAdminWithdrawals(): Promise<WithdrawalItem[]> {

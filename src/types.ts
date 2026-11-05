@@ -274,6 +274,7 @@ export interface PaymentItem {
   username?: string;
   userMobile?: string;
   orderId: string;
+  referenceId?: string;
   amount: number;
   paymentType: string;
   paymentMethod?: string;
