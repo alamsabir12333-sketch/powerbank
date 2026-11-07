@@ -4880,7 +4880,9 @@ export async function fetchAdminPayments(): Promise<PaymentItem[]> {
             let mappedStatus: PaymentStatus = 'PAYMENT_PENDING';
             if (rawStatus === 'SUCCESS' || rawStatus === 'PAID' || rawStatus === 'COMPLETED') {
               mappedStatus = 'PAID';
-            } else if (rawStatus === 'REJECTED' || rawStatus === 'FAILED' || rawStatus === 'FAILED_GATEWAY_CREATION') {
+            } else if (rawStatus === 'REJECTED') {
+              mappedStatus = 'REJECTED';
+            } else if (rawStatus === 'FAILED' || rawStatus === 'FAILED_GATEWAY_CREATION') {
               mappedStatus = 'FAILED';
             } else {
               mappedStatus = 'PAYMENT_PENDING';

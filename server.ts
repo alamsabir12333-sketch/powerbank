@@ -144,7 +144,9 @@ const rawSupabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL
 const supabaseUrl = formatSupabaseUrl(rawSupabaseUrl);
 const hasServiceRoleKey = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.SUPABASE_SERVICE_ROLE_KEY.trim() !== '');
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+const supabaseAnonKey = (process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || '').trim();
 
+// Dedicated service-role Supabase client strictly for trusted server-side DB operations and RPCs
 let supabaseClient: any = null;
 if (supabaseUrl && supabaseKey) {
   try {
@@ -152,6 +154,12 @@ if (supabaseUrl && supabaseKey) {
       auth: {
         autoRefreshToken: false,
         persistSession: false,
+      },
+      global: {
+        headers: {
+          Authorization: `Bearer ${supabaseKey}`,
+          apikey: supabaseKey,
+        },
       },
     });
     // Ensure payment-proofs storage bucket exists for screenshot uploads
@@ -162,6 +170,25 @@ if (supabaseUrl && supabaseKey) {
   }
 }
 const supabase = supabaseClient;
+
+// Dedicated isolated Supabase client using the anon/public key strictly for password authentication
+// endpoints (/api/admin/login and /api/auth/login). This guarantees that user signInWithPassword calls
+// never mutate the service-role client's in-memory session.
+let supabaseAuthClient: any = null;
+if (supabaseUrl && supabaseAnonKey) {
+  try {
+    supabaseAuthClient = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false,
+      },
+    });
+  } catch (err) {
+    console.warn('Failed to initialize isolated Supabase Auth client:', err);
+    supabaseAuthClient = null;
+  }
+}
 
 // Helper: Log gateway traffic
 async function recordGatewayLog(params: {
@@ -862,7 +889,15 @@ app.post('/api/auth/login', async (req, res) => {
     let authUser: any = null;
     let authSession: any = null;
 
-    const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+    const authClient = supabaseAuthClient;
+    if (!authClient) {
+      return res.status(503).json({
+        success: false,
+        error: 'Authentication service temporarily unavailable.',
+      });
+    }
+
+    const { data: authData, error: authErr } = await authClient.auth.signInWithPassword({
       email: targetEmail,
       password,
     });
@@ -872,7 +907,7 @@ app.post('/api/auth/login', async (req, res) => {
         const fallbacks = [`${cleanDigits}@gainpower.internal`, `${cleanDigits}@powerbank.app`];
         let recovered = false;
         for (const fbEmail of fallbacks) {
-          const { data: fbData, error: fbErr } = await supabase.auth.signInWithPassword({
+          const { data: fbData, error: fbErr } = await authClient.auth.signInWithPassword({
             email: fbEmail,
             password,
           });
@@ -6481,11 +6516,11 @@ app.post('/api/admin/login', async (req, res) => {
     });
   }
 
-  // 1. Supabase Auth if configured
-  if (supabase) {
+  // 1. Supabase Auth if configured (using isolated client with anon key)
+  if (supabaseAuthClient && supabase) {
     try {
       const adminEmail = `${cleanUsername.toLowerCase()}@powerbank.internal`;
-      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+      const { data: authData, error: authError } = await supabaseAuthClient.auth.signInWithPassword({
         email: adminEmail,
         password: cleanPassword,
       });
@@ -7799,7 +7834,7 @@ app.post('/api/admin/self-test-recharge', verifyAdminAuth, async (req, res) => {
 
   const chkOrd = `CHK_${Date.now()}`;
   const { data: chkDep, error: chkErr } = await supabase.from('deposit_transactions').insert({
-    user_id: testUserId, order_id: chkOrd, traceno: chkOrd, amount: 10, currency: 'INR', status: 'PENDING'
+    user_id: safeAdminId, order_id: chkOrd, traceno: chkOrd, amount: 10, currency: 'INR', status: 'PENDING'
   }).select('id').single();
 
   const statusProbe: Record<string, string> = { insertError: chkErr?.message || 'NONE' };

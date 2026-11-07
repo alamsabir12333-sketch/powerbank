@@ -248,11 +248,19 @@ export default function UsdtDepositPage({
         </span>
       );
     }
-    if (s === 'REJECTED' || s === 'FAILED') {
+    if (s === 'REJECTED') {
       return (
         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200">
           <XCircle className="w-3.5 h-3.5" />
           <span>REJECTED</span>
+        </span>
+      );
+    }
+    if (s === 'FAILED') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200">
+          <XCircle className="w-3.5 h-3.5" />
+          <span>FAILED</span>
         </span>
       );
     }

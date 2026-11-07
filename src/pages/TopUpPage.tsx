@@ -399,7 +399,7 @@ export default function TopUpPage({
 
   const getStatusBadge = (status?: string) => {
     const s = (status || '').toUpperCase();
-    if (s === 'SUCCESS' || s === 'PAID' || s === 'COMPLETED') {
+    if (s === 'SUCCESS' || s === 'PAID' || s === 'COMPLETED' || s === 'APPROVED') {
       return (
         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/60">
           <CheckCircle2 className="w-3.5 h-3.5" />
@@ -407,7 +407,15 @@ export default function TopUpPage({
         </span>
       );
     }
-    if (s === 'FAILED' || s === 'REJECTED' || s === 'FAILED_GATEWAY_CREATION') {
+    if (s === 'REJECTED') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200/60">
+          <XCircle className="w-3.5 h-3.5" />
+          <span>REJECTED</span>
+        </span>
+      );
+    }
+    if (s === 'FAILED' || s === 'FAILED_GATEWAY_CREATION') {
       return (
         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200/60">
           <XCircle className="w-3.5 h-3.5" />
@@ -705,6 +713,11 @@ export default function TopUpPage({
                           )}
                         </button>
                       </div>
+                      {item.status === 'REJECTED' && item.rejectionReason && (
+                        <p className="text-[11px] text-red-600 font-medium mt-0.5">
+                          Reason: {item.rejectionReason}
+                        </p>
+                      )}
                     </div>
 
                     <div className="text-right shrink-0 flex flex-col items-end gap-1">

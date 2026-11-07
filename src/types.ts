@@ -638,7 +638,7 @@ export interface DepositComplaint {
   updatedAt: string;
 }
 
-export type DepositStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'EXPIRED' | 'PAID' | 'COMPLETED';
+export type DepositStatus = 'PENDING' | 'SUCCESS' | 'FAILED' | 'EXPIRED' | 'PAID' | 'COMPLETED' | 'REJECTED';
 
 export interface DepositTransaction {
   id: string;

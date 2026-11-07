@@ -315,8 +315,12 @@ export function normalizeDepositTransactions(inputs: RawTransactionInputs): Depo
     let canonicalStatus: DepositTransaction['status'] = 'PENDING';
     if (allStatuses.some(s => s === 'PAID' || s === 'SUCCESS' || s === 'COMPLETED' || s === 'APPROVED')) {
       canonicalStatus = 'PAID';
-    } else if (allStatuses.some(s => s === 'FAILED' || s === 'REJECTED' || s === 'FAILED_GATEWAY_CREATION')) {
+    } else if (allStatuses.some(s => s === 'REJECTED')) {
+      canonicalStatus = 'REJECTED';
+    } else if (allStatuses.some(s => s === 'FAILED' || s === 'FAILED_GATEWAY_CREATION')) {
       canonicalStatus = 'FAILED';
+    } else if (allStatuses.some(s => s === 'CANCELLED' || s === 'EXPIRED')) {
+      canonicalStatus = 'EXPIRED';
     } else {
       canonicalStatus = 'PENDING';
     }
