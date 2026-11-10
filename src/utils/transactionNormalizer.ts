@@ -169,13 +169,17 @@ function buildCanonicalClusters(inputs: RawTransactionInputs): Map<string, Clust
     const ord = w.order_id || w.orderId;
     const utr = w.utr;
 
-    // Extract reference from description (e.g. #DEP2026... or #USDT...)
+    // Extract reference from description (e.g. #DEP2026... or #USDT... or TXID: ... or Ref: ...)
     const desc = String(w.description || '');
     let descRef: string | null = null;
     const hashMatch = desc.match(/#([A-Za-z0-9_-]+)/);
     if (hashMatch && hashMatch[1] && hashMatch[1] !== 'null') {
       descRef = hashMatch[1];
     }
+    const txidMatch = desc.match(/TXID:\s*([A-Za-z0-9_xX-]+)/i);
+    const txidRef = txidMatch && txidMatch[1] ? txidMatch[1] : null;
+    const bankRefMatch = desc.match(/Ref:\s*([A-Za-z0-9_xX-]+)/i);
+    const bankRef = bankRefMatch && bankRefMatch[1] ? bankRefMatch[1] : null;
 
     const typeUpper = String(w.type || '').toUpperCase();
     const isReversalOrRefund = typeUpper === 'WITHDRAWAL_REVERSAL' || typeUpper === 'REFUND';
@@ -188,6 +192,8 @@ function buildCanonicalClusters(inputs: RawTransactionInputs): Map<string, Clust
       ord,
       utr,
       descRef,
+      txidRef,
+      bankRef,
     ]);
   }
 
@@ -234,7 +240,12 @@ function buildCanonicalClusters(inputs: RawTransactionInputs): Map<string, Clust
       w.id,
       w.traceno,
       w.order_id,
+      w.merchant_order_id,
       w.bank_ref_no,
+      w.tx_hash,
+      w.txHash,
+      w.reference_id,
+      w.referenceId,
     ]);
   }
 
@@ -551,29 +562,33 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
     const ldg = items.find(it => it.source === 'ledger')?.data;
 
     let referenceId = '';
-    const candidates: string[] = [];
-    for (const it of items) {
-      const d = it.data;
-      if (d.order_id) candidates.push(d.order_id);
-      if (d.orderId) candidates.push(d.orderId);
-      if (d.traceno) candidates.push(d.traceno);
-      if (d.merchant_order_id) candidates.push(d.merchant_order_id);
-      if (d.reference_id) candidates.push(d.reference_id);
-      if (d.referenceId) candidates.push(d.referenceId);
-      if (d.bank_ref_no) candidates.push(d.bank_ref_no);
-    }
-    const cleanCandidates = candidates.filter(c => isValidIdentifierToken(c));
-
-    // Prefer human-readable identifiers that don't start with raw prefix
-    const preferred = cleanCandidates.find(c => !c.startsWith('USDT_DEP-') && !c.startsWith('USDT-') && (!c.includes('-') || c.startsWith('DEP') || c.startsWith('CHECKIN') || c.startsWith('SIGNUP') || c.startsWith('UPI')));
-    if (preferred) {
-      referenceId = preferred;
-    } else if (cleanCandidates.length > 0) {
-      let first = cleanCandidates[0];
-      if (first.startsWith('USDT_DEP-')) first = first.replace('USDT_DEP-', 'USDT-');
-      referenceId = first;
+    if (txType === 'WITHDRAWAL') {
+      referenceId = wth?.traceno || wth?.id || wtx?.reference_id || wtx?.id || rootKey;
     } else {
-      referenceId = pay?.id || dep?.id || wtx?.id || rootKey;
+      const candidates: string[] = [];
+      for (const it of items) {
+        const d = it.data;
+        if (d.order_id) candidates.push(d.order_id);
+        if (d.orderId) candidates.push(d.orderId);
+        if (d.traceno) candidates.push(d.traceno);
+        if (d.merchant_order_id) candidates.push(d.merchant_order_id);
+        if (d.reference_id) candidates.push(d.reference_id);
+        if (d.referenceId) candidates.push(d.referenceId);
+        if (d.bank_ref_no) candidates.push(d.bank_ref_no);
+      }
+      const cleanCandidates = candidates.filter(c => isValidIdentifierToken(c));
+
+      // Prefer human-readable identifiers that don't start with raw prefix
+      const preferred = cleanCandidates.find(c => !c.startsWith('USDT_DEP-') && !c.startsWith('USDT-') && (!c.includes('-') || c.startsWith('DEP') || c.startsWith('CHECKIN') || c.startsWith('SIGNUP') || c.startsWith('UPI')));
+      if (preferred) {
+        referenceId = preferred;
+      } else if (cleanCandidates.length > 0) {
+        let first = cleanCandidates[0];
+        if (first.startsWith('USDT_DEP-')) first = first.replace('USDT_DEP-', 'USDT-');
+        referenceId = first;
+      } else {
+        referenceId = pay?.id || dep?.id || wtx?.id || rootKey;
+      }
     }
 
     // 5. Payment Method & Description
@@ -582,6 +597,7 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
       (wth?.withdrawal_method === 'USDT' ||
         Boolean(wth?.wallet_address) ||
         Boolean(wth?.network) ||
+        Boolean(wth?.usdt_address) ||
         String(wth?.admin_note || '').includes('USDT') ||
         String(wtx?.description || '').includes('USDT'));
 
@@ -646,6 +662,15 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
         ? (isUsdt ? `USDT Deposit #${referenceId}` : `INR Deposit #${referenceId}`)
         : undefined);
 
+    if (txType === 'WITHDRAWAL' && canonicalStatus === 'Completed') {
+      const completedDesc = items
+        .map(it => it.data?.description)
+        .find(d => d && (d.includes('USDT Payout Disbursed') || d.includes('Withdrawal Paid') || d.includes('Disbursed') || d.includes('Approved')));
+      if (completedDesc) {
+        description = completedDesc;
+      }
+    }
+
     if (!isUsdtWithdrawal && isUsdt && (!description || description.includes('ADMIN_ADJUSTMENT'))) {
       description = `USDT Deposit #${referenceId}`;
     } else if (txType === 'RECHARGE' && !isUsdt && (!description || description.includes('ADMIN_ADJUSTMENT'))) {
@@ -660,9 +685,13 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
     }
 
     const utr =
+      (txType === 'WITHDRAWAL'
+        ? (wth?.tx_hash || wth?.bank_ref_no || (wtx?.reference_id && wtx.reference_id !== referenceId ? wtx.reference_id : undefined))
+        : null) ||
       pay?.utr ||
       dep?.utr ||
       wth?.bank_ref_no ||
+      wth?.tx_hash ||
       wtx?.utr ||
       items.find(it => it.data.utr)?.data.utr;
 
@@ -673,16 +702,25 @@ export function normalizeWalletTransactions(inputs: RawTransactionInputs): Walle
     }, Infinity);
     const createdAt = earliestTime !== Infinity ? new Date(earliestTime).toISOString() : new Date().toISOString();
 
-    const primaryId = pay?.id || dep?.id || wtx?.id || wth?.id || pur?.id || rootKey;
+    const primaryId =
+      txType === 'WITHDRAWAL'
+        ? (wth?.id || wtx?.reference_id || wtx?.id || rootKey)
+        : (pay?.id || dep?.id || wtx?.id || wth?.id || pur?.id || rootKey);
     const userId = pay?.user_id || dep?.user_id || wtx?.user_id || wtx?.userId || wth?.user_id || pur?.user_id || inputs.userId || '';
+
+    const debitWtx = items
+      .filter(it => it.source === 'wallet_tx')
+      .map(it => it.data)
+      .find(d => Number(d.balance_before) !== Number(d.balance_after));
+    const effectiveWtx = debitWtx || wtx;
 
     result.push({
       id: primaryId,
       userId,
       type: txType,
       amount,
-      balanceBefore: Number(wtx?.balance_before ?? wtx?.balanceBefore ?? ldg?.balance_before ?? 0),
-      balanceAfter: Number(wtx?.balance_after ?? wtx?.balanceAfter ?? ldg?.balance_after ?? 0),
+      balanceBefore: Number(effectiveWtx?.balance_before ?? effectiveWtx?.balanceBefore ?? ldg?.balance_before ?? 0),
+      balanceAfter: Number(effectiveWtx?.balance_after ?? effectiveWtx?.balanceAfter ?? ldg?.balance_after ?? 0),
       status: canonicalStatus,
       referenceId,
       description,

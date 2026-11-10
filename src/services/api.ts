@@ -1018,10 +1018,7 @@ export async function fetchWalletTransactions(userId: string): Promise<WalletTra
     if (res.ok) {
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {
-        return normalizeWalletTransactions({
-          userId,
-          walletTransactions: json.data,
-        });
+        return json.data;
       }
     }
   } catch (apiErr) {

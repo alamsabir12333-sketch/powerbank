@@ -64,11 +64,7 @@ export const TransactionPage: React.FC<TransactionPageProps> = ({
     setLoading(true);
     try {
       const data = await fetchWalletTransactions(userId);
-      const normalized = normalizeWalletTransactions({
-        userId,
-        walletTransactions: data,
-      });
-      setTransactions(normalized);
+      setTransactions(Array.isArray(data) ? data : []);
     } catch (err: any) {
       console.error('Error fetching transactions:', err);
       onShowToast?.(err.message || 'Failed to load transaction history');

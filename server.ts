@@ -8751,24 +8751,81 @@ const handleApproveWithdrawal = async (req: express.Request, res: express.Respon
       });
     }
 
-    // Attempt atomic RPC execution first
-    try {
-      const { data: rpcData, error: rpcErr } = await supabase.rpc('approve_usdt_withdrawal', {
-        p_withdrawal_id: withdrawalId,
-        p_tx_hash: effectiveRefNo || `REF-${Date.now()}`,
-        p_admin_id: verifiedAdminId,
-      });
+    const payoutDescription = isUsdt
+      ? `USDT Payout Disbursed: ${w.usdt_amount || 0} USDT via ${w.network || 'USDT'} (TXID: ${effectiveRefNo})`
+      : `🏦 Withdrawal Paid: ₹${w.amount} to A/C ${w.account_number || ''} (Ref: ${effectiveRefNo || w.id})`;
 
-      if (!rpcErr && rpcData?.success) {
-        return res.json(rpcData);
-      }
-      if (!rpcErr && rpcData && !rpcData.success) {
-        return res.status(400).json(rpcData);
-      }
-    } catch (_rpcErr) {}
+    const dbClient = typeof getServiceRoleClient === 'function' ? getServiceRoleClient() : supabase;
 
-    // Fallback: Atomic status-guarded update
-    const { data: wallet, error: walErr } = await supabase
+    // For USDT withdrawals, attempt atomic RPC execution first
+    if (isUsdt) {
+      try {
+        const { data: rpcData, error: rpcErr } = await dbClient.rpc('approve_usdt_withdrawal', {
+          p_withdrawal_id: withdrawalId,
+          p_tx_hash: effectiveRefNo || `REF-${Date.now()}`,
+          p_admin_id: verifiedAdminId,
+        });
+
+        if (!rpcErr && rpcData?.success) {
+          // Harmonize wallet_transactions: update original pending transaction to COMPLETED and remove RPC-created duplicate
+          try {
+            const matchRefs = [withdrawalId, w.id, w.traceno, w.order_id].filter(Boolean);
+            const { data: origTx } = await dbClient
+              .from('wallet_transactions')
+              .select('id, reference_id')
+              .eq('user_id', w.user_id)
+              .in('reference_id', matchRefs)
+              .eq('type', 'WITHDRAWAL')
+              .order('created_at', { ascending: true })
+              .limit(1)
+              .maybeSingle();
+
+            if (origTx) {
+              await dbClient
+                .from('wallet_transactions')
+                .update({
+                  status: 'COMPLETED',
+                  description: payoutDescription,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', origTx.id);
+
+              if (effectiveRefNo && effectiveRefNo !== origTx.reference_id) {
+                await dbClient
+                  .from('wallet_transactions')
+                  .delete()
+                  .eq('user_id', w.user_id)
+                  .eq('reference_id', effectiveRefNo)
+                  .eq('type', 'WITHDRAWAL')
+                  .neq('id', origTx.id);
+              }
+            } else {
+              // If no prior pending record, normalize the RPC-created record to canonical reference_id
+              await dbClient
+                .from('wallet_transactions')
+                .update({
+                  reference_id: w.id,
+                  description: payoutDescription,
+                  status: 'COMPLETED',
+                })
+                .eq('user_id', w.user_id)
+                .eq('reference_id', effectiveRefNo)
+                .eq('type', 'WITHDRAWAL');
+            }
+          } catch (_syncErr) {
+            console.warn('[WITHDRAW APPROVE] Wallet transaction sync notice:', _syncErr);
+          }
+
+          return res.json({ success: true, message: 'Withdrawal marked as completed.', ...rpcData });
+        }
+        if (!rpcErr && rpcData && !rpcData.success) {
+          return res.status(400).json(rpcData);
+        }
+      } catch (_rpcErr) {}
+    }
+
+    // Atomic status-guarded update (Bank withdrawals or USDT fallback)
+    const { data: wallet, error: walErr } = await dbClient
       .from('wallets')
       .select('*')
       .eq('user_id', w.user_id)
@@ -8790,44 +8847,64 @@ const handleApproveWithdrawal = async (req: express.Request, res: express.Respon
     const newPending = Math.max(0, +(curPending - amount).toFixed(2));
     const newTotalWithdrawn = +(Number(wallet.total_withdrawn || 0) + amount).toFixed(2);
 
-    await supabase.from('wallets').update({
+    await dbClient.from('wallets').update({
       pending_balance: newPending,
       total_withdrawn: newTotalWithdrawn,
       updated_at: new Date().toISOString(),
     }).eq('user_id', w.user_id);
 
-    await supabase.from('withdrawals').update({
+    await dbClient.from('withdrawals').update({
       status: 'COMPLETED',
-      tx_hash: isUsdt ? effectiveRefNo : w.tx_hash,
+      tx_hash: isUsdt ? effectiveRefNo : (w.tx_hash || effectiveRefNo),
       bank_ref_no: effectiveRefNo,
       processed_at: new Date().toISOString(),
       processed_by: verifiedAdminId,
       updated_at: new Date().toISOString(),
-    }).eq('id', withdrawalId).eq('status', w.status);
+    }).eq('id', withdrawalId).in('status', ['PENDING', 'PROCESSING']);
 
-    // Insert wallet transaction
-    await supabase.from('wallet_transactions').insert({
-      user_id: w.user_id,
-      type: 'WITHDRAWAL',
-      amount: amount,
-      balance_before: Number(wallet.withdraw_balance || 0),
-      balance_after: Number(wallet.withdraw_balance || 0),
-      wallet_type: 'WITHDRAWABLE',
-      status: 'COMPLETED',
-      reference_id: effectiveRefNo || w.id,
-      description: isUsdt
-        ? `USDT Payout Disbursed: ${w.usdt_amount || 0} USDT via ${w.network || 'USDT'} (TXID: ${effectiveRefNo})`
-        : `🏦 Withdrawal Paid: ₹${amount} to A/C ${w.account_number} (Ref: ${effectiveRefNo})`,
-      created_at: new Date().toISOString(),
-    });
+    // Update the existing pending wallet_transactions record to COMPLETED (never insert a duplicate)
+    const matchRefs = [withdrawalId, w.id, w.traceno, w.order_id].filter(Boolean);
+    const { data: existingTxs } = await dbClient
+      .from('wallet_transactions')
+      .select('id, reference_id')
+      .eq('user_id', w.user_id)
+      .in('reference_id', matchRefs)
+      .in('type', ['WITHDRAWAL', 'WITHDRAWAL_REQUEST'])
+      .order('created_at', { ascending: true })
+      .limit(1);
+
+    if (existingTxs && existingTxs.length > 0) {
+      await dbClient
+        .from('wallet_transactions')
+        .update({
+          status: 'COMPLETED',
+          description: payoutDescription,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingTxs[0].id);
+    } else {
+      // Anomaly fallback: insert single transaction preserving canonical withdrawal request ID
+      await dbClient.from('wallet_transactions').insert({
+        user_id: w.user_id,
+        type: 'WITHDRAWAL',
+        amount: -amount,
+        balance_before: Number(wallet.withdraw_balance || 0),
+        balance_after: Number(wallet.withdraw_balance || 0),
+        wallet_type: 'WITHDRAWABLE',
+        status: 'COMPLETED',
+        reference_id: w.id,
+        description: payoutDescription,
+        created_at: new Date().toISOString(),
+      });
+    }
 
     // Notify user
-    await supabase.from('notifications').insert({
+    await dbClient.from('notifications').insert({
       user_id: w.user_id,
       title: isUsdt ? 'USDT Withdrawal Disbursed! 🚀' : 'Withdrawal Processed! 🏦',
       message: isUsdt
         ? `Your withdrawal of ${w.usdt_amount || 0} USDT has been disbursed via ${w.network || 'USDT'}. TXID: ${effectiveRefNo}`
-        : `Your withdrawal of ₹${amount} has been paid to your bank account (${w.account_number}).`,
+        : `Your withdrawal of ₹${amount} has been paid to your bank account (${w.account_number || ''}).`,
       type: 'SUCCESS',
       read: false,
       created_at: new Date().toISOString(),
