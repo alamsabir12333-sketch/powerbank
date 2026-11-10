@@ -398,7 +398,7 @@ export default function UsdtDepositPage({
               1. Select Network & Address
             </h3>
             <span className="text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200/60">
-              Manual Transfer
+              Auto Transfer
             </span>
           </div>
 

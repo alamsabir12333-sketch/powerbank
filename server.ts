@@ -142,11 +142,155 @@ function formatSupabaseUrl(url?: string): string {
 
 const rawSupabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://evhwqlnymvoduclmzshz.supabase.co';
 const supabaseUrl = formatSupabaseUrl(rawSupabaseUrl);
-const hasServiceRoleKey = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.SUPABASE_SERVICE_ROLE_KEY.trim() !== '');
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
-const supabaseAnonKey = (process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || '').trim();
+function sanitizeSupabaseKey(raw?: string): string {
+  if (!raw) return '';
+  return raw.trim().replace(/^['"]|['"]$/g, '').replace(/^Bearer\s+/i, '').trim();
+}
 
-// Dedicated service-role Supabase client strictly for trusted server-side DB operations and RPCs
+const cleanServiceRoleKey = sanitizeSupabaseKey(process.env.SUPABASE_SERVICE_ROLE_KEY);
+const cleanAnonKey = sanitizeSupabaseKey(
+  process.env.VITE_SUPABASE_ANON_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
+  process.env.VITE_SUPABASE_PUBLISHABLE_KEY
+);
+const hasServiceRoleKey = Boolean(cleanServiceRoleKey);
+const supabaseKey = cleanServiceRoleKey || cleanAnonKey || '';
+const supabaseAnonKey = cleanAnonKey;
+
+// Dedicated, immutable service-role Supabase client singleton
+// Guaranteed free of in-memory session contamination, with explicit Authorization and apikey headers.
+let dedicatedServiceRoleClient: any = null;
+
+function getServiceRoleClient() {
+  if (dedicatedServiceRoleClient) return dedicatedServiceRoleClient;
+  const key = cleanServiceRoleKey || sanitizeSupabaseKey(process.env.SUPABASE_SERVICE_ROLE_KEY);
+  if (!key) {
+    throw new Error('MISSING_SUPABASE_SERVICE_ROLE_KEY: The SUPABASE_SERVICE_ROLE_KEY environment variable is missing or empty. Administrative settlement and rejection RPCs require service_role privileges.');
+  }
+  dedicatedServiceRoleClient = createClient(supabaseUrl, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+    global: {
+      headers: {
+        Authorization: `Bearer ${key}`,
+        apikey: key,
+      },
+    },
+  });
+  return dedicatedServiceRoleClient;
+}
+
+interface DiagnosticError {
+  status: number;
+  errorType: 'CONFIG_ERROR' | 'PERMISSION_DENIED' | 'RPC_NOT_FOUND' | 'SCHEMA_ERROR' | 'TIMEOUT' | 'NETWORK_ERROR' | 'TRANSACTION_ABORTED';
+  userMessage: string;
+  code: string;
+  details?: string;
+  hint?: string;
+}
+
+function classifyPostgresRpcError(err: any, rpcName: string): DiagnosticError {
+  const code = String(err?.code || '').trim();
+  const msg = String(err?.message || '').trim();
+  const details = String(err?.details || '').trim();
+  const hint = String(err?.hint || '').trim();
+
+  // 1. Missing or misconfigured service-role key
+  if (err?.message?.includes('MISSING_SUPABASE_SERVICE_ROLE_KEY')) {
+    return {
+      status: 500,
+      errorType: 'CONFIG_ERROR',
+      userMessage: 'Server configuration error: SUPABASE_SERVICE_ROLE_KEY is missing or empty in environment. Administrative operations cannot execute without service_role privileges.',
+      code: 'CONFIG_MISSING_KEY',
+      details: 'Check Cloud Run or server environment variables for SUPABASE_SERVICE_ROLE_KEY.',
+    };
+  }
+
+  // 2. Permission Denied (42501)
+  if (code === '42501' || msg.toLowerCase().includes('permission denied')) {
+    return {
+      status: 403,
+      errorType: 'PERMISSION_DENIED',
+      userMessage: `Database permission denied for function ${rpcName}. The database role executing this request does not have EXECUTE permission.`,
+      code: '42501',
+      details: msg || details || 'PostgreSQL permission denied (42501)',
+      hint: 'Verify EXECUTE is granted to service_role and that the client is authenticating with the valid service_role key.',
+    };
+  }
+
+  // 3. Function Not Found / Signature Mismatch (PGRST202 or 42883)
+  if (code === 'PGRST202' || code === '42883' || (msg.toLowerCase().includes('function') && msg.toLowerCase().includes('does not exist'))) {
+    return {
+      status: 501,
+      errorType: 'RPC_NOT_FOUND',
+      userMessage: `Database RPC function ${rpcName} is missing or has a parameter signature mismatch in schema public.`,
+      code: code || '42883',
+      details: msg || details,
+      hint: 'Ensure migration 20261101_settle_manual_upi_deposit.sql is applied.',
+    };
+  }
+
+  // 4. Unassigned Record / PL/pgSQL Runtime Error (55000)
+  if (code === '55000' || msg.toLowerCase().includes('not assigned yet')) {
+    return {
+      status: 500,
+      errorType: 'SCHEMA_ERROR',
+      userMessage: `Database function ${rpcName} encountered a PL/pgSQL record assignment error (55000).`,
+      code: '55000',
+      details: msg || details,
+      hint: 'Apply migration 20261110_fix_unassigned_record_variables.sql to eliminate unassigned RECORD variable access.',
+    };
+  }
+
+  // 5. Query / Lock Timeout (57014)
+  if (code === '57014' || msg.toLowerCase().includes('timeout') || msg.toLowerCase().includes('canceling statement')) {
+    return {
+      status: 504,
+      errorType: 'TIMEOUT',
+      userMessage: `Database transaction timed out while acquiring row locks in ${rpcName}. No records were modified.`,
+      code: '57014',
+      details: msg || details,
+      hint: 'Check for concurrent transactions holding table or row locks on payments or deposit_transactions.',
+    };
+  }
+
+  // 6. Check constraint violation / Invalid enum status (23514)
+  if (code === '23514') {
+    return {
+      status: 400,
+      errorType: 'TRANSACTION_ABORTED',
+      userMessage: 'Database check constraint violation: Invalid status transition or value.',
+      code: '23514',
+      details: msg || details,
+    };
+  }
+
+  // 7. Network / connection failure
+  if (msg.toLowerCase().includes('fetch failed') || msg.toLowerCase().includes('econnrefused') || msg.toLowerCase().includes('etimedout')) {
+    return {
+      status: 502,
+      errorType: 'NETWORK_ERROR',
+      userMessage: 'Failed to connect to Supabase database endpoint. Network error or upstream unreachable.',
+      code: 'NETWORK_ERROR',
+      details: msg,
+    };
+  }
+
+  // Default fallback
+  return {
+    status: 500,
+    errorType: 'TRANSACTION_ABORTED',
+    userMessage: `Database RPC ${rpcName} execution failed: ${msg || 'Unknown database error'}. No balance was modified.`,
+    code: code || 'DATABASE_ERROR',
+    details: msg || details,
+    hint,
+  };
+}
+
+// Dedicated service-role Supabase client strictly for general server-side DB operations
 let supabaseClient: any = null;
 if (supabaseUrl && supabaseKey) {
   try {
@@ -6274,7 +6418,13 @@ async function resolveAuthorizedAdminUuid(adminUser: any): Promise<{
   error?: string;
   statusCode?: number;
 }> {
-  if (!supabase) {
+  let adminClient: any = null;
+  try {
+    adminClient = getServiceRoleClient();
+  } catch (_e) {
+    adminClient = supabase;
+  }
+  if (!adminClient) {
     return { success: false, error: 'Database service unavailable to verify administrator authorization.', statusCode: 503 };
   }
   const rawId = (adminUser?.adminId || adminUser?.id || '').toString().trim();
@@ -6283,7 +6433,7 @@ async function resolveAuthorizedAdminUuid(adminUser: any): Promise<{
   // If rawId is already a valid UUID, verify it exists and is an active authorized admin profile
   if (rawId && isValidUUID(rawId)) {
     try {
-      const { data: profile, error } = await supabase
+      const { data: profile, error } = await adminClient
         .from('profiles')
         .select('id, user_id, role, status, is_active, username')
         .or(`id.eq.${rawId},user_id.eq.${rawId}`)
@@ -6312,7 +6462,7 @@ async function resolveAuthorizedAdminUuid(adminUser: any): Promise<{
 
   // Legacy static identifier (e.g. adm_root_700, adm_master_01, admin, etc.)
   try {
-    const { data: adminProfiles, error: queryErr } = await supabase
+    const { data: adminProfiles, error: queryErr } = await adminClient
       .from('profiles')
       .select('id, user_id, role, status, is_active, username')
       .in('role', ['admin', 'superadmin', 'manager', 'support']);
@@ -7395,18 +7545,41 @@ app.post('/api/admin/approve-recharge', verifyAdminAuth, async (req, res) => {
 
   const safeAdminId = resolution.adminUuid;
   const rawPaymentId = req.body?.paymentId || req.body?.depositId || req.body?.id || req.body?.orderId;
+  const requestId = crypto.randomUUID();
+  const currentRevision = process.env.K_REVISION || 'local';
+
   if (!rawPaymentId) {
-    return res.status(400).json({ success: false, error: 'Payment identifier is required.' });
+    return res.status(400).json({ success: false, error: 'Payment identifier is required.', requestId });
   }
-  if (!supabase) {
-    return res.status(503).json({ success: false, error: 'Database service unavailable.' });
+
+  let adminRpcClient: any;
+  try {
+    adminRpcClient = getServiceRoleClient();
+  } catch (clientErr: any) {
+    console.error(JSON.stringify({
+      level: 'FATAL',
+      event: 'SERVICE_ROLE_CLIENT_INIT_FAILURE',
+      endpoint: '/api/admin/approve-recharge',
+      requestId,
+      revision: currentRevision,
+      error: clientErr.message,
+    }));
+    return res.status(500).json({
+      success: false,
+      errorType: 'CONFIG_ERROR',
+      error: 'Server configuration error: SUPABASE_SERVICE_ROLE_KEY is missing or invalid.',
+      code: 'CONFIG_MISSING_KEY',
+      endpoint: '/api/admin/approve-recharge',
+      requestId,
+      revision: currentRevision,
+    });
   }
 
   // Robust ID mapping: resolve whether rawPaymentId is payments.id, deposit_transactions.id, or order_id
   let targetPaymentUuid = String(rawPaymentId).trim();
   if (!isValidUUID(targetPaymentUuid)) {
     // Look up in payments by order_id
-    const { data: pay } = await supabase
+    const { data: pay } = await adminRpcClient
       .from('payments')
       .select('id')
       .eq('order_id', targetPaymentUuid)
@@ -7415,7 +7588,7 @@ app.post('/api/admin/approve-recharge', verifyAdminAuth, async (req, res) => {
     if (pay?.id && isValidUUID(pay.id)) {
       targetPaymentUuid = pay.id;
     } else {
-      const { data: dep } = await supabase
+      const { data: dep } = await adminRpcClient
         .from('deposit_transactions')
         .select('id')
         .or(`order_id.eq.${targetPaymentUuid},traceno.eq.${targetPaymentUuid}`)
@@ -7423,28 +7596,35 @@ app.post('/api/admin/approve-recharge', verifyAdminAuth, async (req, res) => {
       if (dep?.id && isValidUUID(dep.id)) {
         targetPaymentUuid = dep.id;
       } else {
-        return res.status(404).json({ success: false, error: `Payment not found with identifier: ${targetPaymentUuid}` });
+        return res.status(404).json({
+          success: false,
+          errorType: 'RECORD_NOT_FOUND',
+          error: `Payment not found with identifier: ${targetPaymentUuid}`,
+          code: 'PAYMENT_NOT_FOUND',
+          endpoint: '/api/admin/approve-recharge',
+          requestId,
+        });
       }
     }
   }
 
   // Ensure companion record exists in both tables so PL/pgSQL tuple assignments and locks never fail
   try {
-    const { data: pRecord } = await supabase
+    const { data: pRecord } = await adminRpcClient
       .from('payments')
       .select('id, user_id, amount, order_id, utr, status')
       .eq('id', targetPaymentUuid)
       .maybeSingle();
 
     if (pRecord && pRecord.order_id) {
-      const { data: dRecord } = await supabase
+      const { data: dRecord } = await adminRpcClient
         .from('deposit_transactions')
         .select('id')
         .or(`order_id.eq.${pRecord.order_id},traceno.eq.${pRecord.order_id}`)
         .maybeSingle();
 
       if (!dRecord) {
-        await supabase.from('deposit_transactions').insert({
+        await adminRpcClient.from('deposit_transactions').insert({
           user_id: pRecord.user_id,
           order_id: pRecord.order_id,
           traceno: pRecord.order_id,
@@ -7461,7 +7641,7 @@ app.post('/api/admin/approve-recharge', verifyAdminAuth, async (req, res) => {
         });
       }
     } else if (!pRecord) {
-      const { data: dRecord } = await supabase
+      const { data: dRecord } = await adminRpcClient
         .from('deposit_transactions')
         .select('id, user_id, amount, order_id, traceno, utr, status')
         .eq('id', targetPaymentUuid)
@@ -7470,14 +7650,14 @@ app.post('/api/admin/approve-recharge', verifyAdminAuth, async (req, res) => {
       if (dRecord) {
         const orderRef = dRecord.order_id || dRecord.traceno;
         if (orderRef) {
-          const { data: pCheck } = await supabase
+          const { data: pCheck } = await adminRpcClient
             .from('payments')
             .select('id')
             .eq('order_id', orderRef)
             .maybeSingle();
 
           if (!pCheck) {
-            const { data: newP } = await supabase.from('payments').insert({
+            const { data: newP } = await adminRpcClient.from('payments').insert({
               user_id: dRecord.user_id,
               order_id: orderRef,
               amount: dRecord.amount,
@@ -7501,23 +7681,58 @@ app.post('/api/admin/approve-recharge', verifyAdminAuth, async (req, res) => {
   }
 
   try {
+    const rpcStartTime = Date.now();
 
-    // ATOMIC SETTLEMENT ONLY: Call database RPC with row locks and fail-closed transaction
-    const { data: rpcOutput, error: rpcErr } = await supabase.rpc('settle_manual_upi_deposit', {
+    // ATOMIC SETTLEMENT ONLY: Call database RPC with row locks and fail-closed transaction via dedicated service-role client
+    const { data: rpcOutput, error: rpcErr } = await adminRpcClient.rpc('settle_manual_upi_deposit', {
       p_payment_id: targetPaymentUuid,
       p_admin_id: safeAdminId,
     });
+    const rpcDurationMs = Date.now() - rpcStartTime;
 
-    // FAIL CLOSED: If RPC is missing (PGRST202/42883), errored, timed out, or returned null, return 503 without manual fallback
+    // FAIL CLOSED: If RPC is missing, errored, timed out, or returned null, return classified error without manual fallback
     if (rpcErr || !rpcOutput) {
-      console.error('[APPROVE-RECHARGE] settle_manual_upi_deposit RPC failure:', rpcErr);
-      return res.status(503).json({
+      const classified = classifyPostgresRpcError(rpcErr, 'settle_manual_upi_deposit');
+      console.error(JSON.stringify({
+        level: 'ERROR',
+        event: 'RECHARGE_APPROVE_RPC_FAILURE',
+        endpoint: '/api/admin/approve-recharge',
+        rpc: 'settle_manual_upi_deposit',
+        requestId,
+        revision: currentRevision,
+        paymentId: targetPaymentUuid,
+        adminId: safeAdminId,
+        durationMs: rpcDurationMs,
+        errorType: classified.errorType,
+        errorCode: classified.code,
+        errorMessage: rpcErr?.message || 'Empty or invalid response from settlement RPC',
+        details: rpcErr?.details,
+        hint: rpcErr?.hint,
+      }));
+      return res.status(classified.status).json({
         success: false,
-        error: 'Database settlement service unavailable. The required atomic settlement RPC failed, timed out, or is missing. No balance was modified.',
-        code: rpcErr?.code || 'RPC_UNAVAILABLE',
-        details: rpcErr?.message || 'Empty or invalid response from settlement RPC',
+        errorType: classified.errorType,
+        error: classified.userMessage,
+        code: classified.code,
+        details: classified.details,
+        hint: classified.hint,
+        endpoint: '/api/admin/approve-recharge',
+        rpc: 'settle_manual_upi_deposit',
+        requestId,
+        revision: currentRevision,
       });
     }
+
+    console.log(JSON.stringify({
+      level: 'INFO',
+      event: 'RECHARGE_APPROVE_RPC_SUCCESS',
+      endpoint: '/api/admin/approve-recharge',
+      rpc: 'settle_manual_upi_deposit',
+      paymentId: targetPaymentUuid,
+      adminId: safeAdminId,
+      durationMs: rpcDurationMs,
+      rpcSuccess: rpcOutput?.success,
+    }));
 
     if (!rpcOutput.success) {
       const errCode = rpcOutput.error || '';
@@ -7589,12 +7804,34 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
   const safeAdminId = resolution.adminUuid;
   const rawPaymentId = req.body?.paymentId || req.body?.depositId || req.body?.id || req.body?.orderId;
   const reason = req.body?.reason || req.body?.rejectionReason || 'Verification Failed';
+  const requestId = crypto.randomUUID();
+  const currentRevision = process.env.K_REVISION || 'local';
 
   if (!rawPaymentId) {
-    return res.status(400).json({ success: false, error: 'Payment identifier is required.' });
+    return res.status(400).json({ success: false, error: 'Payment identifier is required.', requestId });
   }
-  if (!supabase) {
-    return res.status(503).json({ success: false, error: 'Database service unavailable.' });
+
+  let adminRpcClient: any;
+  try {
+    adminRpcClient = getServiceRoleClient();
+  } catch (clientErr: any) {
+    console.error(JSON.stringify({
+      level: 'FATAL',
+      event: 'SERVICE_ROLE_CLIENT_INIT_FAILURE',
+      endpoint: '/api/admin/reject-recharge',
+      requestId,
+      revision: currentRevision,
+      error: clientErr.message,
+    }));
+    return res.status(500).json({
+      success: false,
+      errorType: 'CONFIG_ERROR',
+      error: 'Server configuration error: SUPABASE_SERVICE_ROLE_KEY is missing or invalid.',
+      code: 'CONFIG_MISSING_KEY',
+      endpoint: '/api/admin/reject-recharge',
+      requestId,
+      revision: currentRevision,
+    });
   }
 
   const cleanReason = String(reason || 'Verification Failed').trim().substring(0, 255);
@@ -7606,7 +7843,7 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
 
   if (isValidUUID(targetIdStr)) {
     // 1. Try payments table by id
-    const { data: p } = await supabase
+    const { data: p } = await adminRpcClient
       .from('payments')
       .select('id, user_id, amount, order_id, utr, status')
       .eq('id', targetIdStr)
@@ -7615,7 +7852,7 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
       resolvedPayment = p;
     } else {
       // 2. Try deposit_transactions by id
-      const { data: d } = await supabase
+      const { data: d } = await adminRpcClient
         .from('deposit_transactions')
         .select('id, user_id, amount, order_id, traceno, utr, status')
         .eq('id', targetIdStr)
@@ -7626,7 +7863,7 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
     }
   } else {
     // Identifier is order_id string
-    const { data: p } = await supabase
+    const { data: p } = await adminRpcClient
       .from('payments')
       .select('id, user_id, amount, order_id, utr, status')
       .eq('order_id', targetIdStr)
@@ -7636,7 +7873,7 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
 
   // If resolved payment found, resolve companion deposit_transactions record if exists
   if (resolvedPayment && !resolvedDeposit && resolvedPayment.order_id) {
-    const { data: d } = await supabase
+    const { data: d } = await adminRpcClient
       .from('deposit_transactions')
       .select('id, user_id, amount, order_id, traceno, utr, status')
       .or(`order_id.eq.${resolvedPayment.order_id},traceno.eq.${resolvedPayment.order_id}`)
@@ -7648,7 +7885,7 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
   if (resolvedDeposit && !resolvedPayment) {
     const ord = resolvedDeposit.order_id || resolvedDeposit.traceno;
     if (ord) {
-      const { data: p } = await supabase
+      const { data: p } = await adminRpcClient
         .from('payments')
         .select('id, user_id, amount, order_id, utr, status')
         .eq('order_id', ord)
@@ -7658,7 +7895,14 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
   }
 
   if (!resolvedPayment && !resolvedDeposit) {
-    return res.status(404).json({ success: false, error: 'Payment not found' });
+    return res.status(404).json({
+      success: false,
+      errorType: 'RECORD_NOT_FOUND',
+      error: 'Payment not found',
+      code: 'PAYMENT_NOT_FOUND',
+      endpoint: '/api/admin/reject-recharge',
+      requestId,
+    });
   }
 
   // Terminal state guards
@@ -7682,24 +7926,47 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
   const orderId = resolvedPayment?.order_id || resolvedDeposit?.order_id || resolvedDeposit?.traceno;
 
   try {
-    // 1. First attempt dedicated reject_manual_upi_deposit RPC
+    const adminRpcClient = getServiceRoleClient();
+    const rpcStartTime = Date.now();
+
+    // 1. First attempt dedicated reject_manual_upi_deposit RPC via dedicated service-role client
     let rpcOutput: any = null;
     let rpcSuccess = false;
 
-    const { data: newRpcRes, error: newRpcErr } = await supabase.rpc('reject_manual_upi_deposit', {
+    const { data: newRpcRes, error: newRpcErr } = await adminRpcClient.rpc('reject_manual_upi_deposit', {
       p_payment_id: paymentUuidToReject,
       p_admin_id: safeAdminId,
       p_reason: cleanReason,
     });
+    const rpcDurationMs = Date.now() - rpcStartTime;
 
     if (!newRpcErr && newRpcRes) {
       rpcOutput = newRpcRes;
       rpcSuccess = Boolean(newRpcRes.success);
+      console.log(JSON.stringify({
+        level: 'INFO',
+        event: 'RECHARGE_REJECT_RPC_SUCCESS',
+        endpoint: '/api/admin/reject-recharge',
+        rpc: 'reject_manual_upi_deposit',
+        paymentId: paymentUuidToReject,
+        adminId: safeAdminId,
+        durationMs: rpcDurationMs,
+        rpcSuccess,
+      }));
     } else if (newRpcErr?.code === 'PGRST202' || newRpcErr?.code === '42883' || newRpcErr?.code === '55000') {
       // 2. If reject_manual_upi_deposit is missing or fails due to production unassigned record bug (55000), invoke existing reject_recharge RPC
+      console.warn(JSON.stringify({
+        level: 'WARN',
+        event: 'RECHARGE_REJECT_FALLBACK_LEGACY',
+        endpoint: '/api/admin/reject-recharge',
+        rpc: 'reject_manual_upi_deposit',
+        paymentId: paymentUuidToReject,
+        errorCode: newRpcErr?.code,
+        errorMessage: newRpcErr?.message,
+      }));
 
       if (resolvedPayment?.id) {
-        const { data: legacyRes, error: legacyErr } = await supabase.rpc('reject_recharge', {
+        const { data: legacyRes, error: legacyErr } = await adminRpcClient.rpc('reject_recharge', {
           p_payment_id: resolvedPayment.id,
           p_admin_id: safeAdminId,
           p_reason: cleanReason,
@@ -7711,7 +7978,7 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
 
           // Synchronize companion deposit_transactions record
           if (companionDepositId) {
-            await supabase
+            await adminRpcClient
               .from('deposit_transactions')
               .update({
                 status: 'REJECTED',
@@ -7725,7 +7992,7 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
 
           // Update pending wallet transaction if any
           if (orderId) {
-            await supabase
+            await adminRpcClient
               .from('wallet_transactions')
               .update({
                 status: 'Rejected',
@@ -7735,7 +8002,15 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
               .eq('status', 'Pending');
           }
         } else {
-          console.error('[REJECT-RECHARGE] reject_recharge legacy RPC failure:', legacyErr || legacyRes);
+          console.error(JSON.stringify({
+            level: 'ERROR',
+            event: 'RECHARGE_REJECT_LEGACY_RPC_FAILURE',
+            endpoint: '/api/admin/reject-recharge',
+            rpc: 'reject_recharge',
+            paymentId: resolvedPayment.id,
+            errorCode: legacyErr?.code,
+            errorMessage: legacyErr?.message,
+          }));
           return res.status(503).json({
             success: false,
             error: legacyRes?.error || legacyErr?.message || 'Rejection RPC failed.',
@@ -7743,7 +8018,7 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
         }
       } else if (resolvedDeposit?.id) {
         // If only deposit_transactions record existed, update it fail-closed
-        await supabase
+        await adminRpcClient
           .from('deposit_transactions')
           .update({
             status: 'REJECTED',
@@ -7757,12 +8032,34 @@ app.post('/api/admin/reject-recharge', verifyAdminAuth, async (req, res) => {
         rpcOutput = { success: true, message: 'Recharge rejected successfully.' };
       }
     } else {
-      console.error('[REJECT-RECHARGE] reject_manual_upi_deposit error:', newRpcErr);
-      return res.status(503).json({
+      const classified = classifyPostgresRpcError(newRpcErr, 'reject_manual_upi_deposit');
+      console.error(JSON.stringify({
+        level: 'ERROR',
+        event: 'RECHARGE_REJECT_RPC_FAILURE',
+        endpoint: '/api/admin/reject-recharge',
+        rpc: 'reject_manual_upi_deposit',
+        requestId,
+        revision: currentRevision,
+        paymentId: paymentUuidToReject,
+        adminId: safeAdminId,
+        durationMs: rpcDurationMs,
+        errorType: classified.errorType,
+        errorCode: classified.code,
+        errorMessage: newRpcErr?.message,
+        details: newRpcErr?.details,
+        hint: newRpcErr?.hint,
+      }));
+      return res.status(classified.status).json({
         success: false,
-        error: 'Database rejection service unavailable.',
-        code: newRpcErr?.code || 'RPC_UNAVAILABLE',
-        details: newRpcErr?.message,
+        errorType: classified.errorType,
+        error: classified.userMessage,
+        code: classified.code,
+        details: classified.details,
+        hint: classified.hint,
+        endpoint: '/api/admin/reject-recharge',
+        rpc: 'reject_manual_upi_deposit',
+        requestId,
+        revision: currentRevision,
       });
     }
 
@@ -8067,6 +8364,18 @@ app.post('/api/admin/self-test-recharge', verifyAdminAuth, async (req, res) => {
     // =========================================================================
     // 6-CASE COMPANION & TERMINAL STATE VALIDATION SUITE
     // =========================================================================
+    const forwardAuthHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (req.headers.authorization) {
+      forwardAuthHeaders['Authorization'] = String(req.headers.authorization);
+    }
+    if (req.headers['x-admin-token']) {
+      forwardAuthHeaders['X-Admin-Token'] = String(req.headers['x-admin-token']);
+    } else {
+      forwardAuthHeaders['X-Admin-Token'] = 'adm_root_700';
+    }
+
     const caseResults: Record<string, string> = {};
 
     // Case 1: Payment exists, companion deposit exists
@@ -8081,7 +8390,7 @@ app.post('/api/admin/self-test-recharge', verifyAdminAuth, async (req, res) => {
 
       const rejRes1 = await fetch('http://localhost:3000/api/admin/reject-recharge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Admin-Token': req.headers['x-admin-token'] as string },
+        headers: forwardAuthHeaders,
         body: JSON.stringify({ paymentId: p1.id, reason: 'Case 1 Test' })
       });
       const data1 = await rejRes1.json();
@@ -8108,7 +8417,7 @@ app.post('/api/admin/self-test-recharge', verifyAdminAuth, async (req, res) => {
 
       const rejRes2 = await fetch('http://localhost:3000/api/admin/reject-recharge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Admin-Token': req.headers['x-admin-token'] as string },
+        headers: forwardAuthHeaders,
         body: JSON.stringify({ paymentId: p2.id, reason: 'Case 2 Test' })
       });
       const data2 = await rejRes2.json();
@@ -8136,7 +8445,7 @@ app.post('/api/admin/self-test-recharge', verifyAdminAuth, async (req, res) => {
 
       const rejRes3 = await fetch('http://localhost:3000/api/admin/reject-recharge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Admin-Token': req.headers['x-admin-token'] as string },
+        headers: forwardAuthHeaders,
         body: JSON.stringify({ depositId: d3.id, reason: 'Case 3 Test' })
       });
       const data3 = await rejRes3.json();
@@ -8163,7 +8472,7 @@ app.post('/api/admin/self-test-recharge', verifyAdminAuth, async (req, res) => {
 
       const rejRes4 = await fetch('http://localhost:3000/api/admin/reject-recharge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Admin-Token': req.headers['x-admin-token'] as string },
+        headers: forwardAuthHeaders,
         body: JSON.stringify({ depositId: d4.id, reason: 'Case 4 Test' })
       });
       const data4 = await rejRes4.json();
@@ -8188,7 +8497,7 @@ app.post('/api/admin/self-test-recharge', verifyAdminAuth, async (req, res) => {
 
       const rejRes5 = await fetch('http://localhost:3000/api/admin/reject-recharge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Admin-Token': req.headers['x-admin-token'] as string },
+        headers: forwardAuthHeaders,
         body: JSON.stringify({ paymentId: p5.id, reason: 'Case 5 Re-reject' })
       });
       const data5 = await rejRes5.json();
@@ -8212,7 +8521,7 @@ app.post('/api/admin/self-test-recharge', verifyAdminAuth, async (req, res) => {
 
       const rejRes6 = await fetch('http://localhost:3000/api/admin/reject-recharge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Admin-Token': req.headers['x-admin-token'] as string },
+        headers: forwardAuthHeaders,
         body: JSON.stringify({ paymentId: p6.id, reason: 'Case 6 Test' })
       });
       const data6 = await rejRes6.json();
